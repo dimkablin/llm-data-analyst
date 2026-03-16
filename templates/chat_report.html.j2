@@ -1,0 +1,100 @@
+<!-- chat_report.html.j2 -->
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отчет по чату</title>
+    <style>
+        {% include 'styles.css' %}
+    </style>
+</head>
+<body>
+    <div class="header-block">
+        <div class="header-flex">
+            <span class="header-logo">
+                <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                    <rect x="8" y="24" width="3" height="8" rx="1.5" fill="white"/>
+                    <rect x="15" y="16" width="3" height="16" rx="1.5" fill="white"/>
+                    <rect x="22" y="12" width="3" height="20" rx="1.5" fill="white"/>
+                    <rect x="29" y="6" width="3" height="26" rx="1.5" fill="white"/>
+                </svg>
+            </span>
+            <span class="header-title">Диалог с LLM Data Analyst</span>
+        </div>
+        <div class="header-subtitle">Экспорт истории чата</div>
+    </div>
+    <div class="container">
+        <div class="timeline">
+            <div class="timeline-line"></div>
+            {% for a in artifacts %}
+                {% if a.role == 'user' %}
+                    <div class="msg-card user">
+                        <div class="msg-avatar">🧑‍💻</div>
+                        <div class="msg-content">
+                            <div class="chat-markdown">{{ a.text_html|safe }}</div>
+                        </div>
+                    </div>
+                {% elif a.role == 'ai' %}
+                    {% if a.type == 'text' %}
+                        <div class="msg-card ai">
+                            <div class="msg-avatar">🧠</div>
+                            <div class="msg-content">
+                                <div class="chat-markdown">{{ a.text_html|safe }}</div>
+                            </div>
+                        </div>
+                    {% elif a.type == 'table' %}
+                        <div class="msg-card table">
+                            <div class="msg-avatar">📊</div>
+                            <div class="msg-content">
+                                <div class="msg-title">Таблица: {{ a.text }}</div>
+                                <div class="table-block"><div class="table-scroll">{{ a.normalized|safe }}</div></div>
+                            </div>
+                        </div>
+                    {% elif a.type == 'plot' %}
+                        <div class="msg-card plot">
+                            <div class="msg-avatar">📈</div>
+                            <div class="msg-content">
+                                <div class="msg-title">График: {{ a.text }}</div>
+                                <div class="plot-block">{{ a.normalized|safe }}</div>
+                            </div>
+                        </div>
+                    {% endif %}
+                {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    <script>
+    function resizeAllPlotlyChat() {
+        setTimeout(() => {
+            document.querySelectorAll('.plot-block').forEach(function(plotBlock) {
+                const plotlyDiv = plotBlock.querySelector('.js-plotly-plot');
+                if (plotlyDiv && window.Plotly) {
+                    const style = getComputedStyle(plotBlock);
+                    const paddingLeft = parseInt(style.paddingLeft) || 0;
+                    const paddingRight = parseInt(style.paddingRight) || 0;
+                    const containerWidth = plotBlock.offsetWidth - paddingLeft - paddingRight;
+                    const plotWidth = Math.max(300, Math.min(containerWidth, 800));
+                    window.Plotly.relayout(plotlyDiv, {
+                        width: plotWidth,
+                        height: 400,
+                        autosize: false
+                    });
+                }
+            });
+        }, 200);
+    }
+    window.addEventListener('load', resizeAllPlotlyChat);
+    window.addEventListener('resize', resizeAllPlotlyChat);
+    if (window.Plotly) {
+        window.Plotly.newPlot = (function(originalNewPlot) {
+            return function() {
+                const result = originalNewPlot.apply(this, arguments);
+                setTimeout(resizeAllPlotlyChat, 100);
+                return result;
+            };
+        })(window.Plotly.newPlot);
+    }
+    </script>
+</body>
+</html>

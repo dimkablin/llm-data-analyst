@@ -1,0 +1,80 @@
+services:
+  backend:
+    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/llm-data-analyst-backend:latest
+    ports:
+      - "${BACKEND_PORT:-8605}:8000"
+    volumes:
+      - backend_storage:/app/backend_storage
+      - ./certs:/opt/certs:ro
+    env_file:
+      - .env
+    environment:
+      - SSL_CERT_FILE=${SSL_CERT_FILE:-/opt/certs/inno_pki_chain.pem}
+      - REQUESTS_CA_BUNDLE=${REQUESTS_CA_BUNDLE:-/opt/certs/inno_pki_chain.pem}
+      - CURL_CA_BUNDLE=${CURL_CA_BUNDLE:-/opt/certs/inno_pki_chain.pem}
+      - BACKEND_SESSION_TTL_DAYS=${BACKEND_SESSION_TTL_DAYS:-7}
+      - BACKEND_MAX_DATASET_MB=${BACKEND_MAX_DATASET_MB:-100}
+      - BACKEND_STORAGE_DIR=${BACKEND_STORAGE_DIR_DOCKER:-/app/backend_storage}
+      - AUTH_DB_PATH=${AUTH_DB_PATH_DOCKER:-/app/backend_storage/app.db}
+      - AUTH_TOKEN_TTL_DAYS=${AUTH_TOKEN_TTL_DAYS:-30}
+      - AUTH_DEFAULT_ADMIN_USERNAME=${AUTH_DEFAULT_ADMIN_USERNAME:-admin}
+      - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-admin}
+      - BACKEND_CORS_ALLOW_ORIGINS=${BACKEND_CORS_ALLOW_ORIGINS:-http://10.9.168.20:8606}
+      - PHOENIX_ENABLED=${PHOENIX_ENABLED:-true}
+      - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-llm-data-analyst}
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://10.9.168.20:8607/v1/traces}
+      - PHOENIX_AUTO_INSTRUMENT=${PHOENIX_AUTO_INSTRUMENT:-true}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      phoenix:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/llm-data-analyst-frontend:latest
+    ports:
+      - "${FRONTEND_PORT:-8606}:8603"
+    environment:
+      - BACKEND_URL=${BACKEND_URL:-http://10.9.168.20:8605}
+      - PHOENIX_URL=${PHOENIX_URL:-http://10.9.168.20:8607}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8603/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      backend:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+    restart: unless-stopped
+
+  phoenix:
+    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-release/phoenix:version-10.13.2
+    ports:
+      - "${PHOENIX_UI_PORT:-8607}:6006"
+      - "${PHOENIX_GRPC_PORT:-8608}:4317"
+    environment:
+      - PHOENIX_WORKING_DIR=${PHOENIX_WORKING_DIR:-/mnt/data}
+      - PHOENIX_HOST_ROOT_PATH=${PHOENIX_HOST_ROOT_PATH:-/phoenix}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    volumes:
+      - phoenix_data:/mnt/data
+    restart: unless-stopped
+
+volumes:
+  phoenix_data:
+  backend_storage:

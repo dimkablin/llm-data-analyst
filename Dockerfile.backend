@@ -1,0 +1,31 @@
+FROM docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/python:3.11 AS runtime
+
+WORKDIR /app
+
+COPY backend/requirements.runtime.txt /tmp/requirements.runtime.txt
+COPY backend/pip.conf /etc/pip.conf
+
+# Install backend runtime dependencies in a separate cacheable layer.
+# This avoids reinstalling dependencies on every source code change.
+RUN set -eux; \
+    python -m pip install --no-cache-dir --upgrade pip; \
+    for attempt in 1 2 3; do \
+      pip install --no-cache-dir --retries 10 --timeout 120 -r /tmp/requirements.runtime.txt && break; \
+      if [ "${attempt}" -eq 3 ]; then exit 1; fi; \
+      echo "pip install failed, retrying (${attempt}/3)..." >&2; \
+      sleep 5; \
+    done; \
+    rm -f /tmp/requirements.runtime.txt /etc/pip.conf || true
+
+RUN adduser --disabled-password --gecos "" --no-create-home appuser
+RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_storage
+
+COPY agent ./agent
+COPY backend ./backend
+
+RUN chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

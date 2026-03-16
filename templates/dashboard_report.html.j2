@@ -1,0 +1,85 @@
+<!-- dashboard_report.html.j2 -->
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Отчет по дашборду</title>
+    <style>
+        {% include 'styles.css' %}
+    </style>
+</head>
+<body>
+    <div class="header-block">
+        <div class="header-flex">
+            <span class="header-logo">
+                <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                    <rect x="8" y="24" width="3" height="8" rx="1.5" fill="white"/>
+                    <rect x="15" y="16" width="3" height="16" rx="1.5" fill="white"/>
+                    <rect x="22" y="12" width="3" height="20" rx="1.5" fill="white"/>
+                    <rect x="29" y="6" width="3" height="26" rx="1.5" fill="white"/>
+                </svg>
+            </span>
+            <span class="header-title">Дашборд LLM Data Analyst</span>
+        </div>
+        <div class="header-subtitle">Экспорт дашборда</div>
+    </div>
+    <div class="container">
+        {% set n = artifacts|length %}
+        {% for i in range(0, n, max_cols) %}
+            {% set row_len = [max_cols, n-i]|min %}
+            <div class="dashboard-row">
+                {% for j in range(i, i+row_len) %}
+                    {% set a = artifacts[j] %}
+                    <div class="dashboard-card">
+                        <div class="card-title">{{ a.text }}</div>
+                        {% if a.meta and a.meta.description %}
+                            <div class="card-meta">{{ a.meta.description }}</div>
+                        {% endif %}
+                        {% if a.text_html %}
+                            <div class="card-markdown markdown-content">{{ a.text_html|safe }}</div>
+                        {% endif %}
+                        {% if a.type == 'table' %}
+                            <div class="table-block"><div class="table-scroll">{{ a.normalized|safe }}</div></div>
+                        {% elif a.type == 'plot' %}
+                            <div class="plot-block">{{ a.normalized|safe }}</div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        {% endfor %}
+    </div>
+    <script>
+    function resizeAllPlotlyDashboard() {
+        setTimeout(() => {
+            document.querySelectorAll('.plot-block').forEach(function(plotBlock) {
+                const plotlyDiv = plotBlock.querySelector('.js-plotly-plot');
+                if (plotlyDiv && window.Plotly) {
+                    const style = getComputedStyle(plotBlock);
+                    const paddingLeft = parseInt(style.paddingLeft) || 0;
+                    const paddingRight = parseInt(style.paddingRight) || 0;
+                    const containerWidth = plotBlock.offsetWidth - paddingLeft - paddingRight;
+                    const plotWidth = Math.max(300, Math.min(containerWidth, 800));
+                    window.Plotly.relayout(plotlyDiv, {
+                        width: plotWidth,
+                        height: 400,
+                        autosize: false
+                    });
+                }
+            });
+        }, 200);
+    }
+    window.addEventListener('load', resizeAllPlotlyDashboard);
+    window.addEventListener('resize', resizeAllPlotlyDashboard);
+    if (window.Plotly) {
+        window.Plotly.newPlot = (function(originalNewPlot) {
+            return function() {
+                const result = originalNewPlot.apply(this, arguments);
+                setTimeout(resizeAllPlotlyDashboard, 100);
+                return result;
+            };
+        })(window.Plotly.newPlot);
+    }
+    </script>
+</body>
+</html>

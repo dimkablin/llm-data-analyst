@@ -1,0 +1,17 @@
+fail_fast: true
+repos:
+  - repo: local
+    hooks:
+      - id: black
+        name: Run Black via Poetry
+        entry: poetry run black
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: isort
+        name: Run isort via Poetry
+        entry: poetry run isort
+        language: system
+        types: [python]
+        pass_filenames: true

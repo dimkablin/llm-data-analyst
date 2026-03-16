@@ -1,0 +1,24 @@
+FROM docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/node:20-alpine AS build
+
+ARG USE_MIRROR
+ARG NPM_REGISTRY
+WORKDIR /app
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN set -eux; \
+    if [ "${USE_MIRROR}" = "True" ] || [ "${USE_MIRROR}" = "true" ] || [ "${USE_MIRROR}" = "1" ]; then \
+      if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi; \
+    fi; \
+    npm install
+
+COPY frontend/ ./
+RUN npm run build
+
+FROM docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/nginx:1.27-alpine
+
+COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 8603
+
+CMD ["nginx", "-g", "daemon off;"]

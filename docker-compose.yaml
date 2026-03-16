@@ -1,0 +1,89 @@
+services:
+  backend:
+    image: llm-data-analyst-backend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        USE_MIRROR: ${USE_MIRROR}
+        MIRROR_PIP_INDEX_URL: ${PIP_INDEX_URL}
+        MIRROR_PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL}
+        MIRROR_PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST}
+    expose:
+      - "8000"
+    volumes:
+      - ./backend_storage:/app/backend_storage
+    env_file:
+      - .env
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - BACKEND_SESSION_TTL_DAYS=${BACKEND_SESSION_TTL_DAYS:-7}
+      - BACKEND_MAX_DATASET_MB=${BACKEND_MAX_DATASET_MB:-100}
+      - BACKEND_STORAGE_DIR=${BACKEND_STORAGE_DIR_DOCKER:-/app/backend_storage}
+      - AUTH_DB_PATH=${AUTH_DB_PATH_DOCKER:-/app/backend_storage/app.db}
+      - AUTH_TOKEN_TTL_DAYS=${AUTH_TOKEN_TTL_DAYS:-30}
+      - AUTH_DEFAULT_ADMIN_USERNAME=${AUTH_DEFAULT_ADMIN_USERNAME:-admin}
+      - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-admin}
+      - PHOENIX_ENABLED=${PHOENIX_ENABLED:-true}
+      - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-llm-data-analyst}
+      # Backend шлёт трейсы в Phoenix по внутренней сети; в контейнере Phoenix всегда порт 6006 (не PHOENIX_UI_PORT с хоста)
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006/v1/traces
+      - PHOENIX_AUTO_INSTRUMENT=${PHOENIX_AUTO_INSTRUMENT:-true}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      phoenix:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: llm-data-analyst-frontend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        USE_MIRROR: ${USE_MIRROR}
+        NPM_REGISTRY: ${NPM_REGISTRY}
+    ports:
+      - "${FRONTEND_PORT:-8603}:8603"
+      - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
+      - PHOENIX_URL=${PHOENIX_URL:-http://phoenix:6006}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8603/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      backend:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+    restart: unless-stopped
+
+  phoenix:
+    image: arizephoenix/phoenix:version-10.13.2
+    ports:
+      - "${PHOENIX_UI_PORT:-6006}:6006"
+      - "${PHOENIX_GRPC_PORT:-4317}:4317"
+    environment:
+      - PHOENIX_WORKING_DIR=${PHOENIX_WORKING_DIR:-/mnt/data}
+      - PHOENIX_HOST_ROOT_PATH=${PHOENIX_HOST_ROOT_PATH:-/phoenix}
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/healthz')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    volumes:
+      - phoenix_data:/mnt/data
+    restart: unless-stopped
+
+volumes:
+  phoenix_data:
