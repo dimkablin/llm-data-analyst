@@ -1,6 +1,7 @@
 import { RevealOnScroll } from "../components/RevealOnScroll";
 import { SpotlightCard } from "../components/reactbits/SpotlightCard";
 import { SiteNav } from "../components/SiteNav";
+import { withBasePath } from "../basePath";
 import type { AuthUser } from "../types";
 
 type PhoenixPageProps = {
@@ -24,7 +25,7 @@ const OBSERVABILITY_VALUES = [
 ];
 
 export function PhoenixPage({ currentUser, onNavigate }: PhoenixPageProps): JSX.Element {
-  const iframeSrc = "/phoenix/";
+  const iframeSrc = withBasePath("/phoenix/");
 
   return (
     <div className="site-page phoenix-page phoenix-page-refresh">

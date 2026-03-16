@@ -8,8 +8,9 @@ import type {
   SessionSummary,
   UserSettings
 } from "./types";
+import { appBasePath } from "./basePath";
 
-const API_BASE = "";
+const API_BASE = appBasePath === "/" ? "" : appBasePath.slice(0, -1);
 const TOKEN_STORAGE_KEY = "llm_data_analyst_access_token";
 
 async function parseJsonSafe(response: Response): Promise<unknown> {

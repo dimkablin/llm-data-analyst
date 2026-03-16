@@ -2,6 +2,7 @@ FROM docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/node:20-alpine AS
 
 ARG USE_MIRROR
 ARG NPM_REGISTRY
+ARG APP_BASE_PATH=/
 WORKDIR /app
 
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -12,9 +13,14 @@ RUN set -eux; \
     npm install
 
 COPY frontend/ ./
+ENV APP_BASE_PATH=${APP_BASE_PATH}
 RUN npm run build
 
 FROM docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/nginx:1.27-alpine
+
+ENV BACKEND_URL=http://backend:8000
+ENV PHOENIX_URL=http://phoenix:6006
+ENV APP_BASE_PATH=/
 
 COPY frontend/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html

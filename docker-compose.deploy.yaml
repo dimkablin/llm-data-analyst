@@ -44,6 +44,7 @@ services:
     environment:
       - BACKEND_URL=${BACKEND_URL:-http://10.9.168.20:8605}
       - PHOENIX_URL=${PHOENIX_URL:-http://10.9.168.20:8607}
+      - APP_BASE_PATH=${APP_BASE_PATH:-/}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8603/"]
       interval: 30s

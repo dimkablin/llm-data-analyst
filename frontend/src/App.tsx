@@ -9,6 +9,7 @@ import {
   registerUser,
   setStoredToken
 } from "./api";
+import { stripBasePath, withBasePath } from "./basePath";
 import { AuthPage } from "./pages/AuthPage";
 import { LandingPage } from "./pages/LandingPage";
 import { PhoenixPage } from "./pages/PhoenixPage";
@@ -35,22 +36,23 @@ function normalizeRoute(pathname: string): AppRoute {
 }
 
 export default function App(): JSX.Element {
-  const [route, setRoute] = useState<AppRoute>(() => normalizeRoute(window.location.pathname));
+  const [route, setRoute] = useState<AppRoute>(() => normalizeRoute(stripBasePath(window.location.pathname)));
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   const navigate = useCallback((nextRoute: AppRoute, replace = false): void => {
+    const target = withBasePath(nextRoute);
     if (replace) {
-      window.history.replaceState({}, "", nextRoute);
+      window.history.replaceState({}, "", target);
     } else {
-      window.history.pushState({}, "", nextRoute);
+      window.history.pushState({}, "", target);
     }
     setRoute(nextRoute);
   }, []);
 
   useEffect(() => {
     function handlePopState(): void {
-      setRoute(normalizeRoute(window.location.pathname));
+      setRoute(normalizeRoute(stripBasePath(window.location.pathname)));
     }
     window.addEventListener("popstate", handlePopState);
     return () => {

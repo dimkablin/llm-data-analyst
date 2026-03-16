@@ -50,10 +50,13 @@ services:
       args:
         USE_MIRROR: ${USE_MIRROR}
         NPM_REGISTRY: ${NPM_REGISTRY}
-    ports:
-      - "${FRONTEND_PORT:-8603}:8603"
+        APP_BASE_PATH: ${APP_BASE_PATH:-/}
+    environment:
       - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
       - PHOENIX_URL=${PHOENIX_URL:-http://phoenix:6006}
+      - APP_BASE_PATH=${APP_BASE_PATH:-/}
+    ports:
+      - "${FRONTEND_PORT:-8603}:8603"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8603/"]
       interval: 30s

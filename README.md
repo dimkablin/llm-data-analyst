@@ -48,6 +48,25 @@ docker compose up --build -d
 
 Backend не выставлен наружу — доступен только через nginx во внутренней сети Docker.
 
+### Deploy под reverse proxy / Scibox
+
+Если приложение публикуется не из корня домена, а под префиксом, задайте `APP_BASE_PATH`.
+
+Пример:
+
+```bash
+APP_BASE_PATH=/scibox/llm-data-analyst/
+```
+
+Тот же префикс должен использоваться:
+- при сборке frontend-образа (`--build-arg APP_BASE_PATH=...`)
+- в runtime env frontend-контейнера (`APP_BASE_PATH=...`)
+
+Тогда:
+- ассеты будут собираться с нужным префиксом
+- SPA-маршруты (`/app`, `/user`, `/technical`, `/phoenix`) будут работать под этим base path
+- nginx внутри контейнера будет проксировать `${APP_BASE_PATH}auth/...`, `${APP_BASE_PATH}sessions/...`, `${APP_BASE_PATH}phoenix/...`
+
 ### Порты
 
 В `.env` задаются хостовые порты (внутренние фиксированы):
