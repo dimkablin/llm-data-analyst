@@ -32,6 +32,7 @@ from backend.callbacks import (
     strip_thinking,
 )
 from backend.config import Settings
+from backend.observability import record_llm_usage_on_active_span
 
 
 ANALYTICAL_HINTS = (
@@ -317,6 +318,11 @@ class AgentRunner:
                 timeout_sec=max(8, min(20, self.settings.backend_query_timeout_sec)),
             )
             response = llm.invoke(prompt_messages, config=runtime_config or None)
+            record_llm_usage_on_active_span(
+                response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
             generated = self._content_to_text(getattr(response, "content", ""))
         except Exception:
             generated = ""
@@ -1413,6 +1419,11 @@ class AgentRunner:
         plan = ""
         try:
             response = llm.invoke(think_messages, config=runtime_config)
+            record_llm_usage_on_active_span(
+                response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
             raw_content = self._content_to_text(getattr(response, "content", ""))
             plan = strip_thinking(raw_content).strip()
             reasoning = extract_thinking(raw_content)
@@ -1623,6 +1634,11 @@ class AgentRunner:
                  HumanMessage(content=evaluate_prompt)],
                 config=runtime_config,
             )
+            record_llm_usage_on_active_span(
+                llm_response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
             raw_text = self._content_to_text(getattr(llm_response, "content", ""))
             raw_text = strip_thinking(raw_text).strip()
 
@@ -1820,6 +1836,11 @@ class AgentRunner:
                 break
 
         response = llm.invoke(prompt_messages, config=runtime_config)
+        record_llm_usage_on_active_span(
+            response,
+            fallback_model=self.settings.llm_model,
+            fallback_provider=self.settings.llm_provider,
+        )
         output_text = self._content_to_text(getattr(response, "content", ""))
 
         final_text = ""
@@ -1914,7 +1935,12 @@ class AgentRunner:
                 include_reasoning=False,
                 timeout_sec=max(3, self.settings.llm_warmup_timeout_sec),
             )
-            llm.invoke([HumanMessage(content="ping")])
+            response = llm.invoke([HumanMessage(content="ping")])
+            record_llm_usage_on_active_span(
+                response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
         except Exception:
             # Warmup is best-effort; backend should stay available even if model is cold.
             return

@@ -37,6 +37,7 @@ from backend.models import (
     AuthUserResponse,
     CreateSessionResponse,
     MessageResponse,
+    PhoenixOverviewResponse,
     QueryMetrics,
     QueryRequest,
     QueryResponse,
@@ -49,6 +50,7 @@ from backend.models import (
 )
 from backend.observability import initialize_phoenix
 from backend.observability import build_trace_context, query_trace_context
+from backend.observability_service import PhoenixObservabilityService
 from backend.serialization import serialize_artifact
 from backend.session_store import SessionState, SessionStore
 
@@ -81,6 +83,7 @@ auth_db.ensure_default_admin(
     settings.auth_default_admin_password,
 )
 runner = AgentRunner(settings)
+phoenix_observability_service = PhoenixObservabilityService(settings)
 initialize_phoenix()
 
 CHAT_FALLBACK_RE = re.compile(
@@ -209,6 +212,14 @@ def runtime_model(current_user: AuthUser = Depends(get_current_user)) -> dict[st
         "model": settings.llm_model,
         "base_url": settings.llm_base_url,
     }
+
+
+@app.get("/observability/phoenix", response_model=PhoenixOverviewResponse)
+def phoenix_overview(
+    current_user: AuthUser = Depends(get_current_user),
+) -> PhoenixOverviewResponse:
+    _ = current_user
+    return phoenix_observability_service.build_overview()
 
 
 @app.post("/auth/register", response_model=AuthResponse)

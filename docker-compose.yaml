@@ -9,8 +9,8 @@ services:
         MIRROR_PIP_INDEX_URL: ${PIP_INDEX_URL}
         MIRROR_PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL}
         MIRROR_PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST}
-    expose:
-      - "8000"
+    ports:
+      - "${BACKEND_PORT:-8605}:8000"
     volumes:
       - ./backend_storage:/app/backend_storage
     env_file:

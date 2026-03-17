@@ -144,6 +144,9 @@ class Settings:
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)
     phoenix_project_name: str = os.getenv("PHOENIX_PROJECT_NAME", "llm-data-analyst")
+    phoenix_host: str = os.getenv("PHOENIX_HOST", "localhost")
+    phoenix_ui_port: int = int(os.getenv("PHOENIX_UI_PORT", "8607"))
+    phoenix_host_root_path: str = os.getenv("PHOENIX_HOST_ROOT_PATH", "/phoenix")
     phoenix_collector_endpoint: str = (
         os.getenv("PHOENIX_COLLECTOR_ENDPOINT")
         or f"http://{os.getenv('PHOENIX_HOST', 'localhost')}:6006/v1/traces"
