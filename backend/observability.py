@@ -275,8 +275,9 @@ def build_trace_context(
     request_kind: str,
     use_history: bool,
     include_reasoning: bool,
+    db_connection_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "session_id": session_id,
         "user_id": str(user_id),
         "username": username,
@@ -284,6 +285,9 @@ def build_trace_context(
         "use_history": bool(use_history),
         "include_reasoning": bool(include_reasoning),
     }
+    if isinstance(db_connection_id, str) and db_connection_id.strip():
+        payload["db_connection_id"] = db_connection_id.strip()
+    return payload
 
 
 @contextmanager
@@ -296,6 +300,7 @@ def query_trace_context(
     use_history: bool,
     include_reasoning: bool,
     query: str,
+    db_connection_id: str | None = None,
 ) -> Iterator[None]:
     if not settings.phoenix_enabled:
         yield
@@ -325,6 +330,9 @@ def query_trace_context(
         "include_reasoning": bool(include_reasoning),
         "query_preview": query_preview,
     }
+    if isinstance(db_connection_id, str) and db_connection_id.strip():
+        metadata["db_connection_id"] = db_connection_id.strip()
+        metadata["data_source"] = "db_connection"
     tags = [
         "backend",
         "reason-action",

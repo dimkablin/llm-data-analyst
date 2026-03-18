@@ -108,6 +108,78 @@ class UploadResponse(BaseModel):
     columns: int
 
 
+class SessionSourceStateResponse(BaseModel):
+    source_type: str | None = None
+    source_ref_id: str | None = None
+    source_label: str | None = None
+    source_mode: str | None = None
+
+
+class SessionBindDBConnectionSourceRequest(BaseModel):
+    connection_id: str = Field(..., min_length=1, max_length=120)
+    source_mode: str | None = Field(default=None, max_length=40)
+
+
+class DBConnectionCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    db_type: str = Field(..., min_length=2, max_length=40)
+    host: str = Field(..., min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    database: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=4096)
+    options_json: dict[str, Any] | None = None
+
+
+class DBConnectionUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    db_type: str | None = Field(default=None, min_length=2, max_length=40)
+    host: str | None = Field(default=None, min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    database: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=255)
+    password: str | None = Field(default=None, max_length=4096)
+    clear_password: bool = False
+    options_json: dict[str, Any] | None = None
+
+
+class DBConnectionResponse(BaseModel):
+    id: str
+    name: str
+    db_type: str
+    host: str
+    port: int | None = None
+    database: str | None = None
+    username: str | None = None
+    options_json: dict[str, Any] | None = None
+    password_present: bool
+    last_test_at: str | None = None
+    last_test_ok: bool | None = None
+    last_error: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class DBConnectionTestResponse(BaseModel):
+    ok: bool
+    checked_at: str
+    last_test_at: str
+    last_test_ok: bool
+    error: str | None = None
+
+
+class DBConnectionSchemaResponse(BaseModel):
+    name: str
+    display_name: str
+
+
+class DBConnectionTableResponse(BaseModel):
+    schema: str
+    name: str
+    table_type: str
+    qualified_name: str
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
     use_history: bool = True
@@ -152,6 +224,11 @@ class SessionStateResponse(BaseModel):
     chat_history: list[dict[str, Any]]
     artifacts: list[ArtifactPayload]
     has_dataset: bool = False
+    dataset_name: str | None = None
+    source_type: str | None = None
+    source_ref_id: str | None = None
+    source_label: str | None = None
+    source_mode: str | None = None
 
 
 class PhoenixOverviewStats(BaseModel):

@@ -13,7 +13,8 @@ from agent.pandas_agent import (
     normalize_agent_messages,
 )
 from agent.prompts import agent_prompt
-from agent.tools import BaseExecTool, PandasTool, PlotlyTool, ValueTool
+from agent.tools import BaseExecTool, DBTool, PandasTool, PlotlyTool, ValueTool
+from backend.db_runtime_service import RuntimeDBConnectionConfig
 from utils.params_manager import params_manager
 
 
@@ -65,6 +66,7 @@ class Agent:
         llm_max_execution_time: int = 10,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        db_runtime_config: RuntimeDBConnectionConfig | None = None,
     ):
         self.df = df
         self.llm_model = llm_model
@@ -74,6 +76,7 @@ class Agent:
         self.llm_max_execution_time = llm_max_execution_time
         self.llm_enable_thinking = llm_enable_thinking
         self.llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
+        self.db_runtime_config = db_runtime_config
         self.artifacts = []
 
         self.reasoning_callback = ReasoningCallbackHandler()
@@ -111,11 +114,14 @@ class Agent:
         Returns:
             list[BaseExecTool]: Список инструментов для анализа данных.
         """
-        return [
+        tools: list[BaseExecTool] = [
             PlotlyTool(self.df),
             PandasTool(self.df),
             ValueTool(self.df),
         ]
+        if self.db_runtime_config is not None:
+            tools.append(DBTool(self.df, db_runtime_config=self.db_runtime_config))
+        return tools
 
     def _create_user_artifact(self, prompt: str) -> Artifact:
         """

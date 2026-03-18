@@ -27,6 +27,10 @@ class SessionState:
     artifacts: list[dict[str, Any]]
     df_path: str | None = None
     dataset_name: str | None = None
+    source_type: str | None = None
+    source_ref_id: str | None = None
+    source_label: str | None = None
+    source_mode: str | None = None
 
 
 class SessionStore:
@@ -88,6 +92,10 @@ class SessionStore:
             artifacts=[],
             df_path=None,
             dataset_name=None,
+            source_type=None,
+            source_ref_id=None,
+            source_label=None,
+            source_mode=None,
         )
         self._save_state(state)
         return state
@@ -106,6 +114,10 @@ class SessionStore:
             artifacts=raw.get("artifacts", []),
             df_path=raw.get("df_path"),
             dataset_name=raw.get("dataset_name"),
+            source_type=raw.get("source_type"),
+            source_ref_id=raw.get("source_ref_id"),
+            source_label=raw.get("source_label"),
+            source_mode=raw.get("source_mode"),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -126,6 +138,10 @@ class SessionStore:
             "artifacts": state.artifacts,
             "df_path": state.df_path,
             "dataset_name": state.dataset_name,
+            "source_type": state.source_type,
+            "source_ref_id": state.source_ref_id,
+            "source_label": state.source_label,
+            "source_mode": state.source_mode,
         }
         self._state_path(state.session_id).write_text(
             json.dumps(payload, ensure_ascii=False)
@@ -151,6 +167,58 @@ class SessionStore:
             state.dataset_name = clean or None
             state.last_access = self._now_iso()
             self._save_state(state)
+
+    def set_source(
+        self,
+        session_id: str,
+        *,
+        source_type: str | None,
+        source_ref_id: str | None,
+        source_label: str | None,
+        source_mode: str | None = None,
+    ) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.source_type = str(source_type or "").strip() or None
+            state.source_ref_id = str(source_ref_id or "").strip() or None
+            state.source_label = str(source_label or "").strip() or None
+            state.source_mode = str(source_mode or "").strip() or None
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def bind_db_connection_source(
+        self,
+        session_id: str,
+        *,
+        connection_id: str,
+        label: str,
+        source_mode: str | None = None,
+    ) -> None:
+        self.set_source(
+            session_id,
+            source_type="db_connection",
+            source_ref_id=connection_id,
+            source_label=label,
+            source_mode=source_mode,
+        )
+
+    def bind_csv_source(
+        self,
+        session_id: str,
+        *,
+        filename: str | None,
+        source_mode: str | None = None,
+    ) -> None:
+        clean_name = str(filename or "").strip() or None
+        self.set_source(
+            session_id,
+            source_type="csv",
+            source_ref_id=clean_name,
+            source_label=clean_name,
+            source_mode=source_mode,
+        )
 
     def get_dataframe(self, session_id: str) -> pd.DataFrame | None:
         if session_id in self._df_cache:

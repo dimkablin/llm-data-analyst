@@ -20,7 +20,7 @@ from agent.pandas_agent import (
     normalize_agent_messages,
 )
 from agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
-from agent.tools import PandasTool, PlotlyTool, ValueTool
+from agent.tools import DBTool, PandasTool, PlotlyTool, ValueTool
 from backend.callbacks import (
     AgentProgressCollector,
     LLMTextCollector,
@@ -32,6 +32,7 @@ from backend.callbacks import (
     strip_thinking,
 )
 from backend.config import Settings
+from backend.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.observability import record_llm_usage_on_active_span
 
 
@@ -140,6 +141,7 @@ class AgentGraphState(TypedDict, total=False):
     include_reasoning: bool
     callbacks: list
     trace_context: dict[str, Any]
+    session_source: dict[str, Any]
     route: Literal["chat", "analysis"]
 
     plan: str
@@ -156,8 +158,13 @@ class AgentGraphState(TypedDict, total=False):
 
 
 class AgentRunner:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db_runtime_service: DBRuntimeService | None = None,
+    ) -> None:
         self.settings = settings
+        self.db_runtime_service = db_runtime_service
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
         self._graph = self._build_query_graph()
@@ -480,9 +487,17 @@ class AgentRunner:
             self._query_cache.popitem(last=False)
 
     def _route_intent(
-        self, df: pd.DataFrame | None, prompt: str
+        self,
+        df: pd.DataFrame | None,
+        prompt: str,
+        session_source: dict[str, Any] | None = None,
     ) -> Literal["chat", "analysis"]:
-        if df is None:
+        has_db_source = False
+        if isinstance(session_source, dict):
+            source_type = str(session_source.get("source_type", "")).strip().lower()
+            has_db_source = source_type == "db_connection"
+
+        if df is None and not has_db_source:
             return "chat"
 
         normalized = prompt.strip().lower()
@@ -533,7 +548,68 @@ class AgentRunner:
         if isinstance(request_kind, str) and request_kind:
             metadata["request_kind"] = request_kind
 
+        for key in ("db_connection_id", "connection_id"):
+            value = trace_context.get(key)
+            if isinstance(value, str) and value.strip():
+                metadata["db_connection_id"] = value.strip()
+                metadata["data_source"] = "db_connection"
+                break
+
         return metadata
+
+    @staticmethod
+    def _extract_db_connection_id(
+        session_source: dict[str, Any] | None,
+        trace_context: dict[str, Any] | None,
+    ) -> str | None:
+        if isinstance(session_source, dict):
+            source_type = str(session_source.get("source_type", "")).strip().lower()
+            source_ref_id = session_source.get("source_ref_id")
+            if source_type == "db_connection" and isinstance(source_ref_id, str) and source_ref_id.strip():
+                return source_ref_id.strip()
+
+        if not trace_context:
+            return None
+
+        direct_keys = ("db_connection_id", "connection_id")
+        for key in direct_keys:
+            value = trace_context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        for key in ("db_connection", "db_source", "source", "data_source"):
+            nested = trace_context.get(key)
+            if not isinstance(nested, dict):
+                continue
+            for nested_key in direct_keys:
+                value = nested.get(nested_key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    def _resolve_tool_db_runtime_config(
+        self,
+        session_source: dict[str, Any] | None,
+        trace_context: dict[str, Any] | None,
+    ) -> RuntimeDBConnectionConfig | None:
+        connection_id = self._extract_db_connection_id(session_source, trace_context)
+        if not connection_id:
+            return None
+        if self.db_runtime_service is None:
+            raise RuntimeError("DB runtime service is not configured.")
+
+        user_id_raw = (trace_context or {}).get("user_id")
+        try:
+            user_id = int(user_id_raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "trace_context.user_id is required for DB tool runtime."
+            ) from exc
+
+        return self.db_runtime_service.get_runtime_config(
+            user_id=user_id,
+            connection_id=connection_id,
+        )
 
     @staticmethod
     def _safe_dataset_fallback(df: pd.DataFrame, prompt: str) -> str | None:
@@ -1305,7 +1381,11 @@ class AgentRunner:
     def _route_node(
         self, state: AgentGraphState
     ) -> dict[str, Literal["chat", "analysis"]]:
-        route = self._route_intent(state.get("df"), state.get("prompt", ""))
+        route = self._route_intent(
+            state.get("df"),
+            state.get("prompt", ""),
+            state.get("session_source"),
+        )
         return {"route": route}
 
     @staticmethod
@@ -1342,26 +1422,43 @@ class AgentRunner:
         prompt = state.get("prompt", "")
         callbacks = state.get("callbacks", [])
         refinement_feedback = state.get("refinement_feedback", "")
+        tool_db_runtime = self._resolve_tool_db_runtime_config(
+            state.get("session_source"),
+            state.get("trace_context")
+        )
 
         tools: list = []
+        tool_df = df if df is not None else pd.DataFrame()
         if df is not None:
             tools = [
                 PlotlyTool(
-                    df,
+                    tool_df,
                     execution_timeout_sec=self.settings.tool_exec_timeout_sec,
                     tool_cache_size=self.settings.tool_cache_size,
+                    db_runtime_config=tool_db_runtime,
                 ),
                 PandasTool(
-                    df,
+                    tool_df,
                     execution_timeout_sec=self.settings.tool_exec_timeout_sec,
                     tool_cache_size=self.settings.tool_cache_size,
+                    db_runtime_config=tool_db_runtime,
                 ),
                 ValueTool(
-                    df,
+                    tool_df,
                     execution_timeout_sec=self.settings.tool_exec_timeout_sec,
                     tool_cache_size=self.settings.tool_cache_size,
+                    db_runtime_config=tool_db_runtime,
                 ),
             ]
+        if tool_db_runtime is not None:
+            tools.append(
+                DBTool(
+                    tool_df,
+                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
+                    tool_cache_size=max(8, self.settings.tool_cache_size // 2),
+                    db_runtime_config=tool_db_runtime,
+                )
+            )
 
         depth_max = int(self._depth_profile.get("max_steps", self.settings.agent_max_steps))
         max_steps = max(2, min(depth_max, self.settings.agent_max_steps))
@@ -1466,7 +1563,8 @@ class AgentRunner:
 
     def _act_node(self, state: AgentGraphState) -> dict[str, Any]:
         df = state.get("df")
-        if df is None:
+        tools = state.get("tools", [])
+        if df is None and not tools:
             return self._chat_node(state)
 
         step_index = int(state.get("step_index", 0)) + 1
@@ -1474,6 +1572,7 @@ class AgentRunner:
         refinement_feedback = state.get("refinement_feedback", "")
         callbacks = state.get("callbacks", [])
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
+        tool_df = df if df is not None else pd.DataFrame()
 
         step_prompt = self._compose_step_prompt(
             user_prompt=state.get("prompt", ""),
@@ -1504,14 +1603,14 @@ class AgentRunner:
         started_at = time.perf_counter()
         try:
             response = self._analysis_step(
-                df=df,
+                df=tool_df,
                 prompt=step_prompt,
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
                 include_reasoning=state.get("include_reasoning", False),
                 callbacks=callbacks,
                 trace_context=state.get("trace_context"),
-                tools=state.get("tools", []),
+                tools=tools,
             )
         except Exception as exc:
             artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
@@ -1874,6 +1973,7 @@ class AgentRunner:
         include_reasoning: bool,
         callbacks: list,
         trace_context: dict[str, Any] | None = None,
+        session_source: dict[str, Any] | None = None,
     ) -> AgentResponse:
         request_kind = str((trace_context or {}).get("request_kind", "")).strip().lower()
         cache_allowed = self.settings.agent_cache_enabled and request_kind != "stream"
@@ -1900,6 +2000,7 @@ class AgentRunner:
                     "include_reasoning": include_reasoning,
                     "callbacks": callbacks,
                     "trace_context": trace_context or {},
+                    "session_source": session_source or {},
                 }
             )
         except Exception:

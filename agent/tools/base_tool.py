@@ -7,12 +7,17 @@ import queue
 import re
 import traceback
 from collections import OrderedDict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+
+from backend.redaction import sanitize_error_text
+
+if TYPE_CHECKING:
+    from backend.db_runtime_service import RuntimeDBConnectionConfig
 
 
 SAFE_BUILTINS = {
@@ -81,6 +86,8 @@ def _execute_tool_code(
     df: pd.DataFrame,
     include_plotly: bool,
     allowed_libs: tuple[str, ...],
+    db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
+    extra_scope: dict[str, Any] | None = None,
 ) -> object:
     code = _normalize_tool_code(code)
     allowed = set(allowed_libs)
@@ -94,7 +101,13 @@ def _execute_tool_code(
     safe_builtins = dict(SAFE_BUILTINS)
     safe_builtins["__import__"] = _safe_import
 
-    local_scope: dict[str, Any] = {"df": df}
+    local_scope: dict[str, Any] = {
+        "df": df,
+        "db_connection": db_runtime_config,
+        "db_runtime": db_runtime_config,
+    }
+    if extra_scope:
+        local_scope.update(extra_scope)
     import pandas as _pd
     import numpy as _np
 
@@ -150,12 +163,23 @@ def _tool_worker(
     df: pd.DataFrame,
     include_plotly: bool,
     allowed_libs: tuple[str, ...],
+    db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
+    extra_scope: dict[str, Any] | None = None,
 ) -> None:
     try:
-        result = _execute_tool_code(code, df, include_plotly, allowed_libs)
+        result = _execute_tool_code(
+            code,
+            df,
+            include_plotly,
+            allowed_libs,
+            db_runtime_config,
+            extra_scope,
+        )
         result_queue.put({"ok": True, "result": result})
     except Exception:
-        result_queue.put({"ok": False, "error": traceback.format_exc()})
+        result_queue.put(
+            {"ok": False, "error": sanitize_error_text(traceback.format_exc())}
+        )
 
 
 class BaseExecTool(BaseTool):
@@ -202,6 +226,7 @@ class BaseExecTool(BaseTool):
         default_factory=OrderedDict
     )
     _dataset_signature: str = PrivateAttr(default="")
+    _db_runtime_config: "RuntimeDBConnectionConfig | None" = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -209,6 +234,7 @@ class BaseExecTool(BaseTool):
         execution_timeout_sec: float = 25.0,
         include_plotly: bool = False,
         tool_cache_size: int = 48,
+        db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
     ) -> None:
         super().__init__()
         self._df = df
@@ -216,6 +242,7 @@ class BaseExecTool(BaseTool):
         self.execution_timeout_sec = execution_timeout_sec
         self.tool_cache_size = max(0, int(tool_cache_size))
         self._dataset_signature = self._build_dataset_signature(df)
+        self._db_runtime_config = db_runtime_config
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
@@ -275,7 +302,7 @@ class BaseExecTool(BaseTool):
 
     def other_error(self, error: Exception) -> tuple[str, dict[str, object]]:
         artifact_name = getattr(self, "artifact_name", "base")
-        message = str(error) or error.__class__.__name__
+        message = sanitize_error_text(str(error) or error.__class__.__name__)
         text = f"❌ Ошибка при создании {self.human_name}: {message}"
         return text, {artifact_name: None, "text": text}
 
@@ -471,9 +498,13 @@ class BaseExecTool(BaseTool):
             return "spawn"
         return "fork"
 
+    def get_execution_scope(self) -> dict[str, Any]:
+        return {}
+
     def _execute_in_sandbox(self, code: str) -> object:
         ctx = multiprocessing.get_context(self._pick_start_method())
         result_queue = ctx.Queue(maxsize=1)
+        extra_scope = self.get_execution_scope()
         process = ctx.Process(
             target=_tool_worker,
             args=(
@@ -482,6 +513,8 @@ class BaseExecTool(BaseTool):
                 self._df,
                 self._include_plotly,
                 tuple(sorted(self.allowed_libs)),
+                self._db_runtime_config,
+                extra_scope,
             ),
             daemon=True,
         )

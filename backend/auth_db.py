@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import re
 import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import uuid
 
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
@@ -39,6 +41,25 @@ class UserSettings:
     agent_max_steps: int
     agent_step_timeout_sec: int
     agent_inner_recursion_limit: int
+
+
+@dataclass(frozen=True)
+class DBConnectionRecord:
+    id: str
+    user_id: int
+    name: str
+    db_type: str
+    host: str
+    port: int | None
+    database: str | None
+    username: str | None
+    options_json: dict[str, object] | None
+    last_test_at: str | None
+    last_test_ok: bool | None
+    last_error: str | None
+    created_at: str
+    updated_at: str
+    password_present: bool
 
 
 class AuthDB:
@@ -158,10 +179,40 @@ class AuthDB:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS user_db_connections (
+                    id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    db_type TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER,
+                    database_name TEXT,
+                    username TEXT,
+                    options_json TEXT,
+                    last_test_at TEXT,
+                    last_test_ok INTEGER,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, name)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_db_connections_user
+                    ON user_db_connections(user_id, updated_at DESC);
+
+                CREATE TABLE IF NOT EXISTS user_db_connection_secrets (
+                    connection_id TEXT PRIMARY KEY,
+                    secret_blob_encrypted TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(connection_id) REFERENCES user_db_connections(id) ON DELETE CASCADE
+                );
                 """
             )
             self._ensure_chat_sessions_columns(conn)
             self._ensure_user_settings_columns(conn)
+            self._ensure_user_db_connections_columns(conn)
 
     @staticmethod
     def _ensure_chat_sessions_columns(conn: sqlite3.Connection) -> None:
@@ -279,6 +330,18 @@ class AuthDB:
                 """
                 ALTER TABLE user_settings
                 ADD COLUMN analysis_depth TEXT NOT NULL DEFAULT 'light'
+                """
+            )
+
+    @staticmethod
+    def _ensure_user_db_connections_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(user_db_connections)").fetchall()
+        existing_columns = {str(row["name"]) for row in rows}
+        if "database_name" not in existing_columns and "database" in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_db_connections
+                RENAME COLUMN database TO database_name
                 """
             )
 
@@ -938,3 +1001,240 @@ class AuthDB:
                 else None
             ),
         }
+
+    @staticmethod
+    def _parse_options_json(raw: str | None) -> dict[str, object] | None:
+        if raw is None or str(raw).strip() == "":
+            return None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _to_db_connection_record(row: sqlite3.Row) -> DBConnectionRecord:
+        return DBConnectionRecord(
+            id=str(row["id"]),
+            user_id=int(row["user_id"]),
+            name=str(row["name"]),
+            db_type=str(row["db_type"]),
+            host=str(row["host"]),
+            port=int(row["port"]) if row["port"] is not None else None,
+            database=str(row["database_name"]) if row["database_name"] is not None else None,
+            username=str(row["username"]) if row["username"] is not None else None,
+            options_json=AuthDB._parse_options_json(
+                str(row["options_json"]) if row["options_json"] is not None else None
+            ),
+            last_test_at=str(row["last_test_at"]) if row["last_test_at"] is not None else None,
+            last_test_ok=bool(row["last_test_ok"]) if row["last_test_ok"] is not None else None,
+            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+            password_present=bool(row["password_present"]),
+        )
+
+    def list_db_connections(self, user_id: int) -> list[DBConnectionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    c.id, c.user_id, c.name, c.db_type, c.host, c.port,
+                    c.database_name, c.username, c.options_json,
+                    c.last_test_at, c.last_test_ok, c.last_error,
+                    c.created_at, c.updated_at,
+                    CASE WHEN s.connection_id IS NOT NULL THEN 1 ELSE 0 END AS password_present
+                FROM user_db_connections c
+                LEFT JOIN user_db_connection_secrets s ON s.connection_id = c.id
+                WHERE c.user_id = ?
+                ORDER BY datetime(c.updated_at) DESC, datetime(c.created_at) DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [self._to_db_connection_record(row) for row in rows]
+
+    def get_db_connection(self, user_id: int, connection_id: str) -> DBConnectionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    c.id, c.user_id, c.name, c.db_type, c.host, c.port,
+                    c.database_name, c.username, c.options_json,
+                    c.last_test_at, c.last_test_ok, c.last_error,
+                    c.created_at, c.updated_at,
+                    CASE WHEN s.connection_id IS NOT NULL THEN 1 ELSE 0 END AS password_present
+                FROM user_db_connections c
+                LEFT JOIN user_db_connection_secrets s ON s.connection_id = c.id
+                WHERE c.user_id = ? AND c.id = ?
+                """,
+                (user_id, connection_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_db_connection_record(row)
+
+    def create_db_connection(
+        self,
+        user_id: int,
+        *,
+        name: str,
+        db_type: str,
+        host: str,
+        port: int | None,
+        database: str | None,
+        username: str | None,
+        options_json: dict[str, object] | None,
+    ) -> DBConnectionRecord:
+        connection_id = uuid.uuid4().hex
+        now_iso = self._now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_db_connections(
+                    id, user_id, name, db_type, host, port, database_name, username,
+                    options_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    connection_id,
+                    user_id,
+                    name,
+                    db_type,
+                    host,
+                    port,
+                    database,
+                    username,
+                    json.dumps(options_json, ensure_ascii=False) if options_json is not None else None,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+        created = self.get_db_connection(user_id, connection_id)
+        if created is None:
+            raise RuntimeError("Failed to read created DB connection.")
+        return created
+
+    def update_db_connection(
+        self,
+        user_id: int,
+        connection_id: str,
+        *,
+        name: str | None,
+        db_type: str | None,
+        host: str | None,
+        port: int | None,
+        database: str | None,
+        username: str | None,
+        options_json: dict[str, object] | None,
+        options_json_set: bool,
+    ) -> DBConnectionRecord | None:
+        current = self.get_db_connection(user_id, connection_id)
+        if current is None:
+            return None
+
+        next_name = name if name is not None else current.name
+        next_type = db_type if db_type is not None else current.db_type
+        next_host = host if host is not None else current.host
+        next_port = port if port is not None else current.port
+        next_database = database if database is not None else current.database
+        next_username = username if username is not None else current.username
+        next_options = options_json if options_json_set else current.options_json
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE user_db_connections
+                SET name = ?, db_type = ?, host = ?, port = ?, database_name = ?,
+                    username = ?, options_json = ?, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    next_name,
+                    next_type,
+                    next_host,
+                    next_port,
+                    next_database,
+                    next_username,
+                    json.dumps(next_options, ensure_ascii=False) if next_options is not None else None,
+                    self._now_iso(),
+                    user_id,
+                    connection_id,
+                ),
+            )
+        return self.get_db_connection(user_id, connection_id)
+
+    def delete_db_connection(self, user_id: int, connection_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM user_db_connections WHERE user_id = ? AND id = ?",
+                (user_id, connection_id),
+            )
+            return cursor.rowcount > 0
+
+    def set_db_connection_secret(
+        self, connection_id: str, secret_blob_encrypted: str
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_db_connection_secrets(connection_id, secret_blob_encrypted, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(connection_id) DO UPDATE SET
+                    secret_blob_encrypted = excluded.secret_blob_encrypted,
+                    updated_at = excluded.updated_at
+                """,
+                (connection_id, secret_blob_encrypted, self._now_iso()),
+            )
+
+    def clear_db_connection_secret(self, connection_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM user_db_connection_secrets WHERE connection_id = ?",
+                (connection_id,),
+            )
+
+    def get_db_connection_secret_blob(
+        self, user_id: int, connection_id: str
+    ) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT s.secret_blob_encrypted
+                FROM user_db_connection_secrets s
+                JOIN user_db_connections c ON c.id = s.connection_id
+                WHERE c.user_id = ? AND c.id = ?
+                """,
+                (user_id, connection_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["secret_blob_encrypted"])
+
+    def update_db_connection_test_status(
+        self,
+        user_id: int,
+        connection_id: str,
+        *,
+        ok: bool,
+        error: str | None,
+        tested_at: str | None = None,
+    ) -> DBConnectionRecord | None:
+        checked_at = tested_at or self._now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE user_db_connections
+                SET last_test_at = ?, last_test_ok = ?, last_error = ?, updated_at = ?
+                WHERE user_id = ? AND id = ?
+                """,
+                (
+                    checked_at,
+                    1 if ok else 0,
+                    error,
+                    checked_at,
+                    user_id,
+                    connection_id,
+                ),
+            )
+        return self.get_db_connection(user_id, connection_id)

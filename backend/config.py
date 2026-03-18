@@ -140,6 +140,21 @@ class Settings:
     auth_default_admin_password: str = os.getenv(
         "AUTH_DEFAULT_ADMIN_PASSWORD", "admin"
     )
+    db_connections_encryption_key: str = os.getenv(
+        "DB_CONNECTIONS_ENCRYPTION_KEY", ""
+    ).strip()
+    db_connections_encryption_key_current: str = os.getenv(
+        "DB_CONNECTIONS_ENCRYPTION_KEY_CURRENT", ""
+    ).strip()
+    db_connections_encryption_keys_old: str = os.getenv(
+        "DB_CONNECTIONS_ENCRYPTION_KEYS_OLD", ""
+    ).strip()
+    db_connections_allow_private_hosts: bool = _get_bool(
+        "DB_CONNECTIONS_ALLOW_PRIVATE_HOSTS", False
+    )
+    db_connections_test_timeout_sec: int = int(
+        os.getenv("DB_CONNECTIONS_TEST_TIMEOUT_SEC", "8")
+    )
 
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)

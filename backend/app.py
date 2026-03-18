@@ -27,6 +27,8 @@ from backend.callbacks import (
     ToolCollector,
 )
 from backend.config import settings
+from backend.db_connections_service import DBConnectionsService
+from backend.db_runtime_service import DBRuntimeService
 from backend.models import (
     AdminCreateUserRequest,
     AdminUpdateUserRequest,
@@ -36,11 +38,19 @@ from backend.models import (
     AuthResponse,
     AuthUserResponse,
     CreateSessionResponse,
+    DBConnectionCreateRequest,
+    DBConnectionResponse,
+    DBConnectionSchemaResponse,
+    DBConnectionTableResponse,
+    DBConnectionTestResponse,
+    DBConnectionUpdateRequest,
     MessageResponse,
     PhoenixOverviewResponse,
     QueryMetrics,
     QueryRequest,
     QueryResponse,
+    SessionBindDBConnectionSourceRequest,
+    SessionSourceStateResponse,
     SessionTitleUpdateRequest,
     SessionStateResponse,
     SessionSummaryResponse,
@@ -82,7 +92,9 @@ auth_db.ensure_default_admin(
     settings.auth_default_admin_username,
     settings.auth_default_admin_password,
 )
-runner = AgentRunner(settings)
+db_connections_service = DBConnectionsService(auth_db, settings)
+db_runtime_service = DBRuntimeService(db_connections_service)
+runner = AgentRunner(settings, db_runtime_service=db_runtime_service)
 phoenix_observability_service = PhoenixObservabilityService(settings)
 initialize_phoenix()
 
@@ -100,6 +112,53 @@ def _to_user_response(user: AuthUser) -> AuthUserResponse:
         is_admin=user.is_admin,
         created_at=user.created_at,
     )
+
+
+def _to_db_connection_response(connection) -> DBConnectionResponse:
+    return DBConnectionResponse(
+        id=connection.id,
+        name=connection.name,
+        db_type=connection.db_type,
+        host=connection.host,
+        port=connection.port,
+        database=connection.database,
+        username=connection.username,
+        options_json=connection.options_json,
+        password_present=connection.password_present,
+        last_test_at=connection.last_test_at,
+        last_test_ok=connection.last_test_ok,
+        last_error=connection.last_error,
+        created_at=connection.created_at,
+        updated_at=connection.updated_at,
+    )
+
+
+def _build_internal_db_tool_context(user_id: int, connection_id: str) -> dict[str, Any]:
+    """Internal example contract for future DB-aware tools/runtime consumers."""
+    return db_runtime_service.build_demo_tool_contract(
+        user_id=user_id,
+        connection_id=connection_id,
+    )
+
+
+def _session_source_payload(state: SessionState) -> dict[str, Any]:
+    return {
+        "source_type": state.source_type,
+        "source_ref_id": state.source_ref_id,
+        "source_label": state.source_label,
+        "source_mode": state.source_mode,
+    }
+
+
+def _to_session_source_response(state: SessionState) -> SessionSourceStateResponse:
+    return SessionSourceStateResponse(**_session_source_payload(state))
+
+
+def _session_db_connection_id(state: SessionState) -> str | None:
+    if str(state.source_type or "").strip().lower() != "db_connection":
+        return None
+    ref_id = str(state.source_ref_id or "").strip()
+    return ref_id or None
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -309,6 +368,144 @@ def auth_update_settings(
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
     )
+
+
+@app.get("/db-connections", response_model=list[DBConnectionResponse])
+def list_db_connections(
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[DBConnectionResponse]:
+    rows = db_connections_service.list_connections(current_user.id)
+    return [_to_db_connection_response(row) for row in rows]
+
+
+@app.post("/db-connections", response_model=DBConnectionResponse, status_code=201)
+def create_db_connection(
+    payload: DBConnectionCreateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> DBConnectionResponse:
+    created = db_connections_service.create_connection(
+        current_user.id,
+        name=payload.name,
+        db_type=payload.db_type,
+        host=payload.host,
+        port=payload.port,
+        database=payload.database,
+        username=payload.username,
+        password=payload.password,
+        options_json=payload.options_json,
+    )
+    return _to_db_connection_response(created)
+
+
+@app.get("/db-connections/{connection_id}", response_model=DBConnectionResponse)
+def get_db_connection(
+    connection_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> DBConnectionResponse:
+    row = db_connections_service.get_connection(current_user.id, connection_id)
+    return _to_db_connection_response(row)
+
+
+@app.patch("/db-connections/{connection_id}", response_model=DBConnectionResponse)
+def update_db_connection(
+    connection_id: str,
+    payload: DBConnectionUpdateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> DBConnectionResponse:
+    updated = db_connections_service.update_connection(
+        current_user.id,
+        connection_id,
+        name=payload.name,
+        db_type=payload.db_type,
+        host=payload.host,
+        port=payload.port,
+        database=payload.database,
+        username=payload.username,
+        password=payload.password,
+        clear_password=payload.clear_password,
+        options_json=payload.options_json,
+        options_json_set="options_json" in payload.model_fields_set,
+    )
+    return _to_db_connection_response(updated)
+
+
+@app.delete("/db-connections/{connection_id}", response_model=MessageResponse)
+def delete_db_connection(
+    connection_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> MessageResponse:
+    db_connections_service.delete_connection(current_user.id, connection_id)
+    return MessageResponse(message="DB connection deleted")
+
+
+@app.post("/db-connections/{connection_id}/test", response_model=DBConnectionTestResponse)
+def test_db_connection(
+    connection_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> DBConnectionTestResponse:
+    tested = db_connections_service.test_connection(current_user.id, connection_id)
+    if tested.last_test_at is None or tested.last_test_ok is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Connection test state was not persisted.",
+        )
+    return DBConnectionTestResponse(
+        ok=tested.last_test_ok,
+        checked_at=tested.last_test_at,
+        last_test_at=tested.last_test_at,
+        last_test_ok=tested.last_test_ok,
+        error=tested.last_error,
+    )
+
+
+@app.get("/db-connections/{connection_id}/schemas", response_model=list[DBConnectionSchemaResponse])
+def list_db_connection_schemas(
+    connection_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[DBConnectionSchemaResponse]:
+    try:
+        items = db_runtime_service.list_schemas(
+            user_id=current_user.id,
+            connection_id=connection_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [
+        DBConnectionSchemaResponse(
+            name=item.name,
+            display_name=item.display_name,
+        )
+        for item in items
+    ]
+
+
+@app.get("/db-connections/{connection_id}/tables", response_model=list[DBConnectionTableResponse])
+def list_db_connection_tables(
+    connection_id: str,
+    schema: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[DBConnectionTableResponse]:
+    try:
+        items = db_runtime_service.list_tables(
+            user_id=current_user.id,
+            connection_id=connection_id,
+            schema=schema,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [
+        DBConnectionTableResponse(
+            schema=item.schema,
+            name=item.name,
+            table_type=item.table_type,
+            qualified_name=item.qualified_name,
+        )
+        for item in items
+    ]
 
 
 @app.get("/admin/users", response_model=list[AuthUserResponse])
@@ -522,7 +719,75 @@ def get_session(
         chat_history=state.chat_history,
         artifacts=state.artifacts,
         has_dataset=bool(state.df_path),
+        dataset_name=state.dataset_name,
+        source_type=state.source_type,
+        source_ref_id=state.source_ref_id,
+        source_label=state.source_label,
+        source_mode=state.source_mode,
     )
+
+
+@app.post(
+    "/sessions/{session_id}/source/db-connection",
+    response_model=SessionSourceStateResponse,
+)
+def bind_session_db_connection_source(
+    session_id: str,
+    payload: SessionBindDBConnectionSourceRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> SessionSourceStateResponse:
+    state = _load_owned_session(session_id, current_user)
+    connection = db_connections_service.get_connection(
+        current_user.id,
+        payload.connection_id,
+    )
+    store.bind_db_connection_source(
+        session_id,
+        connection_id=connection.id,
+        label=connection.name,
+        source_mode=payload.source_mode,
+    )
+    refreshed = _load_owned_session(session_id, current_user)
+    return _to_session_source_response(refreshed)
+
+
+@app.post(
+    "/sessions/{session_id}/source/clear",
+    response_model=SessionSourceStateResponse,
+)
+def clear_session_source(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> SessionSourceStateResponse:
+    _load_owned_session(session_id, current_user)
+    store.set_source(
+        session_id,
+        source_type=None,
+        source_ref_id=None,
+        source_label=None,
+        source_mode=None,
+    )
+    refreshed = _load_owned_session(session_id, current_user)
+    return _to_session_source_response(refreshed)
+
+
+@app.post(
+    "/sessions/{session_id}/source/csv",
+    response_model=SessionSourceStateResponse,
+)
+def bind_session_csv_source(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> SessionSourceStateResponse:
+    state = _load_owned_session(session_id, current_user)
+    if not state.df_path or not state.dataset_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No CSV dataset is attached to this session",
+        )
+    store.bind_csv_source(session_id, filename=state.dataset_name)
+    refreshed = _load_owned_session(session_id, current_user)
+    return _to_session_source_response(refreshed)
 
 
 @app.post("/sessions/{session_id}/data", response_model=UploadResponse)
@@ -545,6 +810,7 @@ async def upload_data(
 
     store.save_dataframe(session_id, df)
     store.set_dataset_name(session_id, file.filename)
+    store.bind_csv_source(session_id, filename=file.filename)
     auth_db.mark_session_has_dataset(session_id, True)
     return UploadResponse(session_id=session_id, rows=len(df), columns=len(df.columns))
 
@@ -815,6 +1081,9 @@ async def _execute_query(
 ) -> QueryResponse:
     state = _load_owned_session(session_id, current_user)
     df = store.get_dataframe(session_id)
+    session_source = _session_source_payload(state)
+    session_db_connection_id = _session_db_connection_id(state)
+    has_active_source = df is not None or session_db_connection_id is not None
 
     text_collector = LLMTextCollector()
     tool_collector = ToolCollector()
@@ -829,11 +1098,15 @@ async def _execute_query(
         request_kind="query" if persist else "evaluate",
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
+        db_connection_id=session_db_connection_id,
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
-    runtime_runner = AgentRunner(runtime_settings)
+    runtime_runner = AgentRunner(
+        runtime_settings,
+        db_runtime_service=db_runtime_service,
+    )
 
     try:
         with query_trace_context(
@@ -844,6 +1117,7 @@ async def _execute_query(
             use_history=payload.use_history,
             include_reasoning=payload.include_reasoning,
             query=payload.query,
+            db_connection_id=session_db_connection_id,
         ):
             with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                 response = await anyio.to_thread.run_sync(
@@ -855,6 +1129,7 @@ async def _execute_query(
                     payload.include_reasoning,
                     active_callbacks,
                     trace_context,
+                    session_source,
                 )
     except TimeoutError:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -900,7 +1175,7 @@ async def _execute_query(
         tool_collector=tool_collector,
         use_history=payload.use_history,
         duration_ms=duration_ms,
-        has_dataset=df is not None,
+        has_dataset=has_active_source,
     )
     if persist:
         store.add_chat_message(session_id, "user", payload.query)
@@ -964,6 +1239,9 @@ async def query_stream(
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
     df = store.get_dataframe(session_id)
+    session_source = _session_source_payload(state)
+    session_db_connection_id = _session_db_connection_id(state)
+    has_active_source = df is not None or session_db_connection_id is not None
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -985,11 +1263,15 @@ async def query_stream(
         request_kind="stream",
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
+        db_connection_id=session_db_connection_id,
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
-    runtime_runner = AgentRunner(runtime_settings)
+    runtime_runner = AgentRunner(
+        runtime_settings,
+        db_runtime_service=db_runtime_service,
+    )
 
     async def run_agent() -> None:
         try:
@@ -1001,6 +1283,7 @@ async def query_stream(
                 use_history=payload.use_history,
                 include_reasoning=payload.include_reasoning,
                 query=payload.query,
+                db_connection_id=session_db_connection_id,
             ):
                 with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                     response = await anyio.to_thread.run_sync(
@@ -1012,6 +1295,7 @@ async def query_stream(
                         payload.include_reasoning,
                         callbacks,
                         trace_context,
+                        session_source,
                     )
 
             artifacts = [serialize_artifact(a) for a in response.artifacts]
@@ -1023,7 +1307,7 @@ async def query_stream(
                 tool_collector=tool_collector,
                 use_history=payload.use_history,
                 duration_ms=duration_ms,
-                has_dataset=df is not None,
+                has_dataset=has_active_source,
             )
             store.add_chat_message(session_id, "user", payload.query)
             store.add_chat_message(
@@ -1138,6 +1422,7 @@ async def query_stream(
             )
         agent_task = asyncio.create_task(run_agent())
         reasoning_task = asyncio.create_task(emit_live_reasoning())
+        deferred_final: list[tuple[str, Any]] = []
         while True:
             event, data = await queue.get()
             if event == "done":
@@ -1146,8 +1431,16 @@ async def query_stream(
                     extra_event, extra_data = await queue.get()
                     if extra_event == "done":
                         continue
+                    if extra_event == "final":
+                        deferred_final.append((extra_event, extra_data))
+                        continue
                     yield _sse_event(extra_event, extra_data)
+                for final_event, final_data in deferred_final:
+                    yield _sse_event(final_event, final_data)
                 break
+            if event == "final":
+                deferred_final.append((event, data))
+                continue
             yield _sse_event(event, data)
         await agent_task
         await reasoning_task

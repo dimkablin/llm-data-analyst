@@ -2,6 +2,7 @@ import pandas as pd
 
 from agent.prompts import pandas_tool_prompt
 from agent.tools.base_tool import BaseExecTool
+from backend.db_runtime_service import RuntimeDBConnectionConfig
 
 
 class PandasTool(BaseExecTool):
@@ -30,12 +31,14 @@ class PandasTool(BaseExecTool):
         df: pd.DataFrame,
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
+        db_runtime_config: RuntimeDBConnectionConfig | None = None,
     ) -> None:
         super().__init__(
             df,
             execution_timeout_sec=execution_timeout_sec,
             include_plotly=False,
             tool_cache_size=tool_cache_size,
+            db_runtime_config=db_runtime_config,
         )
 
     @staticmethod

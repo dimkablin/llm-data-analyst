@@ -20,6 +20,8 @@ agent_prompt = """
 - Таблицы и выборки -> `pandas_tool`
 - Графики/визуализации -> `plotly_tool`
 - Скалярные метрики (число/строка/булево) -> `value_tool`
+- Прямые проверки и SQL-выборки по привязанной БД -> `db_tool` (через helper `db`, без ручного подключения драйверов)
+  Для простого demo-preview строк из БД сначала пробуй `db.demo_preview_result(limit=5)`.
 
 Критичные ограничения:
 - Не выдумывай значения. Все факты о данных должны происходить из вызовов tools.
@@ -191,3 +193,67 @@ def get_detailed_data_info(df: pd.DataFrame, max_columns: int = 30) -> str:
         lines.extend(base)
 
     return "\n".join(lines)
+
+
+db_tool_prompt = """Инструмент для прямого чтения данных из уже привязанной к сессии базы данных.
+Главный demo-сценарий: показать первые 5 строк таблицы.
+Вход: Python-код с доступными helper-объектами `db` и `db_connection`.
+
+Что использовать по умолчанию:
+- `db.demo_preview_result(limit=5)` -> самый простой и предпочтительный demo-вариант, сразу возвращает корректный `tool_result`
+- `db.list_schemas()` -> список схем / databases
+- `db.list_tables(schema)` -> список таблиц в схеме
+- `db.pick_demo_table()` -> выбрать первую доступную таблицу
+- `db.preview_first_table(limit=5)` -> показать первые строки первой доступной таблицы
+- `db.preview_table(table, schema="...", limit=5)` -> показать первые строки конкретной таблицы
+- `db.query_dataframe("SELECT ...")` -> выполнить read-only SELECT/WITH и вернуть DataFrame
+
+Что такое `db_connection`:
+- это runtime config view, а не открытое соединение;
+- можно использовать `db_connection.db_type`, `db_connection.build_dsn()` и `db_connection.to_driver_kwargs()`;
+- нельзя вызывать `cursor()`, `connect()` и вручную импортировать драйверы в demo-коде.
+
+Обязательные правила:
+- для demo-сценариев используй helper `db`, а не ручной код с драйверами;
+- если пользователь просит просто показать данные из БД, первый выбор — `tool_result = db.demo_preview_result(limit=5)`;
+- если пользователь не указал конкретную таблицу, начни с `db.preview_first_table(limit=5)` или `db.pick_demo_table()`;
+- если пользователь просит показать данные / строки / sample / preview, нельзя останавливаться на списке таблиц: нужно вернуть именно строки таблицы;
+- `db.list_schemas()` и `db.list_tables(...)` используй только когда пользователь явно спрашивает про структуру БД или просит выбрать таблицу осознанно;
+- разрешены только read-only SELECT / WITH запросы;
+- не возвращай пароль, DSN или сырой config в `tool_result`;
+- возвращай только табличный артефакт:
+  {
+    "schema_version": "1.0",
+    "artifact_type": "table",
+    "items": { "artifact_name": <pd.DataFrame | pd.Series> }
+  }
+- последняя строка кода должна быть `tool_result`
+
+Рекомендуемый паттерн для generic preview:
+```python
+tool_result = db.demo_preview_result(limit=5)
+tool_result
+```
+
+Если нужно назвать таблицу явно:
+```python
+selected = db.pick_demo_table()
+tool_result = db.preview_table_result(
+    selected["table"],
+    schema=selected["schema"],
+    limit=5,
+)
+tool_result
+```
+
+Если пользователь просит конкретную выборку:
+```python
+rows = db.query_dataframe("SELECT * FROM public.orders LIMIT 5")
+tool_result = {
+    "schema_version": "1.0",
+    "artifact_type": "table",
+    "items": {"orders_preview": rows}
+}
+tool_result
+```
+"""

@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 
 from agent.prompts import plotly_tool_prompt
 from agent.tools.base_tool import BaseExecTool
+from backend.db_runtime_service import RuntimeDBConnectionConfig
 
 
 class PlotlyTool(BaseExecTool):
@@ -32,6 +33,7 @@ class PlotlyTool(BaseExecTool):
         df: pd.DataFrame,
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
+        db_runtime_config: RuntimeDBConnectionConfig | None = None,
     ) -> None:
         """
         Инициализация инструмента с DataFrame и Plotly.
@@ -45,4 +47,5 @@ class PlotlyTool(BaseExecTool):
             execution_timeout_sec=execution_timeout_sec,
             include_plotly=True,
             tool_cache_size=tool_cache_size,
+            db_runtime_config=db_runtime_config,
         )

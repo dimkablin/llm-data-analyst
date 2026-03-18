@@ -27,6 +27,8 @@ python-multipart = "^0.0.20"
 tqdm = "^4.67.1"
 arize-phoenix-otel = ">=0.8,<1.0"
 openinference-instrumentation-langchain = ">=0.1,<1.0"
+cryptography = "^46.0.3"
+psycopg = {version = "^3.2.12", extras = ["binary"]}
 
 
 [tool.poetry.group.dev.dependencies]
