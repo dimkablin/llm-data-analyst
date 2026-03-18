@@ -2,7 +2,10 @@ FROM python:3.11 AS runtime
 
 WORKDIR /app
 
+RUN mkdir -p /opt/certs
+
 COPY backend/requirements.runtime.txt /tmp/requirements.runtime.txt
+COPY certs/ca/ /opt/certs/
 
 # Install backend runtime dependencies in a separate cacheable layer.
 # This avoids reinstalling dependencies on every source code change.
@@ -16,13 +19,17 @@ RUN set -eux; \
     done; \
     rm -f /tmp/requirements.runtime.txt || true
 
+ENV SSL_CERT_FILE=/opt/certs/inno_pki_chain.pem
+ENV REQUESTS_CA_BUNDLE=/opt/certs/inno_pki_chain.pem
+ENV CURL_CA_BUNDLE=/opt/certs/inno_pki_chain.pem
+
 RUN adduser --disabled-password --gecos "" --no-create-home appuser
 RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_storage
 
 COPY agent ./agent
 COPY backend ./backend
 
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app /opt/certs
 USER appuser
 
 EXPOSE 8000

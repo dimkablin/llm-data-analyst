@@ -10,6 +10,13 @@ export default defineConfig(({ mode }) => {
     ...projectEnv,
     ...localEnv,
   };
+  const rawBasePath =
+    env.VITE_BASE_PATH ||
+    env.APP_BASE_PATH ||
+    process.env.VITE_BASE_PATH ||
+    process.env.APP_BASE_PATH ||
+    "/";
+  const normalizedBasePath = rawBasePath.endsWith("/") ? rawBasePath : `${rawBasePath}/`;
   const backendPort = env.BACKEND_PORT || "8605";
   const backendUrl = env.VITE_API_BASE || `http://localhost:${backendPort}`;
   const phoenixHost = env.PHOENIX_HOST || "localhost";
@@ -60,6 +67,7 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
     ],
+    base: normalizedBasePath,
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),

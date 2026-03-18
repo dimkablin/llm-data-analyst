@@ -16,41 +16,48 @@ function RedirectToWorkspace() {
   return createElement(Navigate, { to: "/workspace", replace: true });
 }
 
-export const router = createBrowserRouter([
+const routerBasename = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
+
+export const router = createBrowserRouter(
+  [
+    {
+      path: "/",
+      Component: Platform,
+    },
+    {
+      path: "/auth",
+      Component: Auth,
+    },
+    {
+      path: "/user",
+      Component: RedirectToAuth,
+    },
+    {
+      path: "/account",
+      Component: Account,
+    },
+    {
+      path: "/workspace",
+      Component: Workspace,
+    },
+    {
+      path: "/app",
+      Component: RedirectToWorkspace,
+    },
+    {
+      path: "/technical",
+      Component: Technical,
+    },
+    {
+      path: "/phoenix",
+      Component: Phoenix,
+    },
+    {
+      path: "/sessions",
+      Component: Sessions,
+    },
+  ],
   {
-    path: "/",
-    Component: Platform,
+    basename: routerBasename,
   },
-  {
-    path: "/auth",
-    Component: Auth,
-  },
-  {
-    path: "/user",
-    Component: RedirectToAuth,
-  },
-  {
-    path: "/account",
-    Component: Account,
-  },
-  {
-    path: "/workspace",
-    Component: Workspace,
-  },
-  {
-    path: "/app",
-    Component: RedirectToWorkspace,
-  },
-  {
-    path: "/technical",
-    Component: Technical,
-  },
-  {
-    path: "/phoenix",
-    Component: Phoenix,
-  },
-  {
-    path: "/sessions",
-    Component: Sessions,
-  },
-]);
+);

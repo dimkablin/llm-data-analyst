@@ -151,7 +151,7 @@ export function Phoenix() {
   const filteredTraces = (overview?.traces ?? []).filter((trace) => traceMatches(trace, search));
   const tokenTelemetryAvailable = (overview?.token_usage ?? []).some(tokenRowHasTelemetry);
   const tokenUsageByDay = buildTokenUsageByDay(overview?.token_usage ?? []);
-  const phoenixUiUrl = "/phoenix/";
+  const phoenixUiUrl = `${import.meta.env.BASE_URL}phoenix/`;
 
   return (
     <div className="min-h-screen bg-background text-foreground">
