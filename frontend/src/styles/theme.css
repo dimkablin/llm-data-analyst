@@ -1,0 +1,444 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: light;
+  --font-size: 16px;
+  --background: #ffffff;
+  --foreground: oklch(0.145 0 0);
+  --card: #ffffff;
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #030213;
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.95 0.0058 264.53);
+  --secondary-foreground: #030213;
+  --muted: #ececf0;
+  --muted-foreground: #717182;
+  --accent: #e9ebef;
+  --accent-foreground: #030213;
+  --destructive: #d4183d;
+  --destructive-foreground: #ffffff;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: transparent;
+  --input-background: #f3f3f5;
+  --switch-background: #cbced4;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: #030213;
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+  --phoenix-embed-bg: #fafafb;
+  --phoenix-embed-stripe: rgba(148, 163, 184, 0.07);
+}
+
+html:not(.dark)[data-accent="default"] {
+  --primary: #030213;
+  --primary-foreground: #ffffff;
+  --ring: #717182;
+  --sidebar-primary: #030213;
+  --chart-1: #030213;
+}
+
+html.dark[data-accent="default"] {
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --ring: #3b82f6;
+  --sidebar-primary: #3b82f6;
+  --chart-1: #3b82f6;
+}
+
+html[data-accent="blue"] {
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --ring: #3b82f6;
+  --sidebar-primary: #3b82f6;
+  --chart-1: #3b82f6;
+}
+
+html[data-accent="green"] {
+  --primary: #22c55e;
+  --primary-foreground: #06240f;
+  --ring: #22c55e;
+  --sidebar-primary: #22c55e;
+  --chart-1: #22c55e;
+}
+
+html[data-accent="yellow"] {
+  --primary: #eab308;
+  --primary-foreground: #1f1600;
+  --ring: #eab308;
+  --sidebar-primary: #eab308;
+  --chart-1: #eab308;
+}
+
+html[data-accent="pink"] {
+  --primary: #ec4899;
+  --primary-foreground: #ffffff;
+  --ring: #ec4899;
+  --sidebar-primary: #ec4899;
+  --chart-1: #ec4899;
+}
+
+html[data-accent="orange"] {
+  --primary: #f97316;
+  --primary-foreground: #ffffff;
+  --ring: #f97316;
+  --sidebar-primary: #f97316;
+  --chart-1: #f97316;
+}
+
+html[data-accent="violet"] {
+  --primary: #8b5cf6;
+  --primary-foreground: #ffffff;
+  --ring: #8b5cf6;
+  --sidebar-primary: #8b5cf6;
+  --chart-1: #8b5cf6;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0d0d10;
+  --foreground: #f4f4f5;
+  --card: #18181b;
+  --card-foreground: #f4f4f5;
+  --popover: #18181b;
+  --popover-foreground: #f4f4f5;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #27272a;
+  --secondary-foreground: #f4f4f5;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --accent: #27272a;
+  --accent-foreground: #f4f4f5;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.05);
+  --input-background: #1c1c1e;
+  --switch-background: #3a3a3c;
+  --ring: #3b82f6;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: #3b82f6;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #8b5cf6;
+  --chart-5: #ec4899;
+  --sidebar: #09090b;
+  --sidebar-foreground: #f4f4f5;
+  --sidebar-primary: #3b82f6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #18181b;
+  --sidebar-accent-foreground: #f4f4f5;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #3b82f6;
+  --phoenix-embed-bg: #121216;
+  --phoenix-embed-stripe: rgba(255, 255, 255, 0.035);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    transition:
+      background-color 220ms ease,
+      color 220ms ease,
+      border-color 220ms ease;
+  }
+
+  /**
+  * Default typography styles for HTML elements (h1-h4, p, label, button, input).
+  * These are in @layer base, so Tailwind utility classes (like text-sm, text-lg) automatically override them.
+  */
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+
+  /* Unified popup styling across Radix popups/menus/selects */
+  [data-slot="dropdown-menu-content"],
+  [data-slot="select-content"],
+  [data-slot="popover-content"] {
+    border-radius: calc(var(--radius) + 6px);
+    border-color: color-mix(in oklab, var(--border) 92%, transparent);
+    background: color-mix(in oklab, var(--popover) 94%, transparent);
+    backdrop-filter: blur(14px);
+    box-shadow:
+      0 14px 34px rgba(2, 6, 23, 0.12),
+      0 2px 8px rgba(2, 6, 23, 0.08);
+  }
+
+  .dark [data-slot="dropdown-menu-content"],
+  .dark [data-slot="select-content"],
+  .dark [data-slot="popover-content"] {
+    box-shadow:
+      0 18px 44px rgba(0, 0, 0, 0.45),
+      0 4px 12px rgba(0, 0, 0, 0.24);
+  }
+
+  /* Native select fallback styling (where custom Select is not used yet) */
+  select {
+    color: var(--foreground);
+    background-color: color-mix(in oklab, var(--input-background) 92%, transparent);
+    border-color: color-mix(in oklab, var(--border) 96%, transparent);
+  }
+
+  select option,
+  select optgroup {
+    color: var(--foreground);
+    background-color: var(--popover);
+  }
+
+  .markdown-body {
+    color: inherit;
+  }
+
+  .markdown-body > :first-child {
+    margin-top: 0;
+  }
+
+  .markdown-body > :last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown-body p,
+  .markdown-body ul,
+  .markdown-body ol,
+  .markdown-body blockquote,
+  .markdown-body pre,
+  .markdown-body table {
+    margin: 0.55rem 0;
+  }
+
+  .markdown-body ul,
+  .markdown-body ol {
+    padding-left: 1.35rem;
+  }
+
+  .markdown-body ul {
+    list-style: disc;
+  }
+
+  .markdown-body ol {
+    list-style: decimal;
+  }
+
+  .markdown-body li {
+    margin: 0.2rem 0;
+  }
+
+  .markdown-body a {
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+
+  .markdown-body strong {
+    font-weight: 700;
+  }
+
+  .markdown-body em {
+    font-style: italic;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4 {
+    margin: 0.8rem 0 0.35rem;
+    line-height: 1.25;
+    font-weight: 700;
+  }
+
+  .markdown-body h1 {
+    font-size: 1.45rem;
+  }
+
+  .markdown-body h2 {
+    font-size: 1.25rem;
+  }
+
+  .markdown-body h3 {
+    font-size: 1.1rem;
+  }
+
+  .markdown-body code {
+    border: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+    background: color-mix(in oklab, var(--secondary) 75%, transparent);
+    padding: 0.12rem 0.4rem;
+    border-radius: 0.55rem;
+    font-size: 0.92em;
+  }
+
+  .markdown-body pre {
+    overflow-x: auto;
+    border: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+    background: color-mix(in oklab, var(--secondary) 60%, transparent);
+    padding: 0.9rem 1rem;
+    border-radius: 1rem;
+  }
+
+  .markdown-body pre code {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+  }
+
+  .markdown-body blockquote {
+    border-left: 3px solid color-mix(in oklab, var(--primary) 55%, transparent);
+    padding-left: 0.9rem;
+    color: var(--muted-foreground);
+  }
+
+  .markdown-body hr {
+    border: 0;
+    border-top: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+    margin: 0.9rem 0;
+  }
+
+  .markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: hidden;
+    border-radius: 0.9rem;
+    border: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
+  }
+
+  .markdown-body th,
+  .markdown-body td {
+    border-bottom: 1px solid color-mix(in oklab, var(--border) 82%, transparent);
+    padding: 0.65rem 0.8rem;
+    text-align: left;
+  }
+
+  .markdown-body th {
+    background: color-mix(in oklab, var(--secondary) 68%, transparent);
+    font-weight: 700;
+  }
+
+  .markdown-invert a,
+  .markdown-invert blockquote {
+    color: inherit;
+  }
+
+  .markdown-invert code {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.12);
+  }
+
+  .markdown-invert pre {
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .markdown-invert hr,
+  .markdown-invert th,
+  .markdown-invert td {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+
+  .markdown-invert th {
+    background: rgba(255, 255, 255, 0.1);
+  }
+}

@@ -1,15 +1,15 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import "react-grid-layout/css/styles.css";
-import "react-resizable/css/styles.css";
 
-import App from "./App";
-import "./styles.css";
+import { createRoot } from "react-dom/client";
+import App from "./app/App.tsx";
+import { ThemeProvider } from "./app/components/ThemeProvider.tsx";
+import { AppSessionProvider } from "./app/context/AppSessionContext.tsx";
+import "./styles/index.css";
 
-document.documentElement.setAttribute("data-theme", "dark");
-
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
+createRoot(document.getElementById("root")!).render(
+  <ThemeProvider>
+    <AppSessionProvider>
+      <App />
+    </AppSessionProvider>
+  </ThemeProvider>,
 );
+  
