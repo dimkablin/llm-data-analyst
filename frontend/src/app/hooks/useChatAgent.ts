@@ -46,12 +46,16 @@ type UseChatAgentResult = {
   messages: ChatMessage[];
   artifacts: ArtifactPayload[];
   isStreaming: boolean;
+  streamingSessionId: string | null;
   streamDraft: string;
   streamReasoning: string;
   streamPhases: PhaseEvent[];
   error: string | null;
   lastQuery: string | null;
-  hydrate: (session: SessionState) => void;
+  hydrate: (
+    session: SessionState,
+    options?: { preserveStreamingForSessionId?: string | null },
+  ) => void;
   sendQuery: (query: string) => Promise<void>;
   retryLast: () => Promise<void>;
   stopStreaming: () => void;
@@ -69,6 +73,7 @@ export function useChatAgent({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactPayload[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
   const [streamDraft, setStreamDraft] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [streamPhases, setStreamPhases] = useState<PhaseEvent[]>([]);
@@ -87,7 +92,14 @@ export function useChatAgent({
     };
   }, []);
 
-  const hydrate = useCallback((session: SessionState) => {
+  const hydrate = useCallback((
+    session: SessionState,
+    options?: { preserveStreamingForSessionId?: string | null },
+  ) => {
+    const preserveStreaming =
+      isStreaming &&
+      options?.preserveStreamingForSessionId &&
+      options.preserveStreamingForSessionId === session.session_id;
     const hydratedMessages = toChatMessages(session.chat_history);
     const hasArtifactMessages = hydratedMessages.some((item) => (item.artifacts?.length ?? 0) > 0);
     if (!hasArtifactMessages && session.artifacts.length > 0) {
@@ -99,15 +111,19 @@ export function useChatAgent({
         artifacts: session.artifacts,
       });
     }
-    setMessages(hydratedMessages);
+    if (!preserveStreaming) {
+      setMessages(hydratedMessages);
+    }
     setArtifacts(session.artifacts);
     setError(null);
-    setStreamDraft("");
-    setStreamReasoning("");
-    setStreamPhases([]);
-    setIsStreaming(false);
-    setLastQuery(null);
-  }, []);
+    if (!preserveStreaming) {
+      setStreamDraft("");
+      setStreamReasoning("");
+      setStreamPhases([]);
+      setIsStreaming(false);
+      setLastQuery(null);
+    }
+  }, [isStreaming]);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -134,10 +150,11 @@ export function useChatAgent({
       phaseFlushRef.current = null;
     }
     phaseTokenBufRef.current = "";
-    setMessages([]);
-    setArtifacts([]);
-    setIsStreaming(false);
-    setStreamDraft("");
+      setMessages([]);
+      setArtifacts([]);
+      setIsStreaming(false);
+      setStreamingSessionId(null);
+      setStreamDraft("");
     setStreamReasoning("");
     setStreamPhases([]);
     setError(null);
@@ -157,6 +174,7 @@ export function useChatAgent({
       setStreamReasoning("");
       setStreamPhases([]);
       setIsStreaming(true);
+      setStreamingSessionId(sessionId);
       setMessages((prev) => [
         ...prev,
         {
@@ -303,6 +321,7 @@ export function useChatAgent({
       } finally {
         abortRef.current = null;
         setIsStreaming(false);
+        setStreamingSessionId(null);
         setStreamDraft("");
         setStreamReasoning("");
         setStreamPhases([]);
@@ -405,6 +424,7 @@ export function useChatAgent({
     messages,
     artifacts,
     isStreaming,
+    streamingSessionId,
     streamDraft,
     streamReasoning,
     streamPhases,

@@ -68,6 +68,13 @@ class BaseConnectionAdapter(ABC):
 
 
 class PostgresConnectionAdapter(BaseConnectionAdapter):
+    def _configured_schema(self) -> str | None:
+        schema = self.resolved.options.get("schema")
+        if not isinstance(schema, str):
+            return None
+        clean = schema.strip()
+        return clean or None
+
     def _connect_kwargs(self) -> dict[str, Any]:
         try:
             import psycopg
@@ -87,10 +94,18 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
             connect_kwargs["sslmode"] = sslmode.strip()
         return connect_kwargs
 
+    def _apply_session_schema(self, conn: Any) -> None:
+        schema = self._configured_schema()
+        if not schema:
+            return
+        with conn.cursor() as cur:
+            cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
+
     def test_connection(self) -> None:
         import psycopg
 
         with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
@@ -105,6 +120,7 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
             ORDER BY schema_name
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(query)
                 rows = cur.fetchall()
@@ -125,6 +141,7 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
             ORDER BY table_name
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(query, (schema,))
                 rows = cur.fetchall()
@@ -147,6 +164,15 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
 
 
 class ClickHouseConnectionAdapter(BaseConnectionAdapter):
+    def _effective_database(self) -> str | None:
+        schema = self.resolved.options.get("schema")
+        if isinstance(schema, str) and schema.strip():
+            return schema.strip()
+        database = self.resolved.database
+        if isinstance(database, str) and database.strip():
+            return database.strip()
+        return None
+
     @staticmethod
     def _escape_literal(value: str) -> str:
         return value.replace("\\", "\\\\").replace("'", "\\'")
@@ -161,7 +187,7 @@ class ClickHouseConnectionAdapter(BaseConnectionAdapter):
         scheme = "https" if secure else "http"
         port = self.resolved.port or (8443 if secure else 8123)
         params = {
-            "database": database if database is not None else (self.resolved.database or ""),
+            "database": database if database is not None else (self._effective_database() or ""),
             "user": self.resolved.username or "",
             "password": self.resolved.password or "",
             "default_format": "JSON",

@@ -85,6 +85,13 @@ class DBDemoHelper:
     runtime: RuntimeDBConnectionConfig
     timeout_sec: float = 10.0
 
+    def _configured_schema(self) -> str | None:
+        schema = self.runtime.options.get("schema")
+        if not isinstance(schema, str):
+            return None
+        clean = schema.strip()
+        return clean or None
+
     def _postgres_connect_kwargs(self) -> dict[str, Any]:
         kwargs = self.runtime.to_driver_kwargs()
         connect_kwargs: dict[str, Any] = {
@@ -100,6 +107,13 @@ class DBDemoHelper:
             connect_kwargs["sslmode"] = sslmode.strip()
         return connect_kwargs
 
+    def _apply_postgres_schema(self, conn: Any) -> None:
+        schema = self._configured_schema()
+        if not schema:
+            return
+        with conn.cursor() as cur:
+            cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
+
     def _quote_identifier(self, value: str) -> str:
         clean = str(value or "").strip()
         if not clean:
@@ -111,6 +125,9 @@ class DBDemoHelper:
         return f'"{clean}"'
 
     def _default_schema(self) -> str:
+        configured_schema = self._configured_schema()
+        if configured_schema:
+            return configured_schema
         if self.runtime.db_type == "clickhouse":
             return str(self.runtime.database or "default")
         return "public"
@@ -123,6 +140,7 @@ class DBDemoHelper:
         import psycopg
 
         with psycopg.connect(**self._postgres_connect_kwargs()) as conn:
+            self._apply_postgres_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(sql, params or ())
                 rows = cur.fetchall()
@@ -142,7 +160,7 @@ class DBDemoHelper:
         port = kwargs.get("port") or (8443 if secure else 8123)
         params = urlencode(
             {
-                "database": database if database is not None else (kwargs.get("database") or ""),
+                "database": database if database is not None else (self._configured_schema() or kwargs.get("database") or ""),
                 "user": kwargs.get("username") or "",
                 "password": kwargs.get("password") or "",
                 "default_format": "JSON",
@@ -312,7 +330,7 @@ class DBDemoHelper:
             return self._postgres_query_dataframe(clean_sql)
         return self._clickhouse_query_dataframe(
             clean_sql,
-            database=str(self.runtime.database or self._default_schema()),
+            database=str(self._configured_schema() or self.runtime.database or self._default_schema()),
         )
 
 

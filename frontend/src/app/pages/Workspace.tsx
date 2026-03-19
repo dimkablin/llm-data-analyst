@@ -11,7 +11,7 @@ import {
   ResizablePanelGroup,
 } from "../components/ui/resizable";
 import { useAppSession } from "../context/AppSessionContext";
-import { useChatAgent } from "../hooks/useChatAgent";
+import { useChatAgentContext } from "../context/ChatAgentContext";
 import {
   createSession,
   getRuntimeModelProfile,
@@ -47,9 +47,11 @@ export function Workspace() {
   const [modelProfile, setModelProfile] = useState<RuntimeModelProfile | null>(null);
 
   const {
+    bindChatAgent,
     messages,
     artifacts,
     isStreaming,
+    streamingSessionId,
     streamDraft,
     streamReasoning,
     streamPhases,
@@ -60,21 +62,33 @@ export function Workspace() {
     retryLast,
     stopStreaming,
     setErrorMessage,
-  } = useChatAgent({
-    sessionId,
-    includeReasoning: settings.default_include_reasoning,
-    useHistory: true,
-    analysisDepth: settings.analysis_depth,
-  });
+  } = useChatAgentContext();
 
   const refreshSessions = useCallback(async () => {
     const rows = await listSessions();
     return rows;
   }, []);
 
+  useEffect(() => {
+    bindChatAgent({
+      sessionId,
+      includeReasoning: settings.default_include_reasoning,
+      useHistory: true,
+      analysisDepth: settings.analysis_depth,
+    });
+  }, [
+    bindChatAgent,
+    sessionId,
+    settings.analysis_depth,
+    settings.default_include_reasoning,
+  ]);
+
   const applySessionState = useCallback(
     (session: SessionState, nextSessionId: string) => {
-      hydrate(session);
+      hydrate(session, {
+        preserveStreamingForSessionId:
+          isStreaming && streamingSessionId === nextSessionId ? nextSessionId : null,
+      });
       setSessionId(nextSessionId);
       setSessionTitle(session.title || "Новый чат");
       setHasDataset(Boolean(session.has_dataset));
@@ -102,7 +116,7 @@ export function Workspace() {
         setPinnedArtifactIds([]);
       }
     },
-    [hydrate],
+    [hydrate, isStreaming, streamingSessionId, user?.id],
   );
 
   const loadSession = useCallback(

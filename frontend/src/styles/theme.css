@@ -2,7 +2,22 @@
 
 :root {
   color-scheme: light;
-  --font-size: 16px;
+  --font-size: clamp(12.5px, calc(9.4px + 0.42vw), 16px);
+  --spacing: clamp(0.19rem, calc(0.08rem + 0.16vw), 0.25rem);
+  --text-3xl: clamp(1.42rem, calc(0.95rem + 0.92vw), 1.875rem);
+  --text-3xl--line-height: 1.18;
+  --text-4xl: clamp(1.68rem, calc(1.02rem + 1.16vw), 2.25rem);
+  --text-4xl--line-height: 1.08;
+  --text-5xl: clamp(2rem, calc(1.08rem + 1.72vw), 3rem);
+  --text-5xl--line-height: 1;
+  --text-6xl: clamp(2.4rem, calc(1.18rem + 2.28vw), 3.75rem);
+  --text-6xl--line-height: 1;
+  --text-7xl: clamp(2.8rem, calc(1.34rem + 2.74vw), 4.5rem);
+  --text-7xl--line-height: 1;
+  --text-8xl: clamp(3.35rem, calc(1.58rem + 3.48vw), 6rem);
+  --text-8xl--line-height: 1;
+  --text-9xl: clamp(4rem, calc(1.82rem + 4.42vw), 8rem);
+  --text-9xl--line-height: 1;
   --background: #ffffff;
   --foreground: oklch(0.145 0 0);
   --card: #ffffff;
@@ -291,6 +306,7 @@ html[data-accent="violet"] {
 
   .markdown-body {
     color: inherit;
+    min-width: 0;
   }
 
   .markdown-body > :first-child {
@@ -308,6 +324,12 @@ html[data-accent="violet"] {
   .markdown-body pre,
   .markdown-body table {
     margin: 0.55rem 0;
+  }
+
+  .markdown-scroll-block {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   .markdown-body ul,
@@ -371,11 +393,11 @@ html[data-accent="violet"] {
   }
 
   .markdown-body pre {
-    overflow-x: auto;
     border: 1px solid color-mix(in oklab, var(--border) 92%, transparent);
     background: color-mix(in oklab, var(--secondary) 60%, transparent);
     padding: 0.9rem 1rem;
     border-radius: 1rem;
+    min-width: max-content;
   }
 
   .markdown-body pre code {
@@ -398,7 +420,8 @@ html[data-accent="violet"] {
   }
 
   .markdown-body table {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     overflow: hidden;
     border-radius: 0.9rem;

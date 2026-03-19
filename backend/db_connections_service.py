@@ -128,7 +128,17 @@ class DBConnectionsService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="options_json must be an object.",
             )
-        return options_json
+        normalized = dict(options_json)
+        schema = normalized.get("schema")
+        if schema is None:
+            normalized.pop("schema", None)
+        else:
+            clean_schema = str(schema).strip()
+            if clean_schema:
+                normalized["schema"] = clean_schema
+            else:
+                normalized.pop("schema", None)
+        return normalized
 
     def _load_secret_state(self, user_id: int, connection_id: str) -> DBConnectionSecretState:
         encrypted_blob = self.auth_db.get_db_connection_secret_blob(user_id, connection_id)

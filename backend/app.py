@@ -161,6 +161,18 @@ def _session_db_connection_id(state: SessionState) -> str | None:
     return ref_id or None
 
 
+def _session_source_type(state: SessionState) -> str:
+    return str(state.source_type or "").strip().lower()
+
+
+def _active_session_dataframe(
+    state: SessionState, session_id: str
+) -> pd.DataFrame | None:
+    if _session_source_type(state) != "csv":
+        return None
+    return store.get_dataframe(session_id)
+
+
 def _extract_bearer_token(authorization: str | None) -> str | None:
     if not authorization:
         return None
@@ -664,7 +676,7 @@ def generate_session_title(
     if not user_queries:
         return SessionSummaryResponse(**meta)
 
-    df = store.get_dataframe(session_id)
+    df = _active_session_dataframe(state, session_id)
     dataset_hint = _dataset_hint_for_title(state, df)
     title_context_query = "\n".join(user_queries[-6:])
 
@@ -1080,7 +1092,7 @@ async def _execute_query(
     callbacks: list[object] | None = None,
 ) -> QueryResponse:
     state = _load_owned_session(session_id, current_user)
-    df = store.get_dataframe(session_id)
+    df = _active_session_dataframe(state, session_id)
     session_source = _session_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
     has_active_source = df is not None or session_db_connection_id is not None
@@ -1238,7 +1250,7 @@ async def query_stream(
     current_user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
-    df = store.get_dataframe(session_id)
+    df = _active_session_dataframe(state, session_id)
     session_source = _session_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
     has_active_source = df is not None or session_db_connection_id is not None

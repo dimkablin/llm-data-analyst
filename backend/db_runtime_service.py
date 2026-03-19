@@ -62,10 +62,14 @@ class RuntimeDBConnectionConfig:
             host = self.host
             port = f":{self.port}" if self.port else ""
             database = f"/{quote(self.database, safe='')}" if self.database else ""
-            query = ""
+            query_params: dict[str, str] = {}
             sslmode = self.options.get("sslmode")
             if isinstance(sslmode, str) and sslmode.strip():
-                query = f"?{urlencode({'sslmode': sslmode.strip()})}"
+                query_params["sslmode"] = sslmode.strip()
+            schema = self.options.get("schema")
+            if isinstance(schema, str) and schema.strip():
+                query_params["options"] = f"-c search_path={schema.strip()}"
+            query = f"?{urlencode(query_params)}" if query_params else ""
             return f"postgresql://{userinfo}{host}{port}{database}{query}"
 
         if self.db_type == "clickhouse":
@@ -79,7 +83,10 @@ class RuntimeDBConnectionConfig:
                 userinfo += "@"
             host = self.host
             port = f":{self.port}" if self.port else ""
-            database = f"/{quote(self.database, safe='')}" if self.database else ""
+            effective_database = self.options.get("schema")
+            if not isinstance(effective_database, str) or not effective_database.strip():
+                effective_database = self.database
+            database = f"/{quote(str(effective_database), safe='')}" if effective_database else ""
             query_params = {
                 key: value
                 for key, value in self.options.items()

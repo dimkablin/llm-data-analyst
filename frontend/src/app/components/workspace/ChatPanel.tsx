@@ -315,7 +315,7 @@ function MessageBubble({
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
 
-      <div className={`flex max-w-[85%] flex-col gap-2 ${isUser ? "items-end" : ""}`}>
+      <div className={`flex min-w-0 max-w-[85%] flex-col gap-2 ${isUser ? "items-end" : ""}`}>
         {!isUser && (message.reasoning || message.phases?.length) ? (
           <button
             type="button"
@@ -355,7 +355,7 @@ function MessageBubble({
           </div>
         ) : null}
 
-        <div className={`rounded-2xl border px-5 py-4 text-[15px] leading-relaxed shadow-sm ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
+        <div className={`min-w-0 overflow-x-hidden rounded-2xl border px-5 py-4 text-[15px] leading-relaxed shadow-sm ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">

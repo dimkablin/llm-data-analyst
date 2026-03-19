@@ -79,6 +79,7 @@ type ConnectionFormState = {
   host: string;
   port: string;
   database: string;
+  schema: string;
   username: string;
   password: string;
   secretMode: SecretMode;
@@ -92,6 +93,7 @@ const DEFAULT_FORM: ConnectionFormState = {
   host: "",
   port: "5432",
   database: "",
+  schema: "",
   username: "",
   password: "",
   secretMode: "replace",
@@ -113,6 +115,7 @@ function toFormState(connection?: DBConnection | null): ConnectionFormState {
     host: connection.host,
     port: connection.port ? String(connection.port) : defaultPortFor(connection.db_type),
     database: connection.database ?? "",
+    schema: typeof connection.options_json?.schema === "string" ? connection.options_json.schema : "",
     username: connection.username ?? "",
     password: "",
     secretMode: "keep",
@@ -134,8 +137,8 @@ function buildPayload(form: ConnectionFormState, editing: boolean): DBConnection
     username: form.username.trim() || null,
     options_json:
       form.dbType === "postgresql"
-        ? { sslmode: form.sslmode }
-        : { secure: form.secure },
+        ? { sslmode: form.sslmode, schema: form.schema.trim() || null }
+        : { secure: form.secure, schema: form.schema.trim() || null },
   };
 
   if (!editing || form.secretMode === "replace") {
@@ -650,6 +653,11 @@ export function DashboardPanel(props: Props) {
                                 <div className="mt-1 text-sm text-muted-foreground">
                                   {connection.host}{connection.port ? `:${connection.port}` : ""}{connection.database ? ` / ${connection.database}` : ""}
                                 </div>
+                                {typeof connection.options_json?.schema === "string" && connection.options_json.schema.trim() ? (
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    schema: {connection.options_json.schema.trim()}
+                                  </div>
+                                ) : null}
                                 <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
                                   <span className="inline-flex items-center gap-1">
                                     <ShieldCheck className="h-3.5 w-3.5" />
@@ -830,6 +838,11 @@ export function DashboardPanel(props: Props) {
               <label className="space-y-2">
                 <span className="text-[12px] font-bold uppercase tracking-[0.16em] text-muted-foreground">Database</span>
                 <input value={form.database} onChange={(event) => setForm((prev) => ({ ...prev, database: event.target.value }))} className="h-12 w-full rounded-2xl border border-border/60 bg-secondary/40 px-4 text-sm outline-none transition focus:border-primary/40" placeholder={form.dbType === "clickhouse" ? "default" : "analytics"} />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-[12px] font-bold uppercase tracking-[0.16em] text-muted-foreground">Schema</span>
+                <input value={form.schema} onChange={(event) => setForm((prev) => ({ ...prev, schema: event.target.value }))} className="h-12 w-full rounded-2xl border border-border/60 bg-secondary/40 px-4 text-sm outline-none transition focus:border-primary/40" placeholder={form.dbType === "clickhouse" ? "analytics" : "public"} />
               </label>
 
               <label className="space-y-2">

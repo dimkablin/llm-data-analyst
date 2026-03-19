@@ -8,6 +8,37 @@ from urllib.parse import urlparse, urlunparse
 _log = logging.getLogger(__name__)
 
 
+def _clear_missing_tls_env_path(name: str, *, expect_dir: bool = False) -> None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return
+    path = raw_value.strip()
+    if not path:
+        os.environ.pop(name, None)
+        return
+
+    exists = os.path.isdir(path) if expect_dir else os.path.isfile(path)
+    if exists:
+        return
+
+    _log.warning(
+        "Ignoring %s because path does not exist: %s",
+        name,
+        path,
+    )
+    os.environ.pop(name, None)
+
+
+def _sanitize_tls_env() -> None:
+    _clear_missing_tls_env_path("SSL_CERT_FILE")
+    _clear_missing_tls_env_path("REQUESTS_CA_BUNDLE")
+    _clear_missing_tls_env_path("CURL_CA_BUNDLE")
+    _clear_missing_tls_env_path("SSL_CERT_DIR", expect_dir=True)
+
+
+_sanitize_tls_env()
+
+
 def _get_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
     if value is None:

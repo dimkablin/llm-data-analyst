@@ -154,7 +154,7 @@ export function Platform() {
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/30">
       <Navigation />
 
-      <section className="relative flex min-h-[calc(100vh-72px)] items-center overflow-hidden border-b border-border/40 pt-32 pb-16">
+      <section className="relative flex min-h-[calc(100vh-72px)] items-center overflow-hidden border-b border-border/40 pt-28 pb-14 xl:pt-32 xl:pb-16">
         <div className="absolute left-1/2 top-0 -z-10 h-[680px] w-[1100px] -translate-x-1/2 rounded-full bg-primary/10 blur-[140px] opacity-40" />
         <div className="absolute right-[12%] top-24 -z-10 h-56 w-56 rounded-full bg-blue-400/10 blur-[100px]" />
         <div className="absolute left-[10%] bottom-16 -z-10 h-44 w-44 rounded-full bg-emerald-400/10 blur-[90px]" />
@@ -164,14 +164,14 @@ export function Platform() {
             animate={{ opacity: 1, y: 0 }}
             className="text-center max-w-5xl mx-auto"
           >
-            <h1 className="mb-8 text-6xl font-bold leading-[1.02] tracking-tight md:text-7xl xl:text-[88px]">
+            <h1 className="mb-7 text-5xl font-bold leading-[1.02] tracking-tight sm:text-6xl md:text-7xl xl:text-7xl 2xl:text-[88px]">
               Генеративная{" "}
               <span className="bg-gradient-to-r from-primary via-blue-400 to-cyan-300 bg-clip-text text-transparent">
                 аналитика
               </span>
             </h1>
 
-            <p className="mx-auto mb-12 max-w-3xl text-[20px] leading-relaxed text-muted-foreground md:text-[22px]">
+            <p className="mx-auto mb-10 max-w-3xl text-lg leading-relaxed text-muted-foreground md:text-xl 2xl:text-[22px]">
               Платформа, которая объединяет аналитический чат, агентный анализ и dashboard в одном
               интерфейсе. Из сырых данных она собирает понятный, визуальный и проверяемый ответ для
               бизнеса, продукта и presale-демо.
