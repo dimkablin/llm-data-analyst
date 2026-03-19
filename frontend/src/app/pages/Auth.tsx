@@ -33,11 +33,11 @@ export function Auth() {
   async function handleSubmit(event: React.FormEvent): Promise<void> {
     event.preventDefault();
     if (!username.trim() || !password.trim()) {
-      setError("Р’РІРµРґРёС‚Рµ Р»РѕРіРёРЅ Рё РїР°СЂРѕР»СЊ.");
+      setError("Введите логин и пароль.");
       return;
     }
     if (mode === "register" && password !== passwordRepeat) {
-      setError("РџР°СЂРѕР»Рё РЅРµ СЃРѕРІРїР°РґР°СЋС‚.");
+      setError("Пароли не совпадают.");
       return;
     }
 
@@ -69,7 +69,7 @@ export function Auth() {
             className="flex min-h-[720px] flex-col rounded-[36px] border border-border/60 bg-card/80 p-8 shadow-xl backdrop-blur-xl sm:p-9 lg:p-10 dark:bg-card/35"
           >
             <div className="mb-5 inline-flex items-center self-start rounded-full border border-primary/20 bg-primary/10 px-3.5 py-1.5 text-[12px] font-bold tracking-wide text-primary">
-              РЈРїСЂР°РІР»РµРЅРёРµ РґРѕСЃС‚СѓРїРѕРј
+              Управление доступом
             </div>
 
             <div className="max-w-[560px]">
@@ -83,17 +83,17 @@ export function Auth() {
                 администрирование
               </h1>
               <p className="mt-4 max-w-[520px] text-[15px] leading-relaxed text-muted-foreground sm:text-[16px]">
-                РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ РІС…РѕРґРёС‚ РІ СЃРёСЃС‚РµРјСѓ, СѓРїСЂР°РІР»СЏРµС‚ РїСЂРѕС„РёР»РµРј Рё РЅР°СЃС‚СЂРѕР№РєР°РјРё.
-                РђРґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂ РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ РїРѕР»СѓС‡Р°РµС‚ РєРѕРЅС‚СЂРѕР»СЊ РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№, СЂРѕР»РµР№
-                Рё РїР°СЂРѕР»РµР№.
+                Пользователь входит в систему, управляет профилем и настройками.
+                Администратор дополнительно получает контроль над пользователями, ролями
+                и паролями.
               </p>
             </div>
 
             <div className="mt-6 flex flex-wrap gap-2">
               {[
-                "Р’С…РѕРґ / СЂРµРіРёСЃС‚СЂР°С†РёСЏ",
-                "РџСЂРѕС„РёР»СЊ + РЅР°СЃС‚СЂРѕР№РєРё",
-                "РЈРїСЂР°РІР»РµРЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏРјРё",
+                "Вход / регистрация",
+                "Профиль + настройки",
+                "Управление пользователями",
               ].map((item) => (
                 <div
                   key={item}
@@ -107,23 +107,23 @@ export function Auth() {
             <div className="mt-6 grid flex-1 content-end gap-3 sm:grid-cols-2">
               <PromoCard
                 icon={<Shield className="h-5 w-5" />}
-                title="РџСЂРѕС„РёР»СЊ"
-                text="Р РѕР»СЊ, РґР°С‚Р° СЃРѕР·РґР°РЅРёСЏ, РїРµСЂРµС…РѕРґ РІ СЂР°Р±РѕС‡СѓСЋ РѕР±Р»Р°СЃС‚СЊ Рё РІС‹С…РѕРґ."
+                title="Профиль"
+                text="Роль, дата создания, переход в рабочую область и выход."
               />
               <PromoCard
                 icon={<Settings2 className="h-5 w-5" />}
-                title="РќР°СЃС‚СЂРѕР№РєРё"
-                text="РўРµРјР° Рё РїР°СЂР°РјРµС‚СЂС‹ РѕС‚РІРµС‚Р°, РІР»РёСЏСЋС‰РёРµ РЅР° СЂР°Р±РѕС‚Сѓ РёРЅС‚РµСЂС„РµР№СЃР°."
+                title="Настройки"
+                text="Тема и параметры ответа, влияющие на работу интерфейса."
               />
               <PromoCard
                 icon={<Lock className="h-5 w-5" />}
-                title="РЎРјРµРЅР° РїР°СЂРѕР»СЏ"
-                text="РћР±РЅРѕРІР»РµРЅРёРµ РїР°СЂРѕР»СЏ Р±РµР· РѕР±СЂР°С‰РµРЅРёСЏ Рє Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂСѓ."
+                title="Смена пароля"
+                text="Обновление пароля без обращения к администратору."
               />
               <PromoCard
                 icon={<Users className="h-5 w-5" />}
-                title="РђРґРјРёРЅРёСЃС‚СЂРёСЂРѕРІР°РЅРёРµ"
-                text="Р”РѕР±Р°РІР»РµРЅРёРµ, СѓРґР°Р»РµРЅРёРµ РїРѕР»СЊР·РѕРІР°С‚РµР»РµР№, СЃРјРµРЅР° СЂРѕР»РµР№ Рё РїР°СЂРѕР»РµР№."
+                title="Администрирование"
+                text="Добавление, удаление пользователей, смена ролей и паролей."
               />
             </div>
           </motion.section>
@@ -142,19 +142,19 @@ export function Auth() {
                   Access Layer
                 </div>
                 <div className="mt-1 text-lg font-bold tracking-tight text-foreground">
-                  {mode === "login" ? "Р’С…РѕРґ РІ СЃРёСЃС‚РµРјСѓ" : "Р РµРіРёСЃС‚СЂР°С†РёСЏ"}
+                  {mode === "login" ? "Вход в систему" : "Регистрация"}
                 </div>
               </div>
             </div>
 
             <div className="mb-8 text-center">
               <h2 className="mb-3 text-[2rem] font-bold tracking-tight sm:text-[2.3rem]">
-                {mode === "login" ? "Р’С…РѕРґ РІ СЃРёСЃС‚РµРјСѓ" : "Р РµРіРёСЃС‚СЂР°С†РёСЏ"}
+                {mode === "login" ? "Вход в систему" : "Регистрация"}
               </h2>
               <p className="mx-auto max-w-md text-[15px] leading-relaxed text-muted-foreground">
-                Р РµР°Р»СЊРЅР°СЏ backend-Р°СѓС‚РµРЅС‚РёС„РёРєР°С†РёСЏ СѓР¶Рµ РїРѕРґРєР»СЋС‡РµРЅР°. Р­С‚Р° Р·РѕРЅР° СЂР°Р±РѕС‚Р°РµС‚
-                РєР°Рє production-РІС…РѕРґ Рё РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ РїРѕРєР°Р·С‹РІР°РµС‚ access layer
-                РїСЂРѕРґСѓРєС‚Р° РЅР° РґРµРјРѕ.
+                Реальная backend-аутентификация уже подключена. Эта зона работает
+                как production-вход и одновременно показывает access layer продукта
+                на демо.
               </p>
             </div>
 
@@ -168,7 +168,7 @@ export function Auth() {
                     : "text-muted-foreground"
                 }`}
               >
-                Р’С…РѕРґ
+                Вход
               </button>
               <button
                 type="button"
@@ -179,7 +179,7 @@ export function Auth() {
                     : "text-muted-foreground"
                 }`}
               >
-                Р РµРіРёСЃС‚СЂР°С†РёСЏ
+                Регистрация
               </button>
             </div>
 
@@ -190,7 +190,7 @@ export function Auth() {
               <div className="space-y-5">
                 <div className="space-y-2">
                   <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
-                    Р›РѕРіРёРЅ
+                    Логин
                   </label>
                   <div className="group relative">
                     <Mail className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
@@ -206,7 +206,7 @@ export function Auth() {
 
                 <div className="space-y-2">
                   <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
-                    РџР°СЂРѕР»СЊ
+                    Пароль
                   </label>
                   <div className="group relative">
                     <Lock className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
@@ -214,7 +214,7 @@ export function Auth() {
                       type="password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
-                      placeholder="вЂўвЂўвЂўвЂўвЂўвЂўвЂўвЂў"
+                      placeholder="********"
                       className="w-full rounded-2xl border border-border/50 bg-secondary py-4 pl-14 pr-5 text-[15px] font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10"
                     />
                   </div>
@@ -223,7 +223,7 @@ export function Auth() {
                 {mode === "register" ? (
                   <div className="space-y-2">
                     <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
-                      РџРѕРІС‚РѕСЂРёС‚Рµ РїР°СЂРѕР»СЊ
+                      Повторите пароль
                     </label>
                     <div className="group relative">
                       <Lock className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
@@ -231,7 +231,7 @@ export function Auth() {
                         type="password"
                         value={passwordRepeat}
                         onChange={(event) => setPasswordRepeat(event.target.value)}
-                        placeholder="вЂўвЂўвЂўвЂўвЂўвЂўвЂўвЂў"
+                        placeholder="********"
                         className="w-full rounded-2xl border border-border/50 bg-secondary py-4 pl-14 pr-5 text-[15px] font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10"
                       />
                     </div>
@@ -258,10 +258,10 @@ export function Auth() {
                   )}
                   <span>
                     {isSubmitting
-                      ? "РџРѕРґРєР»СЋС‡РµРЅРёРµ..."
+                      ? "Подключение..."
                       : mode === "login"
-                        ? "Р’РѕР№С‚Рё РІ Р°РєРєР°СѓРЅС‚"
-                        : "РЎРѕР·РґР°С‚СЊ Р°РєРєР°СѓРЅС‚"}
+                        ? "Войти в аккаунт"
+                        : "Создать аккаунт"}
                   </span>
                 </button>
               </div>
@@ -270,10 +270,10 @@ export function Auth() {
             <div className="mt-8 border-t border-border/40 pt-8 text-center">
               <div className="inline-flex items-center gap-2 text-[13px] font-medium text-muted-foreground">
                 <UserCog className="h-4 w-4" />
-                Backend auth, user settings Рё session ownership Р°РєС‚РёРІРЅС‹
+                Backend auth, user settings и session ownership активны
               </div>
               <div className="mt-4 text-sm text-muted-foreground">
-                РџРѕСЃР»Рµ РІС…РѕРґР° РґРѕСЃС‚СѓРїРЅС‹{" "}
+                После входа доступны{" "}
                 <Link to="/workspace" className="font-semibold text-primary">
                   workspace
                 </Link>
@@ -281,7 +281,7 @@ export function Auth() {
                 <Link to="/sessions" className="font-semibold text-primary">
                   sessions
                 </Link>{" "}
-                Рё{" "}
+                и{" "}
                 <Link to="/account" className="font-semibold text-primary">
                   account
                 </Link>

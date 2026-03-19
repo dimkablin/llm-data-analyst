@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-data-analyst
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "200m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: custom-servers.t1v.scibox.tech
+      http:
+        paths:
+          - path: /llm-data-analyst
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-analyst-frontend
+                port:
+                  number: 8080

@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-analyst-backend
+  labels:
+    app: llm-analyst-backend
+    app.kubernetes.io/part-of: llm-data-analyst
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-analyst-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-analyst-phoenix
+  labels:
+    app: llm-analyst-phoenix
+    app.kubernetes.io/part-of: llm-data-analyst
+    app.kubernetes.io/component: observability
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-analyst-phoenix
+  ports:
+    - name: http
+      port: 6006
+      targetPort: 6006
+      protocol: TCP
+    - name: grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-analyst-frontend
+  labels:
+    app: llm-analyst-frontend
+    app.kubernetes.io/part-of: llm-data-analyst
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: llm-analyst-frontend
+  ports:
+    - port: 8080
+      targetPort: 8603
+      protocol: TCP
