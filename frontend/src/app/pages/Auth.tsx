@@ -61,19 +61,19 @@ export function Auth() {
     <div className="min-h-screen bg-background text-foreground">
       <Navigation />
 
-      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-[1380px] items-center justify-center px-8 py-10">
-        <div className="grid w-full grid-cols-1 items-stretch gap-6 xl:grid-cols-2">
+      <div className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-[1380px] items-start justify-center px-4 py-4 sm:px-6 sm:py-6 lg:px-8 xl:items-center xl:py-4 2xl:py-10">
+        <div className="grid w-full grid-cols-1 items-stretch gap-4 lg:gap-5 2xl:gap-6 xl:grid-cols-2">
           <motion.section
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex min-h-[720px] flex-col rounded-[36px] border border-border/60 bg-card/80 p-8 shadow-xl backdrop-blur-xl sm:p-9 lg:p-10 dark:bg-card/35"
+            className="flex flex-col rounded-[28px] border border-border/60 bg-card/80 p-5 shadow-xl backdrop-blur-xl sm:p-6 lg:p-7 xl:min-h-[640px] 2xl:min-h-[720px] 2xl:rounded-[36px] 2xl:p-10 dark:bg-card/35"
           >
-            <div className="mb-5 inline-flex items-center self-start rounded-full border border-primary/20 bg-primary/10 px-3.5 py-1.5 text-[12px] font-bold tracking-wide text-primary">
+            <div className="mb-4 inline-flex items-center self-start rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-[11px] font-bold tracking-wide text-primary sm:px-3.5 sm:py-1.5 sm:text-[12px]">
               Управление доступом
             </div>
 
-            <div className="max-w-[560px]">
-              <h1 className="min-h-[4.2em] text-[2.35rem] font-bold leading-[1.02] tracking-tight text-foreground sm:text-[2.9rem] lg:text-[3.35rem]">
+            <div className="max-w-[560px] xl:max-w-[520px] 2xl:max-w-[560px]">
+              <h1 className="text-[2rem] font-bold leading-[1] tracking-tight text-foreground sm:text-[2.45rem] lg:text-[2.75rem] xl:text-[2.95rem] 2xl:text-[3.35rem]">
                 Единая зона доступа:
                 <br />
                 вход, профиль,
@@ -82,14 +82,14 @@ export function Auth() {
                 <br />
                 администрирование
               </h1>
-              <p className="mt-4 max-w-[520px] text-[15px] leading-relaxed text-muted-foreground sm:text-[16px]">
+              <p className="mt-3 max-w-[520px] text-sm leading-relaxed text-muted-foreground sm:mt-4 sm:text-[15px] 2xl:text-[16px]">
                 Пользователь входит в систему, управляет профилем и настройками.
                 Администратор дополнительно получает контроль над пользователями, ролями
                 и паролями.
               </p>
             </div>
 
-            <div className="mt-6 flex flex-wrap gap-2">
+            <div className="mt-5 flex flex-wrap gap-2 2xl:mt-6">
               {[
                 "Вход / регистрация",
                 "Профиль + настройки",
@@ -97,14 +97,14 @@ export function Auth() {
               ].map((item) => (
                 <div
                   key={item}
-                  className="rounded-full border border-border/50 bg-secondary/45 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wide text-foreground/80"
+                  className="rounded-full border border-border/50 bg-secondary/45 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-foreground/80 sm:py-1.5 sm:text-[11px]"
                 >
                   {item}
                 </div>
               ))}
             </div>
 
-            <div className="mt-6 grid flex-1 content-end gap-3 sm:grid-cols-2">
+            <div className="mt-5 grid flex-1 content-end gap-3 sm:grid-cols-2 2xl:mt-6">
               <PromoCard
                 icon={<Shield className="h-5 w-5" />}
                 title="Профиль"
@@ -131,38 +131,38 @@ export function Auth() {
           <motion.section
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex min-h-[720px] flex-col rounded-[36px] border border-border/60 bg-card/95 p-8 shadow-[0_24px_60px_rgba(15,23,42,0.14)] sm:p-9 lg:p-10 dark:bg-card"
+            className="flex flex-col rounded-[28px] border border-border/60 bg-card/95 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.14)] sm:p-6 lg:p-7 xl:min-h-[640px] 2xl:min-h-[720px] 2xl:rounded-[36px] 2xl:p-10 dark:bg-card"
           >
-            <div className="mb-8 flex items-center gap-4 rounded-[28px] border border-border/50 bg-secondary/45 px-5 py-4">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20">
+            <div className="mb-6 flex items-center gap-3 rounded-[24px] border border-border/50 bg-secondary/45 px-4 py-3 sm:gap-4 sm:px-5 sm:py-4 2xl:mb-8 2xl:rounded-[28px]">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-lg shadow-primary/20 2xl:h-14 2xl:w-14 2xl:rounded-2xl">
                 <Zap className="h-6 w-6 fill-current" />
               </div>
               <div className="min-w-0">
-                <div className="text-[12px] font-bold uppercase tracking-[0.24em] text-muted-foreground">
+                <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground sm:text-[12px]">
                   Access Layer
                 </div>
-                <div className="mt-1 text-lg font-bold tracking-tight text-foreground">
+                <div className="mt-0.5 text-base font-bold tracking-tight text-foreground sm:mt-1 sm:text-lg">
                   {mode === "login" ? "Вход в систему" : "Регистрация"}
                 </div>
               </div>
             </div>
 
-            <div className="mb-8 text-center">
-              <h2 className="mb-3 text-[2rem] font-bold tracking-tight sm:text-[2.3rem]">
+            <div className="mb-6 text-center 2xl:mb-8">
+              <h2 className="mb-2 text-[1.75rem] font-bold tracking-tight sm:mb-3 sm:text-[2rem] 2xl:text-[2.3rem]">
                 {mode === "login" ? "Вход в систему" : "Регистрация"}
               </h2>
-              <p className="mx-auto max-w-md text-[15px] leading-relaxed text-muted-foreground">
+              <p className="mx-auto max-w-md text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
                 Реальная backend-аутентификация уже подключена. Эта зона работает
                 как production-вход и одновременно показывает access layer продукта
                 на демо.
               </p>
             </div>
 
-            <div className="mb-8 flex rounded-2xl border border-border/50 bg-secondary/50 p-1">
+            <div className="mb-6 flex rounded-2xl border border-border/50 bg-secondary/50 p-1 2xl:mb-8">
               <button
                 type="button"
                 onClick={() => setMode("login")}
-                className={`flex-1 rounded-xl px-4 py-3 text-sm font-bold transition-all ${
+                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold transition-all sm:px-4 2xl:py-3 ${
                   mode === "login"
                     ? "bg-card shadow-sm"
                     : "text-muted-foreground"
@@ -173,7 +173,7 @@ export function Auth() {
               <button
                 type="button"
                 onClick={() => setMode("register")}
-                className={`flex-1 rounded-xl px-4 py-3 text-sm font-bold transition-all ${
+                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold transition-all sm:px-4 2xl:py-3 ${
                   mode === "register"
                     ? "bg-card shadow-sm"
                     : "text-muted-foreground"
@@ -187,59 +187,59 @@ export function Auth() {
               onSubmit={(event) => void handleSubmit(event)}
               className="flex flex-1 flex-col justify-between"
             >
-              <div className="space-y-5">
+              <div className="space-y-4 2xl:space-y-5">
                 <div className="space-y-2">
-                  <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
+                  <label className="px-3 text-[11px] font-bold uppercase tracking-widest text-muted-foreground sm:px-4 sm:text-[12px]">
                     Логин
                   </label>
                   <div className="group relative">
-                    <Mail className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
+                    <Mail className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary sm:left-5 sm:h-5 sm:w-5" />
                     <input
                       type="text"
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
                       placeholder="admin"
-                      className="w-full rounded-2xl border border-border/50 bg-secondary py-4 pl-14 pr-5 text-[15px] font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10"
+                      className="w-full rounded-2xl border border-border/50 bg-secondary py-3.5 pl-12 pr-4 text-sm font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10 sm:py-4 sm:pl-14 sm:pr-5 sm:text-[15px]"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
+                  <label className="px-3 text-[11px] font-bold uppercase tracking-widest text-muted-foreground sm:px-4 sm:text-[12px]">
                     Пароль
                   </label>
                   <div className="group relative">
-                    <Lock className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
+                    <Lock className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary sm:left-5 sm:h-5 sm:w-5" />
                     <input
                       type="password"
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       placeholder="********"
-                      className="w-full rounded-2xl border border-border/50 bg-secondary py-4 pl-14 pr-5 text-[15px] font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10"
+                      className="w-full rounded-2xl border border-border/50 bg-secondary py-3.5 pl-12 pr-4 text-sm font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10 sm:py-4 sm:pl-14 sm:pr-5 sm:text-[15px]"
                     />
                   </div>
                 </div>
 
                 {mode === "register" ? (
                   <div className="space-y-2">
-                    <label className="px-4 text-[12px] font-bold uppercase tracking-widest text-muted-foreground">
+                    <label className="px-3 text-[11px] font-bold uppercase tracking-widest text-muted-foreground sm:px-4 sm:text-[12px]">
                       Повторите пароль
                     </label>
                     <div className="group relative">
-                      <Lock className="absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary" />
+                      <Lock className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-colors group-focus-within:text-primary sm:left-5 sm:h-5 sm:w-5" />
                       <input
                         type="password"
                         value={passwordRepeat}
                         onChange={(event) => setPasswordRepeat(event.target.value)}
                         placeholder="********"
-                        className="w-full rounded-2xl border border-border/50 bg-secondary py-4 pl-14 pr-5 text-[15px] font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10"
+                        className="w-full rounded-2xl border border-border/50 bg-secondary py-3.5 pl-12 pr-4 text-sm font-medium transition-all focus:border-primary/50 focus:outline-none focus:ring-4 focus:ring-primary/10 sm:py-4 sm:pl-14 sm:pr-5 sm:text-[15px]"
                       />
                     </div>
                   </div>
                 ) : null}
               </div>
 
-              <div className="mt-8 space-y-5">
+              <div className="mt-6 space-y-4 2xl:mt-8 2xl:space-y-5">
                 {error ? (
                   <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
                     {error}
@@ -249,7 +249,7 @@ export function Auth() {
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-primary py-4 font-bold text-primary-foreground shadow-xl shadow-primary/20 transition-all active:scale-[0.98] disabled:opacity-60"
+                  className="flex w-full items-center justify-center gap-3 rounded-2xl bg-primary py-3.5 text-sm font-bold text-primary-foreground shadow-xl shadow-primary/20 transition-all active:scale-[0.98] disabled:opacity-60 sm:text-base 2xl:py-4"
                 >
                   {mode === "login" ? (
                     <ArrowRight className="h-5 w-5" />
@@ -267,12 +267,12 @@ export function Auth() {
               </div>
             </form>
 
-            <div className="mt-8 border-t border-border/40 pt-8 text-center">
-              <div className="inline-flex items-center gap-2 text-[13px] font-medium text-muted-foreground">
+            <div className="mt-6 border-t border-border/40 pt-6 text-center 2xl:mt-8 2xl:pt-8">
+              <div className="inline-flex items-center gap-2 text-[12px] font-medium text-muted-foreground sm:text-[13px]">
                 <UserCog className="h-4 w-4" />
                 Backend auth, user settings и session ownership активны
               </div>
-              <div className="mt-4 text-sm text-muted-foreground">
+              <div className="mt-3 text-sm text-muted-foreground sm:mt-4">
                 После входа доступны{" "}
                 <Link to="/workspace" className="font-semibold text-primary">
                   workspace
@@ -305,14 +305,14 @@ function PromoCard({
   text: string;
 }) {
   return (
-    <div className="rounded-[20px] border border-border/50 bg-secondary/30 p-4 backdrop-blur-sm">
-      <div className="mb-3 flex items-center gap-3 text-foreground">
-        <div className="rounded-xl border border-primary/15 bg-primary/10 p-2 text-primary">
+    <div className="rounded-[18px] border border-border/50 bg-secondary/30 p-3.5 backdrop-blur-sm sm:p-4 2xl:rounded-[20px]">
+      <div className="mb-2.5 flex items-center gap-3 text-foreground sm:mb-3">
+        <div className="rounded-lg border border-primary/15 bg-primary/10 p-2 text-primary sm:rounded-xl">
           {icon}
         </div>
-        <h3 className="text-lg font-bold tracking-tight">{title}</h3>
+        <h3 className="text-base font-bold tracking-tight sm:text-lg">{title}</h3>
       </div>
-      <p className="text-[14px] leading-relaxed text-muted-foreground">{text}</p>
+      <p className="text-[13px] leading-relaxed text-muted-foreground sm:text-[14px]">{text}</p>
     </div>
   );
 }
