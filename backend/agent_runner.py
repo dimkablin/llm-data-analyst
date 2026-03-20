@@ -47,6 +47,7 @@ from backend.deep_research_integration import DeepResearchIntegrationService
 from backend.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.forecast_integration import ForecastIntegrationService
 from backend.observability import record_llm_usage_on_active_span
+from backend.rag_service import RAGService
 from backend.search_integration import SearchIntegrationService
 from backend.tool_policy import (
     detect_data_access_mode,
@@ -114,6 +115,19 @@ DEEP_RESEARCH_HINTS = (
     "\u0440\u0430\u0437\u0432\u0435\u0440\u043d\u0443\u0442\u044b\u0439 \u0440\u0435\u0441\u0435\u0440\u0447",
     "\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0437 \u043f\u043e \u0442\u0435\u043c\u0435",
 )
+RAG_HINTS = (
+    "rag",
+    "база знаний",
+    "в документации",
+    "по документации",
+    "по базе знаний",
+    "по документам",
+    "в базе знаний",
+    "найди в документах",
+    "что сказано в документации",
+    "что сказано в документах",
+    "что есть в базе знаний",
+)
 
 CHAT_HINTS_RE = re.compile(
     r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
@@ -164,7 +178,7 @@ class AgentResponse:
     final_text: str
     reasoning: str | None
     artifacts: list
-    route: Literal["chat", "analysis"] = "chat"
+    route: Literal["chat", "analysis", "rag"] = "chat"
     tool_calls: int = 0
     tool_names: list[str] = field(default_factory=list)
 
@@ -184,7 +198,7 @@ class AgentGraphState(TypedDict, total=False):
     callbacks: list
     trace_context: dict[str, Any]
     session_source: dict[str, Any]
-    route: Literal["chat", "analysis"]
+    route: Literal["chat", "analysis", "rag"]
 
     plan: str
     step_index: int
@@ -209,6 +223,7 @@ class AgentRunner:
         deep_research_service: DeepResearchIntegrationService | None = None,
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
+        rag_service: RAGService | None = None,
         allowed_tool_keys: set[str] | None = None,
     ) -> None:
         self.settings = settings
@@ -217,6 +232,7 @@ class AgentRunner:
         self.deep_research_service = deep_research_service
         self.forecast_service = forecast_service
         self.anomaly_planfact_service = anomaly_planfact_service
+        self.rag_service = rag_service
         self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
@@ -556,7 +572,7 @@ class AgentRunner:
         df: pd.DataFrame | None,
         prompt: str,
         session_source: dict[str, Any] | None = None,
-    ) -> Literal["chat", "analysis"]:
+    ) -> Literal["chat", "analysis", "rag"]:
         has_search_source = (
             self.search_service is not None
             and self.search_service.is_enabled
@@ -583,15 +599,20 @@ class AgentRunner:
         has_deep_research_hint = has_deep_research_source and any(
             hint in normalized for hint in DEEP_RESEARCH_HINTS
         )
+        has_rag_hint = any(hint in normalized for hint in RAG_HINTS)
         has_chat_hint = CHAT_HINTS_RE.search(normalized) is not None
 
         if df is None and not has_db_source:
+            if has_rag_hint:
+                return "rag"
             if has_search_hint or has_deep_research_hint:
                 return "analysis"
             return "chat"
 
-        if has_chat_hint and not has_analytics_hint:
+        if has_chat_hint and not has_analytics_hint and not has_rag_hint:
             return "chat"
+        if has_rag_hint:
+            return "rag"
         if has_analytics_hint or has_search_hint or has_deep_research_hint:
             return "analysis"
 
@@ -1369,6 +1390,45 @@ class AgentRunner:
         ]
 
     @staticmethod
+    def _emit_rag_stream_chunk(callbacks: list, chunk: str) -> None:
+        if not chunk:
+            return
+        for cb in callbacks:
+            if not isinstance(cb, TokenStreamCallbackHandler):
+                continue
+            try:
+                cb.on_llm_new_token(chunk)
+            except Exception:
+                continue
+
+    def _stream_rag_answer(
+        self,
+        *,
+        prompt: str,
+        callbacks: list,
+    ) -> str:
+        if self.rag_service is None:
+            return ""
+
+        parts: list[str] = []
+        for chunk in self.rag_service.stream_search(
+            query=prompt,
+            include_references=False,
+        ):
+            parts.append(chunk)
+            self._emit_rag_stream_chunk(callbacks, chunk)
+
+        final_text = "".join(parts).strip()
+        if final_text:
+            return final_text
+
+        result = self.rag_service.search(
+            query=prompt,
+            include_references=False,
+        )
+        return self.rag_service.format_for_user(result)
+
+    @staticmethod
     def _artifacts_recovery_text(artifacts: list) -> str:
         if not artifacts:
             return ""
@@ -1501,6 +1561,7 @@ class AgentRunner:
 
         graph.add_node("route", self._route_node)
         graph.add_node("chat", self._chat_node)
+        graph.add_node("rag", self._rag_node)
         graph.add_node("think", self._think_node)
         graph.add_node("act", self._act_node)
         graph.add_node("evaluate", self._evaluate_node)
@@ -1511,9 +1572,10 @@ class AgentRunner:
         graph.add_conditional_edges(
             "route",
             self._route_edge,
-            {"chat": "chat", "analysis": "think"},
+            {"chat": "chat", "analysis": "think", "rag": "rag"},
         )
         graph.add_edge("chat", "finalize")
+        graph.add_edge("rag", "finalize")
 
         graph.add_edge("think", "act")
         graph.add_edge("act", "evaluate")
@@ -1529,7 +1591,7 @@ class AgentRunner:
 
     def _route_node(
         self, state: AgentGraphState
-    ) -> dict[str, Literal["chat", "analysis"]]:
+    ) -> dict[str, Literal["chat", "analysis", "rag"]]:
         route = self._route_intent(
             state.get("df"),
             state.get("prompt", ""),
@@ -1538,7 +1600,7 @@ class AgentRunner:
         return {"route": route}
 
     @staticmethod
-    def _route_edge(state: AgentGraphState) -> Literal["chat", "analysis"]:
+    def _route_edge(state: AgentGraphState) -> Literal["chat", "analysis", "rag"]:
         return state.get("route", "chat")
 
     def _chat_node(self, state: AgentGraphState) -> dict[str, AgentResponse]:
@@ -1565,6 +1627,143 @@ class AgentRunner:
             "done": True,
             "stop_reason": "chat_route",
         }
+
+    def _rag_node(self, state: AgentGraphState) -> dict[str, Any]:
+        prompt = state.get("prompt", "")
+        callbacks = state.get("callbacks", [])
+        df = state.get("df")
+
+        self._emit_phase_event(
+            callbacks,
+            phase="act",
+            title="Поиск по базе знаний",
+            content="",
+            step_index=0,
+            max_steps=1,
+            status="streaming",
+        )
+        self._emit_progress_event(
+            callbacks,
+            phase="act",
+            title="Ищу ответ в базе знаний",
+            details="Отправляю запрос в RAG сервис.",
+            step_index=0,
+            max_steps=1,
+        )
+
+        if not self._tool_allowed("rag_tool"):
+            response = AgentResponse(
+                final_text=(
+                    "Не могу выполнить поиск по базе знаний: RAG интеграция "
+                    "отключена в настройках аккаунта."
+                ),
+                reasoning="RAG route selected but rag_tool is disabled for the user.",
+                artifacts=[],
+                route="rag",
+                tool_calls=0,
+                tool_names=[],
+            )
+            self._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Поиск по базе знаний",
+                content="RAG отключен для текущего пользователя.",
+                step_index=0,
+                max_steps=1,
+                status="fail",
+            )
+            return {
+                "response": response,
+                "done": True,
+                "stop_reason": "rag_disabled",
+            }
+
+        if self.rag_service is None or not self.rag_service.is_enabled:
+            response = AgentResponse(
+                final_text=self._fallback_text(prompt, df),
+                reasoning="RAG route selected but RAG service is not configured.",
+                artifacts=[],
+                route="rag",
+                tool_calls=0,
+                tool_names=[],
+            )
+            self._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Поиск по базе знаний",
+                content="RAG сервис не настроен.",
+                step_index=0,
+                max_steps=1,
+                status="fail",
+            )
+            return {
+                "response": response,
+                "done": True,
+                "stop_reason": "rag_unavailable",
+            }
+
+        try:
+            final_text = self._stream_rag_answer(
+                prompt=prompt,
+                callbacks=callbacks,
+            )
+            if not final_text.strip():
+                final_text = "RAG вернул пустой ответ."
+
+            response = AgentResponse(
+                final_text=final_text,
+                reasoning=None,
+                artifacts=[],
+                route="rag",
+                tool_calls=0,
+                tool_names=[],
+            )
+
+            self._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Поиск по базе знаний",
+                content="RAG-ответ получен.",
+                step_index=0,
+                max_steps=1,
+                status="done",
+            )
+            self._emit_progress_event(
+                callbacks,
+                phase="act",
+                title="Ответ из базы знаний готов",
+                details="Передаю результат в финализацию.",
+                step_index=0,
+                max_steps=1,
+            )
+            return {
+                "response": response,
+                "done": True,
+                "stop_reason": "rag_ready",
+            }
+        except Exception as exc:
+            self._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Поиск по базе знаний",
+                content=f"Ошибка RAG: {exc}",
+                step_index=0,
+                max_steps=1,
+                status="fail",
+            )
+            response = AgentResponse(
+                final_text=self._fallback_text(prompt, df),
+                reasoning=f"RAG route failed: {exc}",
+                artifacts=[],
+                route="rag",
+                tool_calls=0,
+                tool_names=[],
+            )
+            return {
+                "response": response,
+                "done": True,
+                "stop_reason": "rag_failed",
+            }
 
     def _think_node(self, state: AgentGraphState) -> dict[str, Any]:
         df = state.get("df")
@@ -2276,7 +2475,7 @@ class AgentRunner:
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,
                 artifacts=[],
-                route=self._route_intent(df, prompt),
+                route=self._route_intent(df, prompt, session_source=session_source),
             )
             if cache_allowed:
                 self._cache_set(cache_key, fallback)
@@ -2288,7 +2487,7 @@ class AgentRunner:
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,
                 artifacts=[],
-                route=self._route_intent(df, prompt),
+                route=self._route_intent(df, prompt, session_source=session_source),
             )
 
         if cache_allowed:

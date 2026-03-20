@@ -67,6 +67,7 @@ from backend.models import (
 from backend.observability import initialize_phoenix
 from backend.observability import build_trace_context, query_trace_context
 from backend.observability_service import PhoenixObservabilityService
+from backend.rag_service import RAGService
 from backend.search_integration import SearchIntegrationService
 from backend.serialization import serialize_artifact
 from backend.session_store import SessionState, SessionStore
@@ -107,6 +108,7 @@ search_integration_service = SearchIntegrationService.from_env()
 deep_research_integration_service = DeepResearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
+rag_service = RAGService.from_env()
 runner = AgentRunner(
     settings,
     db_runtime_service=db_runtime_service,
@@ -114,6 +116,7 @@ runner = AgentRunner(
     deep_research_service=deep_research_integration_service,
     forecast_service=forecast_integration_service,
     anomaly_planfact_service=anomaly_planfact_integration_service,
+    rag_service=rag_service,
 )
 phoenix_observability_service = PhoenixObservabilityService(settings)
 initialize_phoenix()
@@ -244,6 +247,7 @@ def _integration_source_descriptors() -> list[dict[str, Any]]:
     return [
         search_integration_service.source_descriptor(),
         deep_research_integration_service.source_descriptor(),
+        rag_service.source_descriptor(),
         forecast_integration_service.source_descriptor(),
         anomaly_planfact_integration_service.source_descriptor(),
     ]
@@ -1018,7 +1022,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis"}:
+    if normalized_route not in {"chat", "analysis", "rag"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []
@@ -1221,6 +1225,7 @@ async def _execute_query(
         deep_research_service=deep_research_integration_service,
         forecast_service=forecast_integration_service,
         anomaly_planfact_service=anomaly_planfact_integration_service,
+        rag_service=rag_service,
         allowed_tool_keys=allowed_tool_keys,
     )
 
@@ -1392,6 +1397,7 @@ async def query_stream(
         deep_research_service=deep_research_integration_service,
         forecast_service=forecast_integration_service,
         anomaly_planfact_service=anomaly_planfact_integration_service,
+        rag_service=rag_service,
         allowed_tool_keys=allowed_tool_keys,
     )
 

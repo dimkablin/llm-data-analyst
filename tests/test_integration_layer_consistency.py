@@ -17,6 +17,7 @@ from backend.forecast_integration import (
     ForecastIntegrationError,
     ForecastIntegrationService,
 )
+from backend.rag_service import RAGConfig, RAGIntegrationError, RAGService
 from backend.search_integration import (
     SearchIntegrationConfig,
     SearchIntegrationError,
@@ -51,6 +52,18 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 language_default="ru",
             )
         )
+        rag = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=25.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            )
+        )
         forecast = ForecastIntegrationService(
             ForecastConfig(
                 enabled=True,
@@ -72,6 +85,7 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         descriptors = [
             search.source_descriptor(),
             deep_research.source_descriptor(),
+            rag.source_descriptor(),
             forecast.source_descriptor(),
             anomaly.source_descriptor(),
         ]
@@ -86,6 +100,7 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
 
         self.assertFalse(search.source_descriptor()["requires_session_data"])
         self.assertFalse(deep_research.source_descriptor()["requires_session_data"])
+        self.assertFalse(rag.source_descriptor()["requires_session_data"])
         self.assertTrue(forecast.source_descriptor()["requires_session_data"])
         self.assertTrue(anomaly.source_descriptor()["requires_session_data"])
         self.assertEqual(search.source_descriptor()["status"], "available")
@@ -127,6 +142,22 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                     "final_report": {"summary": "Ready", "findings": ["Finding"]},
                 }
             ),
+        )
+        rag = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=25.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            transport=lambda url, payload, timeout, verify_ssl: {
+                "response": "Use access token",
+                "references": ["https://docs.example/auth"],
+            },
         )
         forecast = ForecastIntegrationService(
             ForecastConfig(
@@ -179,6 +210,10 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             ),
         ]
 
+        rag_result = rag.search(query="auth docs")
+        self.assertEqual(rag_result.answer, "Use access token")
+        self.assertEqual(rag_result.references, ["https://docs.example/auth"])
+
         for payload in payloads:
             meta_section = next(iter(payload["meta"].values()))
             self.assertIn("status", meta_section)
@@ -221,6 +256,23 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         with self.assertRaises(DeepResearchIntegrationError) as research_exc:
             deep_research.run_research("agents")
         self.assertIn("request timed out", str(research_exc.exception).lower())
+
+        rag = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=20.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            transport=lambda url, payload, timeout, verify_ssl: (_ for _ in ()).throw(TimeoutError()),
+        )
+        with self.assertRaises(RAGIntegrationError) as rag_exc:
+            rag.search(query="agents")
+        self.assertIn("request timed out", str(rag_exc.exception).lower())
 
         forecast = ForecastIntegrationService(
             ForecastConfig(

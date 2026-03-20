@@ -84,6 +84,17 @@ INTEGRATION_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         source_type="deep_research",
     ),
     ToolCatalogSpec(
+        tool_key="rag_tool",
+        tool_label="RAG",
+        display_name_ru="База знаний",
+        description="External knowledge-base retrieval and answer generation via RAG.",
+        description_ru="Поиск и ответ по внешней базе знаний через RAG.",
+        capabilities=("knowledge_base_search", "document_answer"),
+        requires_session_data=False,
+        kind="integration",
+        source_type="rag",
+    ),
+    ToolCatalogSpec(
         tool_key="forecast_tool",
         tool_label="Forecast",
         display_name_ru="Прогноз",

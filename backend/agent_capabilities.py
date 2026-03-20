@@ -46,6 +46,12 @@ _CAPABILITY_SPECS: tuple[dict[str, Any], ...] = (
         "requires_any_tools": ("deep_research_tool",),
         "requires_data_source": None,
     },
+    {
+        "key": "knowledge_base_search",
+        "label": "поиск по базе знаний",
+        "requires_any_tools": ("rag_tool",),
+        "requires_data_source": None,
+    },
 )
 
 

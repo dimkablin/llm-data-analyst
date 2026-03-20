@@ -63,6 +63,19 @@ class UserToolSettingsTests(unittest.TestCase):
                 "timeout_hint_sec": 60.0,
             },
             {
+                "source_type": "rag",
+                "source_ref_id": "rag",
+                "source_label": "RAG",
+                "source_mode": "external",
+                "enabled": True,
+                "available": True,
+                "status": "available",
+                "description": "RAG",
+                "capabilities": ["knowledge_base_search"],
+                "requires_session_data": False,
+                "timeout_hint_sec": 25.0,
+            },
+            {
                 "source_type": "forecast",
                 "source_ref_id": "forecast",
                 "source_label": "Forecast",
@@ -94,6 +107,7 @@ class UserToolSettingsTests(unittest.TestCase):
             source_descriptors=source_descriptors,
             user_settings={
                 "search_tool": False,
+                "rag_tool": False,
                 "plotly_tool": False,
                 "forecast_tool": True,
             },
@@ -103,6 +117,8 @@ class UserToolSettingsTests(unittest.TestCase):
 
         self.assertFalse(by_key["search_tool"].enabled_for_user)
         self.assertFalse(by_key["search_tool"].effective_enabled)
+        self.assertFalse(by_key["rag_tool"].enabled_for_user)
+        self.assertFalse(by_key["rag_tool"].effective_enabled)
         self.assertFalse(by_key["plotly_tool"].effective_enabled)
         self.assertFalse(by_key["forecast_tool"].available_globally)
         self.assertFalse(by_key["forecast_tool"].effective_enabled)
@@ -142,6 +158,19 @@ class UserToolSettingsTests(unittest.TestCase):
                 "timeout_hint_sec": 60.0,
             },
             {
+                "source_type": "rag",
+                "source_ref_id": "rag",
+                "source_label": "RAG",
+                "source_mode": "external",
+                "enabled": True,
+                "available": True,
+                "status": "available",
+                "description": "RAG",
+                "capabilities": ["knowledge_base_search"],
+                "requires_session_data": False,
+                "timeout_hint_sec": 25.0,
+            },
+            {
                 "source_type": "forecast",
                 "source_ref_id": "forecast",
                 "source_label": "Forecast",
@@ -172,6 +201,7 @@ class UserToolSettingsTests(unittest.TestCase):
             source_descriptors=source_descriptors,
             user_settings={
                 "search_tool": False,
+                "rag_tool": False,
                 "plotly_tool": False,
             },
         )
@@ -179,6 +209,7 @@ class UserToolSettingsTests(unittest.TestCase):
         allowed_tool_keys = effective_enabled_tool_keys(catalog)
 
         self.assertFalse(is_tool_allowed("search_tool", allowed_tool_keys))
+        self.assertFalse(is_tool_allowed("rag_tool", allowed_tool_keys))
         self.assertFalse(is_tool_allowed("plotly_tool", allowed_tool_keys))
         self.assertTrue(is_tool_allowed("forecast_tool", allowed_tool_keys))
         self.assertTrue(is_tool_allowed("db_tool", allowed_tool_keys))

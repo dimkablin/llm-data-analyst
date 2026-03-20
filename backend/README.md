@@ -21,6 +21,19 @@ poetry run uvicorn backend.app:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000} -
 - Dataset max size: `BACKEND_MAX_DATASET_MB` (default `100` MB)
 - Session storage path: `BACKEND_STORAGE_DIR`
 
+## External integrations (env)
+
+- `SEARCH_BACKEND_URL` - quick external search backend
+- `DEEP_RESEARCH_BACKEND_URL` - deep research backend
+- `RAG_URL` - knowledge-base / RAG backend base URL
+- `RAG_ENABLED` - force on/off RAG integration
+- `RAG_QUERY_ENDPOINT` - sync query endpoint (default `/query`)
+- `RAG_STREAM_ENDPOINT` - streaming query endpoint (default `/query/stream`)
+- `RAG_TIMEOUT_SEC` - RAG request timeout (default `45`)
+- `RAG_QUERY_MODE` - default RAG query mode (default `hybrid`)
+- `RAG_TOP_K` - default top-k for RAG retrieval (default `5`)
+- `RAG_VERIFY_SSL` - verify TLS certs for HTTPS RAG backends
+
 ## SSE event types
 
 - `start` - stream opened, includes `session_id`
