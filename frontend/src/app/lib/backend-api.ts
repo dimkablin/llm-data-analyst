@@ -11,6 +11,7 @@ import type {
   SessionState,
   SessionSourceState,
   SessionSummary,
+  ToolAvailability,
   UserSettings,
 } from "./backend-types";
 
@@ -127,6 +128,25 @@ export async function updateUserSettings(payload: Partial<UserSettings>): Promis
   });
   await assertOk(response);
   return (await response.json()) as UserSettings;
+}
+
+export async function getUserTools(): Promise<ToolAvailability[]> {
+  const response = await authFetch("/auth/tools");
+  await assertOk(response);
+  return (await response.json()) as ToolAvailability[];
+}
+
+export async function updateUserToolEnabled(
+  toolKey: string,
+  enabled: boolean,
+): Promise<ToolAvailability> {
+  const response = await authFetch(`/auth/tools/${toolKey}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(response);
+  return (await response.json()) as ToolAvailability;
 }
 
 export async function listAdminUsers(): Promise<AuthUser[]> {

@@ -14,6 +14,7 @@ import pandas as pd
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
+from backend.artifact_meta import extract_artifact_hints
 from backend.redaction import sanitize_error_text
 
 if TYPE_CHECKING:
@@ -501,6 +502,10 @@ class BaseExecTool(BaseTool):
     def get_execution_scope(self) -> dict[str, Any]:
         return {}
 
+    @staticmethod
+    def _extract_payload_hints(tool_result: object) -> dict[str, Any]:
+        return extract_artifact_hints(tool_result)
+
     def _execute_in_sandbox(self, code: str) -> object:
         ctx = multiprocessing.get_context(self._pick_start_method())
         result_queue = ctx.Queue(maxsize=1)
@@ -561,6 +566,7 @@ class BaseExecTool(BaseTool):
 
         try:
             tool_result = self._execute_in_sandbox(code)
+            artifact_hints = self._extract_payload_hints(tool_result)
 
             if tool_result is None:
                 text = (
@@ -600,10 +606,11 @@ class BaseExecTool(BaseTool):
                 f"{', '.join(normalized_result.keys())}"
             )
             payload = {
-                self.artifact_name: tool_result,
                 "text": text,
                 "code": code,
             }
+            if artifact_hints:
+                payload.update(artifact_hints)
             payload[self.artifact_name] = normalized_result
             result = (text, payload)
             self._cache_set(cache_key, result)

@@ -139,6 +139,26 @@ export type RuntimeModelProfile = {
   base_url: string;
 };
 
+export type ToolAvailability = {
+  tool_key: string;
+  kind: "builtin" | "integration";
+  tool_label: string;
+  display_name_ru?: string | null;
+  description: string;
+  description_ru?: string | null;
+  capabilities: string[];
+  requires_session_data: boolean;
+  source_type?: string | null;
+  source_ref_id?: string | null;
+  source_mode?: string | null;
+  enabled_globally: boolean;
+  available_globally: boolean;
+  enabled_for_user: boolean;
+  effective_enabled: boolean;
+  status: string;
+  timeout_hint_sec?: number | null;
+};
+
 export type PhaseEvent = {
   id?: string;
   phase: "think" | "act" | "evaluate" | "finalize";
@@ -157,6 +177,8 @@ export type ChatMessage = {
   content: string;
   reasoning?: string | null;
   phases?: PhaseEvent[];
+  liveReasoningTrace?: string | null;
+  livePhases?: PhaseEvent[];
   metrics?: QueryMetrics;
   artifacts?: ArtifactPayload[];
 };

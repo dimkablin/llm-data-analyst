@@ -69,6 +69,30 @@ class UserSettingsUpdateRequest(BaseModel):
     agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=20)
 
 
+class ToolEnabledUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class ToolAvailabilityResponse(BaseModel):
+    tool_key: str
+    kind: str
+    tool_label: str
+    display_name_ru: str | None = None
+    description: str | None = None
+    description_ru: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    requires_session_data: bool = False
+    source_type: str | None = None
+    source_ref_id: str | None = None
+    source_mode: str | None = None
+    enabled_globally: bool
+    available_globally: bool
+    status: str
+    enabled_for_user: bool
+    effective_enabled: bool
+    timeout_hint_sec: float | None = None
+
+
 class AdminCreateUserRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=4, max_length=256)
@@ -113,6 +137,22 @@ class SessionSourceStateResponse(BaseModel):
     source_ref_id: str | None = None
     source_label: str | None = None
     source_mode: str | None = None
+
+
+class SourceDescriptorResponse(BaseModel):
+    source_type: str
+    source_ref_id: str | None = None
+    source_label: str
+    display_name_ru: str | None = None
+    source_mode: str | None = None
+    enabled: bool
+    available: bool
+    status: str = Field(default="disabled")
+    description: str | None = None
+    description_ru: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    requires_session_data: bool = False
+    timeout_hint_sec: float | None = None
 
 
 class SessionBindDBConnectionSourceRequest(BaseModel):

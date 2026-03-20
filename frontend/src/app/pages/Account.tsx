@@ -17,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import { Navigation } from "../components/Navigation";
+import { ToolAccessSection } from "../components/account/ToolAccessSection";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useAppSession } from "../context/AppSessionContext";
@@ -283,6 +284,10 @@ export function Account() {
                         <NumField label="Внутр. рекурсия" value={settingsDraft.agent_inner_recursion_limit} step={1} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
                       </div>
                     </Card>
+                  </div>
+
+                  <div className="xl:col-span-2">
+                    <ToolAccessSection />
                   </div>
                 </div>
               </SectionBlock>

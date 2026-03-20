@@ -6,6 +6,7 @@ from urllib.parse import quote, urlencode
 
 from backend.db_connections_service import DBConnectionsService
 from backend.db_connectors import (
+    CatalogColumn,
     CatalogSchema,
     CatalogTable,
     ResolvedDBConnection,
@@ -112,6 +113,17 @@ class RuntimeCatalogTable:
     qualified_name: str
 
 
+@dataclass(frozen=True)
+class RuntimeCatalogColumn:
+    schema: str
+    table: str
+    name: str
+    data_type: str
+    is_nullable: bool | None
+    ordinal_position: int | None
+    default_expression: str | None = None
+
+
 class DBRuntimeService:
     def __init__(self, connections_service: DBConnectionsService) -> None:
         self.connections_service = connections_service
@@ -179,6 +191,21 @@ class DBRuntimeService:
             for item in items
         ]
 
+    @staticmethod
+    def _normalize_column_items(items: list[CatalogColumn]) -> list[RuntimeCatalogColumn]:
+        return [
+            RuntimeCatalogColumn(
+                schema=item.schema,
+                table=item.table,
+                name=item.name,
+                data_type=item.data_type,
+                is_nullable=item.is_nullable,
+                ordinal_position=item.ordinal_position,
+                default_expression=item.default_expression,
+            )
+            for item in items
+        ]
+
     def list_schemas(
         self,
         *,
@@ -208,6 +235,27 @@ class DBRuntimeService:
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(sanitize_error_text(str(exc))) from exc
         return self._normalize_table_items(tables)
+
+    def describe_table(
+        self,
+        *,
+        user_id: int,
+        connection_id: str,
+        schema: str,
+        table: str,
+    ) -> list[RuntimeCatalogColumn]:
+        clean_schema = str(schema or "").strip()
+        clean_table = str(table or "").strip()
+        if not clean_schema:
+            raise ValueError("schema is required")
+        if not clean_table:
+            raise ValueError("table is required")
+        _, adapter = self._build_adapter(user_id=user_id, connection_id=connection_id)
+        try:
+            columns = adapter.describe_table(clean_schema, clean_table)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(sanitize_error_text(str(exc))) from exc
+        return self._normalize_column_items(columns)
 
     def build_demo_tool_contract(
         self,

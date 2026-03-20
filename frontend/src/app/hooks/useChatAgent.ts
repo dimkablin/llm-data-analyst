@@ -9,7 +9,136 @@ import type {
   SessionState,
 } from "../lib/backend-types";
 
+type LiveReasoningSnapshot = {
+  fingerprint: string;
+  liveReasoningTrace: string | null;
+  livePhases: PhaseEvent[];
+};
+
+function liveReasoningStorageKey(sessionId: string): string {
+  return `llm_live_reasoning_snapshot_${sessionId}`;
+}
+
+function normalizeFingerprintPart(value: string | null | undefined): string {
+  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 4000);
+}
+
+function buildAssistantMessageFingerprint(message: {
+  role?: string;
+  content?: string | null;
+  artifacts?: ArtifactPayload[] | undefined;
+}): string | null {
+  if (message.role !== "assistant") {
+    return null;
+  }
+  const content = normalizeFingerprintPart(message.content);
+  if (!content) {
+    return null;
+  }
+  const artifactIds = (message.artifacts ?? [])
+    .map((artifact) => String(artifact.id || artifact.text || artifact.type || "").trim())
+    .filter(Boolean)
+    .join("|");
+  return `${content}::${artifactIds}`;
+}
+
+function saveLiveReasoningSnapshot(
+  sessionId: string,
+  message: {
+    role?: string;
+    content?: string | null;
+    artifacts?: ArtifactPayload[] | undefined;
+  },
+  liveReasoningTrace: string | null | undefined,
+  livePhases: PhaseEvent[] | undefined,
+): void {
+  if (typeof window === "undefined" || !sessionId) {
+    return;
+  }
+  const fingerprint = buildAssistantMessageFingerprint(message);
+  const normalizedTrace = String(liveReasoningTrace ?? "").trim();
+  const normalizedPhases = Array.isArray(livePhases) ? livePhases.filter(Boolean) : [];
+  if (!fingerprint || (!normalizedTrace && normalizedPhases.length === 0)) {
+    return;
+  }
+  const snapshot: LiveReasoningSnapshot = {
+    fingerprint,
+    liveReasoningTrace: normalizedTrace || null,
+    livePhases: normalizedPhases,
+  };
+  try {
+    window.sessionStorage.setItem(
+      liveReasoningStorageKey(sessionId),
+      JSON.stringify(snapshot),
+    );
+  } catch {
+    // Ignore storage failures; live reasoning remains available in memory.
+  }
+}
+
+function loadLiveReasoningSnapshot(sessionId: string): LiveReasoningSnapshot | null {
+  if (typeof window === "undefined" || !sessionId) {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(liveReasoningStorageKey(sessionId));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as LiveReasoningSnapshot;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    if (!String(parsed.fingerprint || "").trim()) {
+      return null;
+    }
+    return {
+      fingerprint: String(parsed.fingerprint),
+      liveReasoningTrace: String(parsed.liveReasoningTrace ?? "").trim() || null,
+      livePhases: Array.isArray(parsed.livePhases) ? parsed.livePhases : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function applyLiveReasoningSnapshot(
+  sessionId: string,
+  messages: ChatMessage[],
+): ChatMessage[] {
+  const snapshot = loadLiveReasoningSnapshot(sessionId);
+  if (!snapshot || messages.length === 0) {
+    return messages;
+  }
+
+  let lastAssistantIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      lastAssistantIndex = index;
+      break;
+    }
+  }
+  if (lastAssistantIndex < 0) {
+    return messages;
+  }
+
+  const candidate = messages[lastAssistantIndex];
+  const fingerprint = buildAssistantMessageFingerprint(candidate);
+  if (!fingerprint || fingerprint !== snapshot.fingerprint) {
+    return messages;
+  }
+
+  const copy = [...messages];
+  copy[lastAssistantIndex] = {
+    ...candidate,
+    liveReasoningTrace: snapshot.liveReasoningTrace,
+    livePhases: snapshot.livePhases.length > 0 ? snapshot.livePhases : undefined,
+  };
+  return copy;
+}
+
 function toChatMessages(
+  sessionId: string,
   history: Array<{
     role: string;
     content: string;
@@ -18,7 +147,7 @@ function toChatMessages(
     artifacts?: ArtifactPayload[];
   }>,
 ): ChatMessage[] {
-  return history.map((item, index) => ({
+  const messages = history.map((item, index) => ({
     id: `${item.timestamp}-${index}`,
     timestamp: item.timestamp,
     role: item.role === "user" ? "user" : "assistant",
@@ -26,6 +155,7 @@ function toChatMessages(
     reasoning: item.reasoning ?? null,
     artifacts: item.artifacts ?? [],
   }));
+  return applyLiveReasoningSnapshot(sessionId, messages);
 }
 
 function buildStreamingReasoning(
@@ -33,6 +163,23 @@ function buildStreamingReasoning(
 ): string | null {
   const cleanReasoning = reasoning.trim();
   return cleanReasoning || null;
+}
+
+function mergeReasoning(
+  primary: string | null | undefined,
+  fallback: string | null | undefined,
+): string | null {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const item of [primary, fallback]) {
+    const clean = String(item ?? "").trim();
+    if (!clean || seen.has(clean)) {
+      continue;
+    }
+    seen.add(clean);
+    normalized.push(clean);
+  }
+  return normalized.length > 0 ? normalized.join("\n\n") : null;
 }
 
 type UseChatAgentArgs = {
@@ -100,7 +247,7 @@ export function useChatAgent({
       isStreaming &&
       options?.preserveStreamingForSessionId &&
       options.preserveStreamingForSessionId === session.session_id;
-    const hydratedMessages = toChatMessages(session.chat_history);
+    const hydratedMessages = toChatMessages(session.session_id, session.chat_history);
     const hasArtifactMessages = hydratedMessages.some((item) => (item.artifacts?.length ?? 0) > 0);
     if (!hasArtifactMessages && session.artifacts.length > 0) {
       hydratedMessages.push({
@@ -355,6 +502,21 @@ export function useChatAgent({
         collectedReasoning,
       );
       if (finalPayload) {
+        const finalReasoning = mergeReasoning(
+          finalPayload.reasoning,
+          fallbackReasoning,
+        );
+        const livePhases = collectedPhases.length > 0 ? [...collectedPhases] : undefined;
+        saveLiveReasoningSnapshot(
+          sessionId,
+          {
+            role: "assistant",
+            content: finalPayload.text,
+            artifacts: finalPayload.artifacts,
+          },
+          fallbackReasoning,
+          livePhases,
+        );
         setMessages((prev) => [
           ...prev,
           {
@@ -362,8 +524,10 @@ export function useChatAgent({
             timestamp: new Date().toISOString(),
             role: "assistant",
             content: finalPayload.text,
-            reasoning: finalPayload.reasoning ?? fallbackReasoning,
+            reasoning: finalReasoning,
             phases: savedPhases.length > 0 ? savedPhases : undefined,
+            liveReasoningTrace: fallbackReasoning,
+            livePhases,
             metrics: finalPayload.metrics,
             artifacts: finalPayload.artifacts,
           },
@@ -374,9 +538,27 @@ export function useChatAgent({
 
       try {
         const recoveredSession = await getSession(sessionId);
-        const recoveredHistory = toChatMessages(recoveredSession.chat_history);
-        if (recoveredHistory.length > 0) {
-          setMessages(recoveredHistory);
+        const recoveredHistory = toChatMessages(
+          recoveredSession.session_id,
+          recoveredSession.chat_history,
+        );
+        const lastRecoveredAssistant = [...recoveredHistory]
+          .reverse()
+          .find((message) => message.role === "assistant");
+        if (lastRecoveredAssistant) {
+          saveLiveReasoningSnapshot(
+            sessionId,
+            lastRecoveredAssistant,
+            fallbackReasoning,
+            collectedPhases.length > 0 ? [...collectedPhases] : undefined,
+          );
+        }
+        const hydratedWithLiveTrace = applyLiveReasoningSnapshot(
+          recoveredSession.session_id,
+          recoveredHistory,
+        );
+        if (hydratedWithLiveTrace.length > 0) {
+          setMessages(hydratedWithLiveTrace);
           setArtifacts(recoveredSession.artifacts);
           return;
         }

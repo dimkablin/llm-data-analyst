@@ -49,6 +49,17 @@ class CatalogTable:
     qualified_name: str
 
 
+@dataclass(frozen=True)
+class CatalogColumn:
+    schema: str
+    table: str
+    name: str
+    data_type: str
+    is_nullable: bool | None
+    ordinal_position: int | None
+    default_expression: str | None = None
+
+
 class BaseConnectionAdapter(ABC):
     def __init__(self, resolved: ResolvedDBConnection, *, timeout_sec: int) -> None:
         self.resolved = resolved
@@ -65,6 +76,10 @@ class BaseConnectionAdapter(ABC):
     @abstractmethod
     def list_tables(self, schema: str) -> list[CatalogTable]:
         """Return normalized tables/views visible in a schema/database."""
+
+    @abstractmethod
+    def describe_table(self, schema: str, table: str) -> list[CatalogColumn]:
+        """Return normalized column metadata for a table/view."""
 
 
 class PostgresConnectionAdapter(BaseConnectionAdapter):
@@ -162,6 +177,45 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
             )
         return normalized
 
+    def describe_table(self, schema: str, table: str) -> list[CatalogColumn]:
+        import psycopg
+
+        query = """
+            SELECT
+                column_name,
+                data_type,
+                is_nullable,
+                ordinal_position,
+                column_default
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+            ORDER BY ordinal_position
+        """
+        with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(query, (schema, table))
+                rows = cur.fetchall()
+
+        columns: list[CatalogColumn] = []
+        for row in rows:
+            if not row or row[0] is None:
+                continue
+            is_nullable_raw = str(row[2] or "").strip().upper()
+            columns.append(
+                CatalogColumn(
+                    schema=schema,
+                    table=table,
+                    name=str(row[0]),
+                    data_type=str(row[1] or ""),
+                    is_nullable=True if is_nullable_raw == "YES" else False,
+                    ordinal_position=int(row[3]) if row[3] is not None else None,
+                    default_expression=str(row[4]) if row[4] is not None else None,
+                )
+            )
+        return columns
+
 
 class ClickHouseConnectionAdapter(BaseConnectionAdapter):
     def _effective_database(self) -> str | None:
@@ -256,6 +310,48 @@ class ClickHouseConnectionAdapter(BaseConnectionAdapter):
                 )
             )
         return normalized
+
+    def describe_table(self, schema: str, table: str) -> list[CatalogColumn]:
+        escaped_schema = self._escape_literal(schema)
+        escaped_table = self._escape_literal(table)
+        payload = self._request(
+            """
+            SELECT
+                database,
+                table,
+                name,
+                type,
+                default_kind,
+                default_expression,
+                position
+            FROM system.columns
+            WHERE database = {schema:String}
+              AND table = {table:String}
+            ORDER BY position
+            FORMAT JSON
+            """
+            .replace("{schema:String}", f"'{escaped_schema}'")
+            .replace("{table:String}", f"'{escaped_table}'")
+        )
+        rows = payload.get("data", [])
+        columns: list[CatalogColumn] = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("name") is None:
+                continue
+            raw_type = str(row.get("type") or "")
+            default_expression = row.get("default_expression")
+            columns.append(
+                CatalogColumn(
+                    schema=str(row.get("database") or schema),
+                    table=str(row.get("table") or table),
+                    name=str(row["name"]),
+                    data_type=raw_type,
+                    is_nullable=True if raw_type.startswith("Nullable(") else False,
+                    ordinal_position=int(row["position"]) if row.get("position") is not None else None,
+                    default_expression=str(default_expression) if default_expression is not None else None,
+                )
+            )
+        return columns
 
 
 def build_connection_adapter(

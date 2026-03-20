@@ -308,6 +308,18 @@ function MessageBubble({
   onPinArtifact: (artifact: ArtifactPayload) => void;
 }) {
   const isUser = message.role === "user";
+  const [isFullReasoningOpen, setIsFullReasoningOpen] = useState(false);
+  const hasFullTrace =
+    Boolean(message.liveReasoningTrace?.trim()) ||
+    Boolean(message.livePhases?.length);
+  const displayedReasoning =
+    isFullReasoningOpen && message.liveReasoningTrace?.trim()
+      ? message.liveReasoningTrace
+      : message.reasoning;
+  const displayedPhases =
+    isFullReasoningOpen && message.livePhases?.length
+      ? message.livePhases
+      : message.phases;
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -327,14 +339,27 @@ function MessageBubble({
           </button>
         ) : null}
 
-        {isReasoningOpen && (message.reasoning || message.phases?.length) ? (
-          <div className="rounded-2xl border border-border/30 bg-background/40 p-4 text-xs text-muted-foreground">
-            {message.reasoning ? (
-              <MarkdownBlock content={message.reasoning} className="text-xs" />
+        {isReasoningOpen && (message.reasoning || message.phases?.length || hasFullTrace) ? (
+          <div className="min-w-0 overflow-x-auto rounded-2xl border border-border/30 bg-background/40 p-4 text-xs text-muted-foreground">
+            {hasFullTrace ? (
+              <div className="mb-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsFullReasoningOpen((current) => !current)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-background/40 text-sm font-bold text-foreground/80 transition-colors hover:bg-secondary"
+                  title={isFullReasoningOpen ? "Показать краткую версию" : "Показать полную live-версию"}
+                  aria-label={isFullReasoningOpen ? "Показать краткую версию" : "Показать полную live-версию"}
+                >
+                  {isFullReasoningOpen ? "−" : "+"}
+                </button>
+              </div>
             ) : null}
-            {message.phases?.length ? (
-              <div className={`${message.reasoning ? "mt-4 border-t border-border/20 pt-4" : ""} grid gap-2`}>
-                {message.phases.map((phase, index) => (
+            {displayedReasoning ? (
+              <MarkdownBlock content={displayedReasoning} className="text-xs" />
+            ) : null}
+            {displayedPhases?.length ? (
+              <div className={`${displayedReasoning ? "mt-4 border-t border-border/20 pt-4" : ""} grid gap-2`}>
+                {displayedPhases.map((phase, index) => (
                   <div
                     key={`${phase.id || phase.timestamp}-${index}`}
                     className="rounded-xl border border-border/30 bg-background/30 px-3 py-3"
@@ -355,7 +380,7 @@ function MessageBubble({
           </div>
         ) : null}
 
-        <div className={`min-w-0 overflow-x-hidden rounded-2xl border px-5 py-4 text-[15px] leading-relaxed shadow-sm ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
+        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-5 py-4 text-[15px] leading-relaxed shadow-sm ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">

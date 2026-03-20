@@ -180,6 +180,18 @@ class AuthDB:
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS user_tool_settings (
+                    user_id INTEGER NOT NULL,
+                    tool_key TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, tool_key),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_tool_settings_user
+                    ON user_tool_settings(user_id, tool_key);
+
                 CREATE TABLE IF NOT EXISTS user_db_connections (
                     id TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -792,6 +804,44 @@ class AuthDB:
             agent_step_timeout_sec=next_agent_step_timeout_sec,
             agent_inner_recursion_limit=next_agent_inner_recursion_limit,
         )
+
+    def list_user_tool_settings(self, user_id: int) -> dict[str, bool]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT tool_key, enabled
+                FROM user_tool_settings
+                WHERE user_id = ?
+                ORDER BY tool_key ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return {
+            str(row["tool_key"]): bool(row["enabled"])
+            for row in rows
+            if str(row["tool_key"]).strip()
+        }
+
+    def set_user_tool_enabled(self, user_id: int, tool_key: str, enabled: bool) -> None:
+        clean_tool_key = str(tool_key or "").strip()
+        if not clean_tool_key:
+            raise ValueError("tool_key is required")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_tool_settings(user_id, tool_key, enabled, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, tool_key) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    clean_tool_key,
+                    1 if enabled else 0,
+                    self._now_iso(),
+                ),
+            )
 
     def register_session(
         self, session_id: str, user_id: int, allow_auto_title: bool = False

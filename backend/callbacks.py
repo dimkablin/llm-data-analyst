@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 
+from backend.artifact_meta import build_artifact_meta, extract_artifact_hints
 from backend.internal_models import ArtifactRecord
 
 
@@ -60,12 +61,13 @@ class LLMTextCollector(BaseCallbackHandler):
 
 
 class ToolCollector(BaseCallbackHandler):
-    def __init__(self) -> None:
+    def __init__(self, source_context: dict[str, Any] | None = None) -> None:
         self.artifacts: list[ArtifactRecord] = []
         self.tool_calls: int = 0
         self.tool_names: list[str] = []
         self.events: list[dict[str, Any]] = []
         self._last_tool_name: str | None = None
+        self._source_context = dict(source_context or {})
 
     @staticmethod
     def _resolve_tool_name(
@@ -135,11 +137,13 @@ class ToolCollector(BaseCallbackHandler):
         if "artifact" in payload and isinstance(payload["artifact"], dict):
             payload = payload["artifact"]
         tool_code = payload.get("code") if isinstance(payload.get("code"), str) else None
-        artifact_meta: dict[str, Any] = {}
-        if tool_name:
-            artifact_meta["tool_name"] = str(tool_name)
-        if tool_code:
-            artifact_meta["code"] = tool_code
+        artifact_hints = extract_artifact_hints(payload)
+        artifact_meta = build_artifact_meta(
+            tool_name=tool_name,
+            tool_code=tool_code,
+            source_context=self._source_context,
+            artifact_hints=artifact_hints,
+        )
         event_payload: dict[str, Any] = {
             "phase": "end",
             "tool_name": str(tool_name or "unknown"),
@@ -149,6 +153,11 @@ class ToolCollector(BaseCallbackHandler):
         }
         if tool_code:
             event_payload["code_preview"] = tool_code[:1200]
+        source_meta = artifact_meta.get("source")
+        if isinstance(source_meta, dict):
+            source_type = str(source_meta.get("source_type", "")).strip()
+            if source_type:
+                event_payload["source_type"] = source_type
         if isinstance(payload.get("text"), str) and payload.get("text", "").startswith("❌"):
             event_payload["status"] = "error"
             event_payload["error"] = str(payload.get("text"))
@@ -325,6 +334,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self._inside_think = False
         self._buffer = ""
         self.reasoning_tokens_emitted = 0
+        self.reasoning_chunks: list[str] = []
 
     def _extract_stream_parts(self, token: str) -> tuple[str, str]:
         self._buffer += token
@@ -373,6 +383,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         if visible:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
         if reasoning:
+            self.reasoning_chunks.append(reasoning)
             self.reasoning_tokens_emitted += 1
             self.loop.call_soon_threadsafe(
                 self.queue.put_nowait,
@@ -384,6 +395,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             trailing = self._buffer
             self._buffer = ""
             if self._inside_think:
+                self.reasoning_chunks.append(trailing)
                 self.reasoning_tokens_emitted += 1
                 self.loop.call_soon_threadsafe(
                     self.queue.put_nowait,
@@ -392,3 +404,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             else:
                 self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", trailing))
         self._inside_think = False
+
+    def collected_reasoning(self) -> str | None:
+        merged = "".join(self.reasoning_chunks).strip()
+        return merged or None

@@ -58,7 +58,7 @@ def serialize_artifact(artifact: ArtifactRecord) -> dict[str, Any]:
         "type": artifact.artifact_type,
         "text": artifact.text,
         "role": artifact.role,
-        "meta": artifact.meta,
+        "meta": _to_jsonable(artifact.meta),
         "timestamp": artifact.timestamp,
         "data": data,
     }

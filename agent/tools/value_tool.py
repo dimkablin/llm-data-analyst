@@ -29,6 +29,7 @@ class ValueTool(BaseExecTool):
     description: str = value_tool_prompt
     allowed_artifact_types: tuple = (float, int, str, bool, np.generic)
     allowed_libs: set[str] = {"pandas", "numpy"}
+    max_string_value_len: int = 160
 
     def __init__(
         self,
@@ -67,6 +68,25 @@ class ValueTool(BaseExecTool):
                 False,
                 "Неверный тип значений для value_tool. "
                 f"Ожидались скаляры (float/int/str/bool), получено: {invalid_types}",
+            )
+        invalid_strings: list[str] = []
+        for key, value in tool_result.items():
+            if not isinstance(value, str):
+                continue
+            text = value.strip()
+            sentence_marks = text.count(".") + text.count("!") + text.count("?")
+            if (
+                len(text) > self.max_string_value_len
+                or "\n" in text
+                or sentence_marks > 2
+            ):
+                invalid_strings.append(key)
+        if invalid_strings:
+            return (
+                False,
+                "value_tool предназначен только для коротких value-like результатов. "
+                f"Слишком длинные или объяснительные строковые значения: {', '.join(invalid_strings)}. "
+                "Для развернутого объяснения верни обычный текстовый ответ без value artifact.",
             )
         return True, ""
 

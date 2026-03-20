@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -14,6 +15,11 @@ import pandas as pd
 
 from agent.prompts import db_tool_prompt
 from agent.tools.base_tool import BaseExecTool
+from backend.artifact_meta import (
+    build_db_metadata_recipe_step,
+    build_sql_recipe_step,
+)
+from backend.db_connectors import ResolvedDBConnection, build_connection_adapter
 from backend.db_runtime_service import RuntimeDBConnectionConfig
 
 
@@ -34,6 +40,14 @@ HIGH_PRIORITY_TABLE_RE = re.compile(
     r"(chat|message|order|sale|customer|invoice|payment|product|report|event)",
     re.IGNORECASE,
 )
+SELECT_STAR_RE = re.compile(r"^\s*(with\b[\s\S]+?\)\s*select\s+\*|select\s+\*)\b", re.IGNORECASE)
+TERMINAL_LIMIT_RE = re.compile(
+    r"\blimit\s+(?P<limit>\d+)(?:\s+offset\s+(?P<offset>\d+))?\s*$",
+    re.IGNORECASE,
+)
+DEFAULT_ANALYTIC_MAX_ROWS = 200
+HARD_ANALYTIC_MAX_ROWS = 1000
+MAX_RESULT_CELLS = 12000
 
 
 def _strip_sql(sql: str) -> str:
@@ -51,6 +65,63 @@ def _assert_read_only_sql(sql: str) -> str:
     if ";" in clean:
         raise ValueError("Multiple SQL statements are not allowed in db_tool.")
     return clean
+
+
+def _coerce_max_rows(
+    value: int | None,
+    *,
+    default: int = DEFAULT_ANALYTIC_MAX_ROWS,
+    hard_max: int = HARD_ANALYTIC_MAX_ROWS,
+) -> int:
+    if value is None:
+        return default
+    return max(1, min(int(value), hard_max))
+
+
+def _normalize_analytic_sql(
+    sql: str,
+    *,
+    max_rows: int,
+) -> tuple[str, dict[str, Any]]:
+    clean_sql = _assert_read_only_sql(sql)
+    requested_limit: int | None = None
+    truncated_by_guardrail = False
+    warnings: list[str] = []
+    fetch_limit = _coerce_max_rows(max_rows) + 1
+
+    limit_match = TERMINAL_LIMIT_RE.search(clean_sql)
+    if limit_match:
+        requested_limit = int(limit_match.group("limit"))
+        if requested_limit <= max_rows:
+            fetch_limit = requested_limit
+        else:
+            truncated_by_guardrail = True
+            warnings.append(
+                f"Original LIMIT {requested_limit} exceeded db_tool max_rows={max_rows} and was reduced."
+            )
+    else:
+        truncated_by_guardrail = True
+        warnings.append(f"db_tool appended LIMIT {max_rows} to keep the result compact.")
+
+    if SELECT_STAR_RE.search(clean_sql):
+        warnings.append(
+            "Query uses SELECT *. Prefer explicit columns for large or production queries."
+        )
+
+    normalized_sql = clean_sql
+    if limit_match and requested_limit is not None and requested_limit > max_rows:
+        normalized_sql = TERMINAL_LIMIT_RE.sub(f"LIMIT {fetch_limit}", clean_sql)
+    elif limit_match is None:
+        normalized_sql = f"{clean_sql} LIMIT {fetch_limit}"
+
+    return normalized_sql, {
+        "requested_sql": clean_sql,
+        "requested_limit": requested_limit,
+        "max_rows": max_rows,
+        "fetch_limit": fetch_limit,
+        "warnings": warnings,
+        "guardrail_limited": truncated_by_guardrail,
+    }
 
 
 def _make_json_safe(value: Any) -> Any:
@@ -81,7 +152,7 @@ def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @dataclass
-class DBDemoHelper:
+class DBAnalyticsHelper:
     runtime: RuntimeDBConnectionConfig
     timeout_sec: float = 10.0
 
@@ -107,12 +178,18 @@ class DBDemoHelper:
             connect_kwargs["sslmode"] = sslmode.strip()
         return connect_kwargs
 
-    def _apply_postgres_schema(self, conn: Any) -> None:
+    def _statement_timeout_ms(self) -> int:
+        return max(1000, int(self.timeout_sec * 1000))
+
+    def _apply_postgres_session(self, conn: Any) -> None:
         schema = self._configured_schema()
-        if not schema:
-            return
         with conn.cursor() as cur:
-            cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
+            cur.execute(
+                "SELECT set_config('statement_timeout', %s, false)",
+                (str(self._statement_timeout_ms()),),
+            )
+            if schema:
+                cur.execute("SELECT set_config('search_path', %s, false)", (schema,))
 
     def _quote_identifier(self, value: str) -> str:
         clean = str(value or "").strip()
@@ -132,6 +209,167 @@ class DBDemoHelper:
             return str(self.runtime.database or "default")
         return "public"
 
+    def _resolved_connection(self) -> ResolvedDBConnection:
+        return ResolvedDBConnection(
+            connection_id=self.runtime.connection_id,
+            user_id=self.runtime.user_id,
+            name=self.runtime.name,
+            db_type=self.runtime.db_type,
+            host=self.runtime.host,
+            port=self.runtime.port,
+            database=self.runtime.database,
+            username=self.runtime.username,
+            password=self.runtime.password,
+            options=dict(self.runtime.options),
+        )
+
+    def _catalog_adapter(self):
+        return build_connection_adapter(
+            self._resolved_connection(),
+            timeout_sec=max(1, int(self.timeout_sec)),
+        )
+
+    def _source_ref(self) -> dict[str, str]:
+        return {
+            "source_type": "db_connection",
+            "source_ref_id": self.runtime.connection_id,
+            "source_label": self.runtime.name,
+            "source_mode": "read_only",
+        }
+
+    def _metadata_recipe(
+        self,
+        *,
+        action: str,
+        schema: str | None = None,
+        table: str | None = None,
+    ) -> list[dict[str, Any]]:
+        summary_parts = [f"Read {action} from attached database catalog"]
+        if schema:
+            summary_parts.append(f"schema={schema}")
+        if table:
+            summary_parts.append(f"table={table}")
+        return [
+            build_db_metadata_recipe_step(
+                action=action,
+                title=action.replace("_", " ").title(),
+                tool_name="db_tool",
+                summary="; ".join(summary_parts),
+            )
+        ]
+
+    def _query_recipe(
+        self,
+        *,
+        sql: str,
+        purpose: str | None = None,
+        max_rows: int,
+        warnings: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        summary = str(purpose or "Analytical read query").strip() or "Analytical read query"
+        if warnings:
+            summary = f"{summary}. Warnings: {'; '.join(warnings)}"
+        return [
+            build_sql_recipe_step(
+                sql=sql,
+                title="Executed SQL",
+                tool_name="db_tool",
+                summary=f"{summary}; max_rows={max_rows}",
+            )
+        ]
+
+    def _table_result(
+        self,
+        rows: pd.DataFrame,
+        *,
+        artifact_name: str,
+        recipe: list[dict[str, Any]] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": "1.0",
+            "artifact_type": "table",
+            "items": {artifact_name: _normalize_dataframe(rows)},
+            "source": self._source_ref(),
+        }
+        if recipe:
+            payload["recipe"] = recipe
+        if meta:
+            payload["meta"] = meta
+        return payload
+
+    @staticmethod
+    def _cap_dataframe_rows(
+        rows: pd.DataFrame,
+        *,
+        max_rows: int,
+    ) -> tuple[pd.DataFrame, bool]:
+        if len(rows) <= max_rows:
+            return rows, False
+        return rows.head(max_rows).copy(), True
+
+    @staticmethod
+    def _shrink_for_cell_budget(
+        rows: pd.DataFrame,
+        *,
+        cell_budget: int = MAX_RESULT_CELLS,
+    ) -> tuple[pd.DataFrame, bool]:
+        if rows.empty or rows.shape[1] <= 0:
+            return rows, False
+        max_rows = max(1, cell_budget // max(1, rows.shape[1]))
+        if len(rows) <= max_rows:
+            return rows, False
+        return rows.head(max_rows).copy(), True
+
+    def _package_query_result(
+        self,
+        rows: pd.DataFrame,
+        *,
+        artifact_name: str,
+        executed_sql: str,
+        requested_sql: str,
+        purpose: str | None,
+        max_rows: int,
+        execution_time_ms: int,
+        warnings: list[str] | None = None,
+        truncated: bool = False,
+        requested_limit: int | None = None,
+    ) -> dict[str, Any]:
+        safe_rows = _normalize_dataframe(rows)
+        query_meta = {
+            "purpose": str(purpose or "").strip() or None,
+            "requested_sql": requested_sql,
+            "executed_sql": executed_sql,
+            "max_rows": max_rows,
+            "requested_limit": requested_limit,
+            "returned_rows": int(len(safe_rows)),
+            "column_count": int(len(safe_rows.columns)),
+            "truncated": bool(truncated),
+            "execution_time_ms": int(execution_time_ms),
+            "warnings": list(warnings or []),
+        }
+        meta = {
+            "query": query_meta,
+            "execution_stats": {
+                "row_count": query_meta["returned_rows"],
+                "column_count": query_meta["column_count"],
+                "truncated": query_meta["truncated"],
+                "execution_time_ms": query_meta["execution_time_ms"],
+            },
+            "warnings": list(warnings or []),
+        }
+        return self._table_result(
+            safe_rows,
+            artifact_name=artifact_name,
+            recipe=self._query_recipe(
+                sql=executed_sql,
+                purpose=purpose,
+                max_rows=max_rows,
+                warnings=list(warnings or []),
+            ),
+            meta=meta,
+        )
+
     def _postgres_query_dataframe(
         self,
         sql: str,
@@ -140,7 +378,7 @@ class DBDemoHelper:
         import psycopg
 
         with psycopg.connect(**self._postgres_connect_kwargs()) as conn:
-            self._apply_postgres_schema(conn)
+            self._apply_postgres_session(conn)
             with conn.cursor() as cur:
                 cur.execute(sql, params or ())
                 rows = cur.fetchall()
@@ -164,6 +402,7 @@ class DBDemoHelper:
                 "user": kwargs.get("username") or "",
                 "password": kwargs.get("password") or "",
                 "default_format": "JSON",
+                "max_execution_time": max(1, int(self.timeout_sec)),
             }
         )
         query = _strip_sql(sql)
@@ -193,57 +432,211 @@ class DBDemoHelper:
             raise RuntimeError("ClickHouse returned malformed row payload.")
         return _normalize_dataframe(pd.DataFrame(rows))
 
-    def list_schemas(self) -> list[str]:
-        if self.runtime.db_type == "postgresql":
-            df = self._postgres_query_dataframe(
-                """
-                SELECT schema_name
-                FROM information_schema.schemata
-                WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
-                ORDER BY schema_name
-                """
-            )
-            return [str(item) for item in df["schema_name"].tolist()]
+    def list_schemas(self) -> list[dict[str, str]]:
+        adapter = self._catalog_adapter()
+        return [
+            {
+                "name": item.name,
+                "display_name": item.display_name,
+            }
+            for item in adapter.list_schemas()
+        ]
 
-        df = self._clickhouse_query_dataframe(
-            """
-            SELECT name
-            FROM system.databases
-            WHERE name NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
-            ORDER BY name
-            """
+    def list_schemas_result(
+        self,
+        *,
+        artifact_name: str = "db_schemas",
+    ) -> dict[str, Any]:
+        rows = pd.DataFrame(self.list_schemas(), columns=["name", "display_name"])
+        return self._table_result(
+            rows,
+            artifact_name=artifact_name,
+            recipe=self._metadata_recipe(action="list_schemas"),
         )
-        return [str(item) for item in df["name"].tolist()]
 
-    def list_tables(self, schema: str | None = None) -> list[str]:
+    def list_tables(self, schema: str | None = None) -> list[dict[str, str]]:
         target_schema = str(schema or self._default_schema()).strip()
-        if self.runtime.db_type == "postgresql":
-            df = self._postgres_query_dataframe(
-                """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = %s
-                  AND table_type IN ('BASE TABLE', 'VIEW', 'FOREIGN TABLE', 'LOCAL TEMPORARY')
-                ORDER BY table_name
-                """,
-                (target_schema,),
-            )
-            return [str(item) for item in df["table_name"].tolist()]
+        adapter = self._catalog_adapter()
+        return [
+            {
+                "schema": item.schema,
+                "table_name": item.name,
+                "table_type": item.table_type,
+                "qualified_name": item.qualified_name,
+            }
+            for item in adapter.list_tables(target_schema)
+        ]
 
-        safe_schema = target_schema.replace("\\", "\\\\").replace("'", "\\'")
-        df = self._clickhouse_query_dataframe(
-            f"""
-            SELECT name
-            FROM system.tables
-            WHERE database = '{safe_schema}'
-            ORDER BY name
-            """,
-            database=target_schema,
+    def list_tables_result(
+        self,
+        schema: str | None = None,
+        *,
+        artifact_name: str | None = None,
+    ) -> dict[str, Any]:
+        target_schema = str(schema or self._default_schema()).strip()
+        rows = pd.DataFrame(
+            self.list_tables(target_schema),
+            columns=["schema", "table_name", "table_type", "qualified_name"],
         )
-        return [str(item) for item in df["name"].tolist()]
+        resolved_name = artifact_name or f"db_tables_{target_schema}"
+        return self._table_result(
+            rows,
+            artifact_name=resolved_name,
+            recipe=self._metadata_recipe(action="list_tables", schema=target_schema),
+        )
+
+    def describe_table(
+        self,
+        table: str,
+        *,
+        schema: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_schema = str(schema or self._default_schema()).strip()
+        clean_table = str(table or "").strip()
+        if not clean_table:
+            raise ValueError("table must not be empty.")
+        adapter = self._catalog_adapter()
+        columns = adapter.describe_table(target_schema, clean_table)
+        if not columns:
+            raise ValueError(
+                f"Table '{target_schema}.{clean_table}' was not found or has no visible columns."
+            )
+        return [
+            {
+                "schema": item.schema,
+                "table_name": item.table,
+                "column_name": item.name,
+                "data_type": item.data_type,
+                "is_nullable": item.is_nullable,
+                "ordinal_position": item.ordinal_position,
+                "default_expression": item.default_expression,
+            }
+            for item in columns
+        ]
+
+    def describe_table_result(
+        self,
+        table: str,
+        *,
+        schema: str | None = None,
+        artifact_name: str | None = None,
+    ) -> dict[str, Any]:
+        target_schema = str(schema or self._default_schema()).strip()
+        clean_table = str(table or "").strip()
+        rows = pd.DataFrame(
+            self.describe_table(clean_table, schema=target_schema),
+            columns=[
+                "schema",
+                "table_name",
+                "column_name",
+                "data_type",
+                "is_nullable",
+                "ordinal_position",
+                "default_expression",
+            ],
+        )
+        resolved_name = artifact_name or f"describe_{target_schema}_{clean_table}"
+        return self._table_result(
+            rows,
+            artifact_name=resolved_name,
+            recipe=self._metadata_recipe(
+                action="describe_table",
+                schema=target_schema,
+                table=clean_table,
+            ),
+        )
+
+    def list_columns(
+        self,
+        table: str,
+        *,
+        schema: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.describe_table(table, schema=schema)
+
+    def validate_sql(
+        self,
+        sql: str,
+        *,
+        max_rows: int | None = None,
+    ) -> dict[str, Any]:
+        effective_max_rows = _coerce_max_rows(max_rows)
+        normalized_sql, validation = _normalize_analytic_sql(
+            sql,
+            max_rows=effective_max_rows,
+        )
+        return {
+            "requested_sql": validation["requested_sql"],
+            "normalized_sql": normalized_sql,
+            "requested_limit": validation["requested_limit"],
+            "max_rows": validation["max_rows"],
+            "warnings": list(validation["warnings"]),
+        }
+
+    def execute_read_query(
+        self,
+        sql: str,
+        *,
+        purpose: str | None = None,
+        max_rows: int | None = None,
+        artifact_name: str = "db_query_result",
+    ) -> dict[str, Any]:
+        effective_max_rows = _coerce_max_rows(max_rows)
+        executed_sql, validation = _normalize_analytic_sql(
+            sql,
+            max_rows=effective_max_rows,
+        )
+        started_at = time.perf_counter()
+        rows = self.query_dataframe(executed_sql)
+        execution_time_ms = int((time.perf_counter() - started_at) * 1000)
+
+        warnings = list(validation["warnings"])
+        truncated = False
+        rows, capped = self._cap_dataframe_rows(rows, max_rows=effective_max_rows)
+        truncated = truncated or capped
+        if capped:
+            warnings.append(
+                f"Result exceeded max_rows={effective_max_rows} and was truncated."
+            )
+
+        rows, cell_capped = self._shrink_for_cell_budget(rows)
+        truncated = truncated or cell_capped
+        if cell_capped:
+            warnings.append(
+                f"Result exceeded cell budget={MAX_RESULT_CELLS} and was truncated."
+            )
+
+        return self._package_query_result(
+            rows,
+            artifact_name=artifact_name,
+            executed_sql=executed_sql,
+            requested_sql=validation["requested_sql"],
+            purpose=purpose,
+            max_rows=effective_max_rows,
+            execution_time_ms=execution_time_ms,
+            warnings=warnings,
+            truncated=truncated,
+            requested_limit=validation["requested_limit"],
+        )
+
+    def execute_analytic_query(
+        self,
+        sql: str,
+        *,
+        purpose: str | None = None,
+        max_rows: int | None = None,
+        artifact_name: str = "db_query_result",
+    ) -> dict[str, Any]:
+        return self.execute_read_query(
+            sql,
+            purpose=purpose,
+            max_rows=max_rows,
+            artifact_name=artifact_name,
+        )
 
     def pick_demo_table(self, preferred_schema: str | None = None) -> dict[str, str]:
-        def _table_priority(table_name: str) -> tuple[int, str]:
+        def _table_priority(item: dict[str, str]) -> tuple[int, str]:
+            table_name = str(item.get("table_name") or "").strip()
             if HIGH_PRIORITY_TABLE_RE.search(table_name):
                 return (0, table_name)
             if LOW_PRIORITY_TABLE_RE.search(table_name):
@@ -256,16 +649,19 @@ class DBDemoHelper:
         default_schema = self._default_schema()
         if default_schema not in schema_candidates:
             schema_candidates.append(default_schema)
-        for schema_name in self.list_schemas():
-            if schema_name not in schema_candidates:
+        for schema_item in self.list_schemas():
+            schema_name = str(schema_item.get("name") or "").strip()
+            if schema_name and schema_name not in schema_candidates:
                 schema_candidates.append(schema_name)
 
         for schema_name in schema_candidates:
             tables = sorted(self.list_tables(schema_name), key=_table_priority)
             if tables:
+                selected = tables[0]
                 return {
-                    "schema": schema_name,
-                    "table": tables[0],
+                    "schema": str(selected.get("schema") or schema_name),
+                    "table": str(selected.get("table_name") or ""),
+                    "qualified_name": str(selected.get("qualified_name") or ""),
                 }
         raise ValueError("No accessible tables were found in the selected database source.")
 
@@ -279,7 +675,9 @@ class DBDemoHelper:
         row_limit = max(1, min(int(limit), 200))
         target_schema = str(schema or self._default_schema()).strip()
         qualified = f"{self._quote_identifier(target_schema)}.{self._quote_identifier(table)}"
-        return self.query_dataframe(f"SELECT * FROM {qualified} LIMIT {row_limit}")
+        rows = self.query_dataframe(f"SELECT * FROM {qualified} LIMIT {row_limit}")
+        rows, _ = self._cap_dataframe_rows(rows, max_rows=row_limit)
+        return rows
 
     def preview_first_table(
         self,
@@ -303,13 +701,32 @@ class DBDemoHelper:
         artifact_name: str | None = None,
     ) -> dict[str, Any]:
         target_schema = str(schema or self._default_schema()).strip()
-        rows = self.preview_table(table, schema=target_schema, limit=limit)
         resolved_name = artifact_name or f"preview_{target_schema}_{table}"
-        return {
-            "schema_version": "1.0",
-            "artifact_type": "table",
-            "items": {resolved_name: rows},
-        }
+        qualified = (
+            f"{self._quote_identifier(target_schema)}."
+            f"{self._quote_identifier(str(table or '').strip())}"
+        )
+        return self.execute_analytic_query(
+            f"SELECT * FROM {qualified}",
+            purpose=f"Preview rows from {target_schema}.{str(table or '').strip()}",
+            max_rows=max(1, min(int(limit), 200)),
+            artifact_name=resolved_name,
+        )
+
+    def get_table_preview(
+        self,
+        table: str,
+        *,
+        schema: str | None = None,
+        limit: int = 5,
+        artifact_name: str | None = None,
+    ) -> dict[str, Any]:
+        return self.preview_table_result(
+            table,
+            schema=schema,
+            limit=limit,
+            artifact_name=artifact_name,
+        )
 
     def demo_preview_result(
         self,
@@ -332,6 +749,9 @@ class DBDemoHelper:
             clean_sql,
             database=str(self._configured_schema() or self.runtime.database or self._default_schema()),
         )
+
+
+DBDemoHelper = DBAnalyticsHelper
 
 
 @dataclass(repr=False)
@@ -370,7 +790,7 @@ class DemoDBConnectionView:
 
 class DBTool(BaseExecTool):
     """
-    Reference DB-aware tool with a built-in helper API for safe read-only access.
+    Safe analytical DB access tool for schema discovery and compact read-only queries.
     """
 
     name: str = "db_tool"
@@ -410,7 +830,7 @@ class DBTool(BaseExecTool):
             return {}
         return {
             "db_connection": DemoDBConnectionView(runtime=self._db_runtime_config),
-            "db": DBDemoHelper(
+            "db": DBAnalyticsHelper(
                 runtime=self._db_runtime_config,
                 timeout_sec=min(15.0, self.execution_timeout_sec),
             ),

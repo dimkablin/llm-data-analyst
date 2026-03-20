@@ -20,7 +20,18 @@ from agent.pandas_agent import (
     normalize_agent_messages,
 )
 from agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
-from agent.tools import DBTool, PandasTool, PlotlyTool, ValueTool
+from agent.tools import (
+    AnomalyPlanfactTool,
+    DBTool,
+    DeepResearchTool,
+    ForecastTool,
+    PandasTool,
+    PlotlyTool,
+    SearchTool,
+    ValueTool,
+)
+from backend.anomaly_planfact_integration import AnomalyPlanfactIntegrationService
+from backend.agent_capabilities import build_runtime_capability_context
 from backend.callbacks import (
     AgentProgressCollector,
     LLMTextCollector,
@@ -32,8 +43,18 @@ from backend.callbacks import (
     strip_thinking,
 )
 from backend.config import Settings
+from backend.deep_research_integration import DeepResearchIntegrationService
 from backend.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
+from backend.forecast_integration import ForecastIntegrationService
 from backend.observability import record_llm_usage_on_active_span
+from backend.search_integration import SearchIntegrationService
+from backend.tool_policy import (
+    detect_data_access_mode,
+    has_enabled_data_tools,
+    is_tool_allowed,
+    normalize_allowed_tool_keys,
+    supports_artifact_optional_output,
+)
 
 
 ANALYTICAL_HINTS = (
@@ -74,6 +95,26 @@ INSIGHT_HINTS = (
     "полный анализ",
 )
 
+SEARCH_HINTS = (
+    "РЅР°Р№РґРё",
+    "РїРѕРёС‰Рё",
+    "РїРѕРёСЃРє",
+    "РјР°С‚РµСЂРёР°Р»",
+    "РёСЃС‚РѕС‡РЅРёРє",
+    "СЃСЃС‹Р»Рє",
+    "search",
+    "google",
+    "fresh",
+    "latest",
+)
+DEEP_RESEARCH_HINTS = (
+    "deep research",
+    "research",
+    "\u0433\u043b\u0443\u0431\u043e\u043a\u043e\u0435 \u0438\u0441\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u043d\u0438\u0435",
+    "\u0440\u0430\u0437\u0432\u0435\u0440\u043d\u0443\u0442\u044b\u0439 \u0440\u0435\u0441\u0435\u0440\u0447",
+    "\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0437 \u043f\u043e \u0442\u0435\u043c\u0435",
+)
+
 CHAT_HINTS_RE = re.compile(
     r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
     re.IGNORECASE,
@@ -89,8 +130,9 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
         "think_instruction": (
             "Составь КРАТКИЙ план (1-2 шага).\n"
             "Используй минимум инструментов.\n"
-            "Предпочитай value_tool для одиночных метрик, "
-            "pandas_tool для простых таблиц."
+            "Предпочитай value_tool только для коротких одиночных метрик или компактных summary, "
+            "pandas_tool для простых таблиц.\n"
+            "Не подменяй внешние search/deep research задачи value artifact, если соответствующие tools доступны."
         ),
     },
     "medium": {
@@ -153,6 +195,7 @@ class AgentGraphState(TypedDict, total=False):
     refinement_feedback: str
     stop_reason: str
     tools: list
+    capability_context: dict[str, Any]
 
     response: AgentResponse
 
@@ -162,9 +205,19 @@ class AgentRunner:
         self,
         settings: Settings,
         db_runtime_service: DBRuntimeService | None = None,
+        search_service: SearchIntegrationService | None = None,
+        deep_research_service: DeepResearchIntegrationService | None = None,
+        forecast_service: ForecastIntegrationService | None = None,
+        anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
+        allowed_tool_keys: set[str] | None = None,
     ) -> None:
         self.settings = settings
         self.db_runtime_service = db_runtime_service
+        self.search_service = search_service
+        self.deep_research_service = deep_research_service
+        self.forecast_service = forecast_service
+        self.anomaly_planfact_service = anomaly_planfact_service
+        self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
         self._graph = self._build_query_graph()
@@ -172,6 +225,18 @@ class AgentRunner:
     def _resolve_depth_profile(self) -> dict[str, Any]:
         depth = self.settings.agent_analysis_depth
         return DEPTH_PROFILES.get(depth, DEPTH_PROFILES["light"])
+
+    @staticmethod
+    def _has_confirmed_analysis_output(response: AgentResponse | None) -> bool:
+        if response is None:
+            return False
+        if response.artifacts:
+            return True
+        return (
+            response.tool_calls > 0
+            and bool(str(response.final_text or "").strip())
+            and supports_artifact_optional_output(response.tool_names)
+        )
 
     def _build_llm(
         self,
@@ -492,28 +557,101 @@ class AgentRunner:
         prompt: str,
         session_source: dict[str, Any] | None = None,
     ) -> Literal["chat", "analysis"]:
+        has_search_source = (
+            self.search_service is not None
+            and self.search_service.is_enabled
+            and self._tool_allowed("search_tool")
+        )
+        has_deep_research_source = (
+            self.deep_research_service is not None
+            and self.deep_research_service.is_enabled
+            and self._tool_allowed("deep_research_tool")
+        )
         has_db_source = False
         if isinstance(session_source, dict):
             source_type = str(session_source.get("source_type", "")).strip().lower()
             has_db_source = source_type == "db_connection"
-
-        if df is None and not has_db_source:
-            return "chat"
 
         normalized = prompt.strip().lower()
         if not normalized:
             return "chat"
 
         has_analytics_hint = any(hint in normalized for hint in ANALYTICAL_HINTS)
+        has_search_hint = has_search_source and any(
+            hint in normalized for hint in SEARCH_HINTS
+        )
+        has_deep_research_hint = has_deep_research_source and any(
+            hint in normalized for hint in DEEP_RESEARCH_HINTS
+        )
         has_chat_hint = CHAT_HINTS_RE.search(normalized) is not None
+
+        if df is None and not has_db_source:
+            if has_search_hint or has_deep_research_hint:
+                return "analysis"
+            return "chat"
 
         if has_chat_hint and not has_analytics_hint:
             return "chat"
-        if has_analytics_hint:
+        if has_analytics_hint or has_search_hint or has_deep_research_hint:
             return "analysis"
 
         # При наличии датасета все содержательные запросы считаем аналитическими.
         return "analysis"
+
+    def _tool_allowed(self, tool_key: str) -> bool:
+        return is_tool_allowed(tool_key, self.allowed_tool_keys)
+
+    def _build_data_tools_disabled_response(
+        self,
+        df: pd.DataFrame | None,
+        prompt: str,
+        session_source: dict[str, Any] | None = None,
+    ) -> AgentResponse | None:
+        route = self._route_intent(
+            df,
+            prompt,
+            session_source=session_source,
+        )
+        if route != "analysis":
+            return None
+
+        mode = detect_data_access_mode(
+            has_dataframe=df is not None,
+            session_source=session_source,
+        )
+        if mode is None:
+            return None
+
+        if has_enabled_data_tools(
+            has_dataframe=df is not None,
+            session_source=session_source,
+            allowed_tool_keys=self.allowed_tool_keys,
+        ):
+            return None
+
+        if mode == "db":
+            final_text = (
+                "Не могу выполнить анализ по подключенной базе данных: "
+                "инструменты доступа к данным отключены в настройках аккаунта. "
+                "Включите как минимум `db_tool`. Для построения графиков "
+                "дополнительно можно включить `plotly_tool`."
+            )
+        else:
+            final_text = (
+                "Не могу выполнить анализ по датасету: "
+                "инструменты работы с данными отключены в настройках аккаунта. "
+                "Включите как минимум `pandas_tool` или `value_tool`. "
+                "Для визуализаций дополнительно можно включить `plotly_tool`."
+            )
+
+        return AgentResponse(
+            final_text=final_text,
+            reasoning=None,
+            artifacts=[],
+            route="analysis",
+            tool_calls=0,
+            tool_names=[],
+        )
 
     @staticmethod
     def _is_insight_request(prompt: str) -> bool:
@@ -685,36 +823,42 @@ class AgentRunner:
         )
 
     _THINK_SYSTEM_PROMPT_BASE = (
-        "Ты аналитик данных. Тебе дан вопрос пользователя и описание датасета.\n"
+        "Ты аналитик данных. Тебе дан вопрос пользователя и описание данных.\n"
         "Сформулируй план анализа:\n"
         "1) Какой тип задачи (метрика / таблица / график / комплексный)?\n"
         "2) Какие инструменты вызвать и в каком порядке?\n"
         "3) Какие проверки/фильтры применить?\n"
         "4) Как сформулировать финальный ответ?\n"
         "Будь конкретен: укажи названия столбцов, фильтры, агрегации.\n"
-        "Доступные инструменты:\n"
-        "- `plotly_tool` — построение графиков (bar, scatter, histogram и т.д.)\n"
-        "- `pandas_tool` — табличные срезы, группировки, pivot-таблицы\n"
-        "- `value_tool` — одиночные метрики (count, mean, median, etc.)\n"
+        "Опирайся только на фактически доступные в текущем runtime tools и capabilities.\n"
+        "Если нужного capability нет, не обещай это действие и честно опиши ограничение.\n"
+        "Не используй `value_tool` как замену внешнему knowledge workflow: для search/deep research задач предпочитай соответствующие tools, "
+        "а при их недоступности давай обычный текстовый ответ об ограничении.\n"
     )
 
-    def _think_system_prompt(self) -> str:
+    def _think_system_prompt(self, capability_context: dict[str, Any] | None = None) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
-        return (
+        prompt = (
             self._THINK_SYSTEM_PROMPT_BASE
             + f"\n[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
         )
+        capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
+        if capability_block:
+            prompt += f"\n{capability_block}\n"
+        return prompt
 
     _EVALUATE_PROMPT_TEMPLATE = (
         "Вопрос пользователя: {question}\n"
         "Полученные артефакты: {artifact_summary}\n"
+        "Runtime capabilities: {capability_summary}\n"
         "Текст ответа: {response_text}\n\n"
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
         "Критерии оценки:\n"
         "- Ответ прямо отвечает на вопрос пользователя?\n"
         "- Все утверждения подкреплены артефактами (таблица/график/метрика)?\n"
+        "- Если нужный capability недоступен в runtime, честное объяснение ограничения допустимо даже без tool artifacts.\n"
         "- Нет выдуманных данных?\n"
         "Только JSON, без пояснений."
     )
@@ -727,6 +871,7 @@ class AgentRunner:
         refinement_feedback: str,
         step_index: int,
         max_steps: int,
+        capability_context: dict[str, Any] | None = None,
     ) -> str:
         blocks = [
             user_prompt.strip(),
@@ -750,6 +895,10 @@ class AgentRunner:
             "[ROLE: STEP]",
             f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {self.settings.agent_analysis_depth}.",
         ]
+
+        capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
+        if capability_block:
+            blocks.extend(["", capability_block])
 
         if refinement_feedback.strip():
             blocks.extend([
@@ -1429,28 +1578,110 @@ class AgentRunner:
 
         tools: list = []
         tool_df = df if df is not None else pd.DataFrame()
-        if df is not None:
-            tools = [
+        if (
+            self.search_service is not None
+            and self.search_service.is_enabled
+            and self._tool_allowed("search_tool")
+        ):
+            tools.append(
+                SearchTool(
+                    tool_df,
+                    search_service=self.search_service,
+                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
+                    tool_cache_size=max(8, self.settings.tool_cache_size // 2),
+                )
+            )
+        if (
+            self.forecast_service is not None
+            and self.forecast_service.is_enabled
+            and (df is not None or tool_db_runtime is not None)
+            and self._tool_allowed("forecast_tool")
+        ):
+            tools.append(
+                ForecastTool(
+                    tool_df,
+                    forecast_service=self.forecast_service,
+                    execution_timeout_sec=max(
+                        self.settings.tool_exec_timeout_sec,
+                        90.0,
+                    ),
+                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
+                    db_runtime_config=tool_db_runtime,
+                )
+            )
+        if (
+            self.anomaly_planfact_service is not None
+            and self.anomaly_planfact_service.is_enabled
+            and (df is not None or tool_db_runtime is not None)
+            and self._tool_allowed("anomaly_planfact_tool")
+        ):
+            tools.append(
+                AnomalyPlanfactTool(
+                    tool_df,
+                    anomaly_planfact_service=self.anomaly_planfact_service,
+                    execution_timeout_sec=max(
+                        self.settings.tool_exec_timeout_sec,
+                        90.0,
+                    ),
+                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
+                    db_runtime_config=tool_db_runtime,
+                )
+            )
+        if (
+            self.deep_research_service is not None
+            and self.deep_research_service.is_enabled
+            and self._tool_allowed("deep_research_tool")
+        ):
+            tools.append(
+                DeepResearchTool(
+                    tool_df,
+                    deep_research_service=self.deep_research_service,
+                    execution_timeout_sec=max(
+                        self.settings.tool_exec_timeout_sec,
+                        180.0,
+                    ),
+                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
+                )
+            )
+        if (df is not None or tool_db_runtime is not None) and self._tool_allowed("plotly_tool"):
+            tools.append(
                 PlotlyTool(
                     tool_df,
                     execution_timeout_sec=self.settings.tool_exec_timeout_sec,
                     tool_cache_size=self.settings.tool_cache_size,
                     db_runtime_config=tool_db_runtime,
-                ),
-                PandasTool(
-                    tool_df,
-                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                    tool_cache_size=self.settings.tool_cache_size,
-                    db_runtime_config=tool_db_runtime,
-                ),
-                ValueTool(
-                    tool_df,
-                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                    tool_cache_size=self.settings.tool_cache_size,
-                    db_runtime_config=tool_db_runtime,
-                ),
-            ]
-        if tool_db_runtime is not None:
+                )
+            )
+        if df is not None:
+            tools.extend(
+                [
+                    *(
+                        [
+                            PandasTool(
+                                tool_df,
+                                execution_timeout_sec=self.settings.tool_exec_timeout_sec,
+                                tool_cache_size=self.settings.tool_cache_size,
+                                db_runtime_config=tool_db_runtime,
+                            )
+                        ]
+                        if self._tool_allowed("pandas_tool")
+                        else []
+                    ),
+                    *(
+                        [
+                            ValueTool(
+                                tool_df,
+                                execution_timeout_sec=self.settings.tool_exec_timeout_sec,
+                                tool_cache_size=self.settings.tool_cache_size,
+                                db_runtime_config=tool_db_runtime,
+                            )
+                        ]
+                        if self._tool_allowed("value_tool")
+                        else []
+                    ),
+                ]
+            )
+        if tool_db_runtime is not None and self._tool_allowed("db_tool"):
             tools.append(
                 DBTool(
                     tool_df,
@@ -1474,6 +1705,17 @@ class AgentRunner:
             except Exception:
                 data_context = f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
 
+        tool_keys = [
+            str(getattr(tool, "name", "")).strip()
+            for tool in tools
+            if str(getattr(tool, "name", "")).strip()
+        ]
+        capability_context = build_runtime_capability_context(
+            available_tool_keys=tool_keys,
+            has_dataframe=df is not None,
+            has_db_source=tool_db_runtime is not None,
+        )
+
         user_block = f"Вопрос пользователя: {prompt.strip()}"
         if refinement_feedback.strip():
             user_block += (
@@ -1483,7 +1725,7 @@ class AgentRunner:
             )
 
         think_messages = [
-            SystemMessage(content=self._think_system_prompt()),
+            SystemMessage(content=self._think_system_prompt(capability_context)),
             HumanMessage(content=f"{data_context}\n\n{user_block}"),
         ]
 
@@ -1559,6 +1801,7 @@ class AgentRunner:
         if first_run:
             result["tools"] = tools
             result["step_index"] = 0
+        result["capability_context"] = capability_context
         return result
 
     def _act_node(self, state: AgentGraphState) -> dict[str, Any]:
@@ -1580,6 +1823,7 @@ class AgentRunner:
             refinement_feedback=refinement_feedback,
             step_index=step_index,
             max_steps=max_steps,
+            capability_context=state.get("capability_context"),
         )
 
         self._emit_phase_event(
@@ -1661,6 +1905,8 @@ class AgentRunner:
         prompt = state.get("prompt", "")
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
+        capability_context = state.get("capability_context") or {}
+        unavailable_capabilities = capability_context.get("unavailable_capability_keys") or []
 
         if response is None:
             self._emit_phase_event(
@@ -1685,7 +1931,9 @@ class AgentRunner:
             )
             return {"eval_passed": False, "eval_reason": reason}
 
-        if response.tool_calls <= 0 or not response.artifacts:
+        has_confirmed_output = self._has_confirmed_analysis_output(response)
+
+        if not has_confirmed_output and not unavailable_capabilities:
             reason = "Нет подтвержденных tool-вызовов с артефактами"
             self._emit_phase_event(
                 callbacks, phase="evaluate", title="Оценка результата",
@@ -1708,6 +1956,7 @@ class AgentRunner:
         evaluate_prompt = self._EVALUATE_PROMPT_TEMPLATE.format(
             question=prompt.strip(),
             artifact_summary=artifact_summary,
+            capability_summary=str(capability_context.get("prompt_block", "нет")),
             response_text=self._truncate(response.final_text, 600),
         )
 
@@ -1776,7 +2025,9 @@ class AgentRunner:
         if response is None:
             return {"done": True, "stop_reason": "empty_response"}
 
-        if eval_passed and response.artifacts and response.final_text.strip():
+        has_confirmed_output = self._has_confirmed_analysis_output(response)
+
+        if eval_passed and has_confirmed_output and response.final_text.strip():
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Завершаю цикл ReAct",
@@ -1794,11 +2045,11 @@ class AgentRunner:
             )
             return {
                 "done": True,
-                "stop_reason": "max_steps_reached" if response.artifacts else "eval_failed",
+                "stop_reason": "max_steps_reached" if has_confirmed_output else "eval_failed",
             }
 
         reasoning_lower = str(response.reasoning or "").lower()
-        if "recursion limit" in reasoning_lower and not response.artifacts:
+        if "recursion limit" in reasoning_lower and not has_confirmed_output:
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Остановка по лимиту рекурсии",
@@ -1861,6 +2112,8 @@ class AgentRunner:
                 )
             }
 
+        has_confirmed_output = self._has_confirmed_analysis_output(response)
+
         if route == "analysis":
             if response.artifacts:
                 should_rewrite = (
@@ -1881,7 +2134,7 @@ class AgentRunner:
                     if grounded_summary:
                         response.final_text = grounded_summary
 
-            if response.tool_calls <= 0 or not response.artifacts:
+            if not has_confirmed_output:
                 fallback_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
                 reasoning = (response.reasoning or "").strip()
                 reason_suffix = f"Tool-required policy enforced: {stop_reason or 'missing artifacts'}."
@@ -1897,9 +2150,14 @@ class AgentRunner:
             elif not bool(state.get("eval_passed", False)):
                 reasoning = (response.reasoning or "").strip()
                 eval_reason = state.get("eval_reason", "")
+                output_note = (
+                    "но подтвержденный результат уже получен."
+                    if not response.artifacts
+                    else "но подтвержденные артефакты уже построены."
+                )
                 response.reasoning = (
                     f"{reasoning}\n\nFinalize note: оценка не пройдена ({eval_reason}), "
-                    "но подтвержденные артефакты уже построены."
+                    f"{output_note}"
                 ).strip()
 
         if not response.final_text.strip():
@@ -1989,6 +2247,16 @@ class AgentRunner:
             cached = self._cache_get(cache_key)
             if cached is not None:
                 return cached
+
+        data_tools_disabled = self._build_data_tools_disabled_response(
+            df,
+            prompt,
+            session_source=session_source,
+        )
+        if data_tools_disabled is not None:
+            if cache_allowed:
+                self._cache_set(cache_key, data_tools_disabled)
+            return data_tools_disabled
 
         try:
             result = self._graph.invoke(

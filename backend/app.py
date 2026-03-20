@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from backend.agent_runner import AgentRunner
+from backend.anomaly_planfact_integration import AnomalyPlanfactIntegrationService
 from backend.auth_db import AuthDB, AuthUser
 from backend.callbacks import (
     AgentProgressCollector,
@@ -27,8 +28,10 @@ from backend.callbacks import (
     ToolCollector,
 )
 from backend.config import settings
+from backend.deep_research_integration import DeepResearchIntegrationService
 from backend.db_connections_service import DBConnectionsService
 from backend.db_runtime_service import DBRuntimeService
+from backend.forecast_integration import ForecastIntegrationService
 from backend.models import (
     AdminCreateUserRequest,
     AdminUpdateUserRequest,
@@ -50,10 +53,13 @@ from backend.models import (
     QueryRequest,
     QueryResponse,
     SessionBindDBConnectionSourceRequest,
+    SourceDescriptorResponse,
     SessionSourceStateResponse,
     SessionTitleUpdateRequest,
     SessionStateResponse,
     SessionSummaryResponse,
+    ToolAvailabilityResponse,
+    ToolEnabledUpdateRequest,
     UserSettingsResponse,
     UserSettingsUpdateRequest,
     UploadResponse,
@@ -61,8 +67,11 @@ from backend.models import (
 from backend.observability import initialize_phoenix
 from backend.observability import build_trace_context, query_trace_context
 from backend.observability_service import PhoenixObservabilityService
+from backend.search_integration import SearchIntegrationService
 from backend.serialization import serialize_artifact
 from backend.session_store import SessionState, SessionStore
+from backend.tool_catalog import KNOWN_TOOL_KEYS, build_tool_catalog
+from backend.tool_policy import effective_enabled_tool_keys
 
 
 @asynccontextmanager
@@ -94,7 +103,18 @@ auth_db.ensure_default_admin(
 )
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
-runner = AgentRunner(settings, db_runtime_service=db_runtime_service)
+search_integration_service = SearchIntegrationService.from_env()
+deep_research_integration_service = DeepResearchIntegrationService.from_env()
+forecast_integration_service = ForecastIntegrationService.from_env()
+anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
+runner = AgentRunner(
+    settings,
+    db_runtime_service=db_runtime_service,
+    search_service=search_integration_service,
+    deep_research_service=deep_research_integration_service,
+    forecast_service=forecast_integration_service,
+    anomaly_planfact_service=anomaly_planfact_integration_service,
+)
 phoenix_observability_service = PhoenixObservabilityService(settings)
 initialize_phoenix()
 
@@ -218,6 +238,33 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         agent_step_timeout_sec=settings_row.agent_step_timeout_sec,
         agent_inner_recursion_limit=settings_row.agent_inner_recursion_limit,
     )
+
+
+def _integration_source_descriptors() -> list[dict[str, Any]]:
+    return [
+        search_integration_service.source_descriptor(),
+        deep_research_integration_service.source_descriptor(),
+        forecast_integration_service.source_descriptor(),
+        anomaly_planfact_integration_service.source_descriptor(),
+    ]
+
+
+def _tool_catalog_payload(user_id: int) -> list[dict[str, Any]]:
+    return build_tool_catalog(
+        source_descriptors=_integration_source_descriptors(),
+        user_settings=auth_db.list_user_tool_settings(user_id),
+    )
+
+
+def _tool_catalog_response(user_id: int) -> list[ToolAvailabilityResponse]:
+    return [
+        ToolAvailabilityResponse(**item)
+        for item in _tool_catalog_payload(user_id)
+    ]
+
+
+def _enabled_tool_keys_for_user(user_id: int) -> set[str]:
+    return effective_enabled_tool_keys(_tool_catalog_payload(user_id))
 
 
 def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | None = None):
@@ -380,6 +427,30 @@ def auth_update_settings(
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
     )
+
+
+@app.get("/auth/tools", response_model=list[ToolAvailabilityResponse])
+def auth_get_tools(
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[ToolAvailabilityResponse]:
+    return _tool_catalog_response(current_user.id)
+
+
+@app.patch("/auth/tools/{tool_key}", response_model=ToolAvailabilityResponse)
+def auth_update_tool(
+    tool_key: str,
+    payload: ToolEnabledUpdateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> ToolAvailabilityResponse:
+    clean_tool_key = str(tool_key or "").strip()
+    if clean_tool_key not in KNOWN_TOOL_KEYS:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    auth_db.set_user_tool_enabled(current_user.id, clean_tool_key, payload.enabled)
+    rows = _tool_catalog_response(current_user.id)
+    for item in rows:
+        if item.tool_key == clean_tool_key:
+            return item
+    raise HTTPException(status_code=500, detail="Tool state was not persisted")
 
 
 @app.get("/db-connections", response_model=list[DBConnectionResponse])
@@ -739,6 +810,14 @@ def get_session(
     )
 
 
+@app.get("/sources", response_model=list[SourceDescriptorResponse])
+def list_available_sources(
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[SourceDescriptorResponse]:
+    _ = current_user
+    return [SourceDescriptorResponse(**item) for item in _integration_source_descriptors()]
+
+
 @app.post(
     "/sessions/{session_id}/source/db-connection",
     response_model=SessionSourceStateResponse,
@@ -951,14 +1030,26 @@ def _build_reasoning_trace(
         seen_tools.add(normalized)
         unique_tools.append(normalized)
 
-    lines: list[str] = [
-        "### Reason-Action Trace",
-        f"- Route: `{normalized_route}`",
-        f"- Dataset attached: `{'yes' if has_dataset else 'no'}`",
-        f"- Use history: `{'yes' if use_history else 'no'}`",
-        f"- Tool calls: `{tool_collector.tool_calls}`",
-        f"- Duration: `{duration_ms} ms`",
-    ]
+    lines: list[str] = []
+
+    cleaned_model_reasoning = (response_reasoning or "").strip()
+    if cleaned_model_reasoning:
+        if len(cleaned_model_reasoning) > 12000:
+            cleaned_model_reasoning = f"{cleaned_model_reasoning[:12000]}..."
+        lines.append("### Chain of Thought")
+        lines.append(cleaned_model_reasoning)
+        lines.append("")
+
+    lines.extend(
+        [
+            "### Reason-Action Trace",
+            f"- Route: `{normalized_route}`",
+            f"- Dataset attached: `{'yes' if has_dataset else 'no'}`",
+            f"- Use history: `{'yes' if use_history else 'no'}`",
+            f"- Tool calls: `{tool_collector.tool_calls}`",
+            f"- Duration: `{duration_ms} ms`",
+        ]
+    )
     if unique_tools:
         lines.append(f"- Tools: `{', '.join(unique_tools)}`")
 
@@ -988,20 +1079,27 @@ def _build_reasoning_trace(
                     event_line += f", error: `{compact_error}`"
             lines.append(event_line)
 
-    cleaned_model_reasoning = (response_reasoning or "").strip()
-    if cleaned_model_reasoning:
-        if len(cleaned_model_reasoning) > 4000:
-            cleaned_model_reasoning = f"{cleaned_model_reasoning[:4000]}..."
-        lines.append("")
-        lines.append("### Model reasoning")
-        lines.append(cleaned_model_reasoning)
-    elif not response_text.strip():
+    if not cleaned_model_reasoning and not response_text.strip():
         lines.append("")
         lines.append("### Notes")
         lines.append("Fallback path used: model returned empty text.")
 
     reasoning = "\n".join(lines).strip()
     return reasoning or None
+
+
+def _merge_reasoning_text(*parts: str | None) -> str | None:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        clean = str(part or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        normalized.append(clean)
+    if not normalized:
+        return None
+    return "\n\n".join(normalized)
 
 
 def _extract_tool_code_preview(raw: str) -> str:
@@ -1098,7 +1196,7 @@ async def _execute_query(
     has_active_source = df is not None or session_db_connection_id is not None
 
     text_collector = LLMTextCollector()
-    tool_collector = ToolCollector()
+    tool_collector = ToolCollector(source_context=session_source)
     active_callbacks = list(callbacks or [])
     active_callbacks.extend([text_collector, tool_collector])
     started_at = time.perf_counter()
@@ -1115,9 +1213,15 @@ async def _execute_query(
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
+    allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     runtime_runner = AgentRunner(
         runtime_settings,
         db_runtime_service=db_runtime_service,
+        search_service=search_integration_service,
+        deep_research_service=deep_research_integration_service,
+        forecast_service=forecast_integration_service,
+        anomaly_planfact_service=anomaly_planfact_integration_service,
+        allowed_tool_keys=allowed_tool_keys,
     )
 
     try:
@@ -1260,7 +1364,7 @@ async def query_stream(
     agent_finished = asyncio.Event()
 
     text_collector = LLMTextCollector()
-    tool_collector = ToolCollector()
+    tool_collector = ToolCollector(source_context=session_source)
     progress_collector = AgentProgressCollector()
     phase_collector = PhaseCollector()
     token_collector = TokenStreamCallbackHandler(queue, loop)
@@ -1280,9 +1384,15 @@ async def query_stream(
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
+    allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     runtime_runner = AgentRunner(
         runtime_settings,
         db_runtime_service=db_runtime_service,
+        search_service=search_integration_service,
+        deep_research_service=deep_research_integration_service,
+        forecast_service=forecast_integration_service,
+        anomaly_planfact_service=anomaly_planfact_integration_service,
+        allowed_tool_keys=allowed_tool_keys,
     )
 
     async def run_agent() -> None:
@@ -1312,9 +1422,14 @@ async def query_stream(
 
             artifacts = [serialize_artifact(a) for a in response.artifacts]
             duration_ms = int((time.perf_counter() - started_at) * 1000)
+            streamed_reasoning = token_collector.collected_reasoning()
+            merged_reasoning = _merge_reasoning_text(
+                response.reasoning,
+                streamed_reasoning,
+            )
             effective_reasoning = _build_reasoning_trace(
                 response_text=response.final_text,
-                response_reasoning=response.reasoning,
+                response_reasoning=merged_reasoning,
                 route=response.route,
                 tool_collector=tool_collector,
                 use_history=payload.use_history,
