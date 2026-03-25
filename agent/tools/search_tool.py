@@ -9,6 +9,7 @@ from pydantic import PrivateAttr
 from agent.prompts import search_tool_prompt
 from agent.tools.base_tool import BaseExecTool
 from backend.search_integration import (
+    FetchedPage,
     SearchIntegrationError,
     SearchIntegrationService,
 )
@@ -48,6 +49,33 @@ class SearchToolHelper:
             "recipe": payload["recipe"],
             "meta": payload["meta"],
         }
+
+    def fetch(
+        self,
+        urls: str | list[str],
+        *,
+        max_chars: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch the text content of one or more URLs.
+
+        Returns a list of dicts: [{"url": ..., "content": ..., "status": "ok"|"error", "error": ...}]
+
+        Use after search() when you want to read the full text of specific pages
+        selected from the search results.
+        """
+        if isinstance(urls, str):
+            urls = [urls]
+        pages: list[FetchedPage] = self.service.fetch_pages(urls, max_chars=max_chars)
+        return [
+            {
+                "url": p.url,
+                "content": p.content,
+                "status": p.status,
+                "error": p.error,
+            }
+            for p in pages
+        ]
 
     def search_result(
         self,

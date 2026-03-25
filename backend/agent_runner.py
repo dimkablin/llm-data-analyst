@@ -20,16 +20,6 @@ from agent.pandas_agent import (
     normalize_agent_messages,
 )
 from agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
-from agent.tools import (
-    AnomalyPlanfactTool,
-    DBTool,
-    DeepResearchTool,
-    ForecastTool,
-    PandasTool,
-    PlotlyTool,
-    SearchTool,
-    ValueTool,
-)
 from backend.anomaly_planfact_integration import AnomalyPlanfactIntegrationService
 from backend.agent_capabilities import build_runtime_capability_context
 from backend.callbacks import (
@@ -49,6 +39,7 @@ from backend.forecast_integration import ForecastIntegrationService
 from backend.observability import record_llm_usage_on_active_span
 from backend.rag_service import RAGService
 from backend.search_integration import SearchIntegrationService
+from backend.tool_context import ToolBuildContext
 from backend.tool_policy import (
     detect_data_access_mode,
     has_enabled_data_tools,
@@ -56,6 +47,7 @@ from backend.tool_policy import (
     normalize_allowed_tool_keys,
     supports_artifact_optional_output,
 )
+from backend.tool_registry import ToolRegistry
 
 
 ANALYTICAL_HINTS = (
@@ -97,23 +89,46 @@ INSIGHT_HINTS = (
 )
 
 SEARCH_HINTS = (
-    "РЅР°Р№РґРё",
-    "РїРѕРёС‰Рё",
-    "РїРѕРёСЃРє",
-    "РјР°С‚РµСЂРёР°Р»",
-    "РёСЃС‚РѕС‡РЅРёРє",
-    "СЃСЃС‹Р»Рє",
+    # trigger words
+    "найди",
+    "поищи",
+    "поиск",
+    "погугли",
+    "загугли",
+    # content references
+    "материал",
+    "источник",
+    "ссылк",
+    "статью",
+    "статьи",
+    # current-events / news queries
+    "новост",
+    "что было",
+    "что произошло",
+    "что случилось",
+    "что происходит",
+    "что сейчас",
+    "что нового",
+    "последнее время",
+    "последних событи",
+    "актуальн",
+    "свежие данные",
+    "свежую информацию",
+    "в интернете",
+    # english fallbacks
     "search",
     "google",
     "fresh",
     "latest",
+    "news",
+    "recent",
 )
 DEEP_RESEARCH_HINTS = (
     "deep research",
     "research",
-    "\u0433\u043b\u0443\u0431\u043e\u043a\u043e\u0435 \u0438\u0441\u0441\u043b\u0435\u0434\u043e\u0432\u0430\u043d\u0438\u0435",
-    "\u0440\u0430\u0437\u0432\u0435\u0440\u043d\u0443\u0442\u044b\u0439 \u0440\u0435\u0441\u0435\u0440\u0447",
-    "\u043f\u043e\u0434\u0440\u043e\u0431\u043d\u044b\u0439 \u0430\u043d\u0430\u043b\u0438\u0437 \u043f\u043e \u0442\u0435\u043c\u0435",
+    "глубокое исследование",
+    "развернутый ресерч",
+    "подробный анализ по теме",
 )
 RAG_HINTS = (
     "rag",
@@ -234,6 +249,12 @@ class AgentRunner:
         self.anomaly_planfact_service = anomaly_planfact_service
         self.rag_service = rag_service
         self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
+        self._tool_registry = ToolRegistry.from_services(
+            search_service=search_service,
+            deep_research_service=deep_research_service,
+            forecast_service=forecast_service,
+            anomaly_planfact_service=anomaly_planfact_service,
+        )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
         self._graph = self._build_query_graph()
@@ -573,16 +594,12 @@ class AgentRunner:
         prompt: str,
         session_source: dict[str, Any] | None = None,
     ) -> Literal["chat", "analysis", "rag"]:
-        has_search_source = (
-            self.search_service is not None
-            and self.search_service.is_enabled
-            and self._tool_allowed("search_tool")
+        _probe = ToolBuildContext(
+            settings=self.settings,
+            allowed_tool_keys=self.allowed_tool_keys,
         )
-        has_deep_research_source = (
-            self.deep_research_service is not None
-            and self.deep_research_service.is_enabled
-            and self._tool_allowed("deep_research_tool")
-        )
+        has_search_source = self._tool_registry.is_available("search_tool", _probe)
+        has_deep_research_source = self._tool_registry.is_available("deep_research_tool", _probe)
         has_db_source = False
         if isinstance(session_source, dict):
             source_type = str(session_source.get("source_type", "")).strip().lower()
@@ -607,6 +624,9 @@ class AgentRunner:
                 return "rag"
             if has_search_hint or has_deep_research_hint:
                 return "analysis"
+            # No keyword hint — let the LLM decide if web search is needed.
+            if (has_search_source or has_deep_research_source) and self._llm_classify_needs_search(prompt):
+                return "analysis"
             return "chat"
 
         if has_chat_hint and not has_analytics_hint and not has_rag_hint:
@@ -618,6 +638,36 @@ class AgentRunner:
 
         # При наличии датасета все содержательные запросы считаем аналитическими.
         return "analysis"
+
+    def _llm_classify_needs_search(self, prompt: str) -> bool:
+        """Fast single-token LLM call: should this query go to web search?
+
+        Called only when no keyword hints matched and a search tool is available.
+        Returns True → route to "analysis" (search tools active).
+        Returns False → route to "chat" (no search).
+        On any error falls back to False (chat) so the UX degrades gracefully.
+        """
+        system = (
+            "You are a query router. Your only job: decide if the user query requires "
+            "a live web search for current, recent, or external information — or if it "
+            "can be answered from general knowledge / is conversational.\n"
+            "Reply with exactly one word: SEARCH or CHAT."
+        )
+        try:
+            llm = self._build_llm(
+                role="evaluate",
+                include_reasoning=False,
+                timeout_sec=8,
+                max_tokens_override=5,
+            )
+            result = llm.invoke([
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ])
+            text = self._content_to_text(result.content).strip().upper()
+            return "SEARCH" in text
+        except Exception:  # noqa: BLE001
+            return False
 
     def _tool_allowed(self, tool_key: str) -> bool:
         return is_tool_allowed(tool_key, self.allowed_tool_keys)
@@ -1775,120 +1825,13 @@ class AgentRunner:
             state.get("trace_context")
         )
 
-        tools: list = []
-        tool_df = df if df is not None else pd.DataFrame()
-        if (
-            self.search_service is not None
-            and self.search_service.is_enabled
-            and self._tool_allowed("search_tool")
-        ):
-            tools.append(
-                SearchTool(
-                    tool_df,
-                    search_service=self.search_service,
-                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                    tool_cache_size=max(8, self.settings.tool_cache_size // 2),
-                )
-            )
-        if (
-            self.forecast_service is not None
-            and self.forecast_service.is_enabled
-            and (df is not None or tool_db_runtime is not None)
-            and self._tool_allowed("forecast_tool")
-        ):
-            tools.append(
-                ForecastTool(
-                    tool_df,
-                    forecast_service=self.forecast_service,
-                    execution_timeout_sec=max(
-                        self.settings.tool_exec_timeout_sec,
-                        90.0,
-                    ),
-                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
-                    db_runtime_config=tool_db_runtime,
-                )
-            )
-        if (
-            self.anomaly_planfact_service is not None
-            and self.anomaly_planfact_service.is_enabled
-            and (df is not None or tool_db_runtime is not None)
-            and self._tool_allowed("anomaly_planfact_tool")
-        ):
-            tools.append(
-                AnomalyPlanfactTool(
-                    tool_df,
-                    anomaly_planfact_service=self.anomaly_planfact_service,
-                    execution_timeout_sec=max(
-                        self.settings.tool_exec_timeout_sec,
-                        90.0,
-                    ),
-                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
-                    db_runtime_config=tool_db_runtime,
-                )
-            )
-        if (
-            self.deep_research_service is not None
-            and self.deep_research_service.is_enabled
-            and self._tool_allowed("deep_research_tool")
-        ):
-            tools.append(
-                DeepResearchTool(
-                    tool_df,
-                    deep_research_service=self.deep_research_service,
-                    execution_timeout_sec=max(
-                        self.settings.tool_exec_timeout_sec,
-                        180.0,
-                    ),
-                    tool_cache_size=max(4, self.settings.tool_cache_size // 3),
-                )
-            )
-        if (df is not None or tool_db_runtime is not None) and self._tool_allowed("plotly_tool"):
-            tools.append(
-                PlotlyTool(
-                    tool_df,
-                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                    tool_cache_size=self.settings.tool_cache_size,
-                    db_runtime_config=tool_db_runtime,
-                )
-            )
-        if df is not None:
-            tools.extend(
-                [
-                    *(
-                        [
-                            PandasTool(
-                                tool_df,
-                                execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                                tool_cache_size=self.settings.tool_cache_size,
-                                db_runtime_config=tool_db_runtime,
-                            )
-                        ]
-                        if self._tool_allowed("pandas_tool")
-                        else []
-                    ),
-                    *(
-                        [
-                            ValueTool(
-                                tool_df,
-                                execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                                tool_cache_size=self.settings.tool_cache_size,
-                                db_runtime_config=tool_db_runtime,
-                            )
-                        ]
-                        if self._tool_allowed("value_tool")
-                        else []
-                    ),
-                ]
-            )
-        if tool_db_runtime is not None and self._tool_allowed("db_tool"):
-            tools.append(
-                DBTool(
-                    tool_df,
-                    execution_timeout_sec=self.settings.tool_exec_timeout_sec,
-                    tool_cache_size=max(8, self.settings.tool_cache_size // 2),
-                    db_runtime_config=tool_db_runtime,
-                )
-            )
+        _ctx = ToolBuildContext(
+            settings=self.settings,
+            allowed_tool_keys=self.allowed_tool_keys,
+            df=df,
+            tool_db_runtime=tool_db_runtime,
+        )
+        tools: list = self._tool_registry.build_tools(_ctx)
 
         depth_max = int(self._depth_profile.get("max_steps", self.settings.agent_max_steps))
         max_steps = max(2, min(depth_max, self.settings.agent_max_steps))

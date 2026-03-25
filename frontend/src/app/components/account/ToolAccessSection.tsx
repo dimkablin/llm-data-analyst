@@ -20,6 +20,10 @@ const GROUP_META: Record<ToolGroup, { title: string; empty: string }> = {
   },
 };
 
+// Virtual key that represents the merged search_tool + deep_research_tool row
+const WEB_SEARCH_KEY = "__web_search__";
+const WEB_SEARCH_TOOL_KEYS = new Set(["search_tool", "deep_research_tool"]);
+
 export function ToolAccessSection() {
   const [tools, setTools] = useState<ToolAvailability[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -46,6 +50,47 @@ export function ToolAccessSection() {
     return buckets;
   }, [tools]);
 
+  // Merge search_tool + deep_research_tool into a single "Веб поиск" row
+  const displayIntegrations = useMemo<ToolAvailability[]>(() => {
+    const searchTool = grouped.integration.find((t) => t.tool_key === "search_tool");
+    const deepTool = grouped.integration.find((t) => t.tool_key === "deep_research_tool");
+    const others = grouped.integration.filter((t) => !WEB_SEARCH_TOOL_KEYS.has(t.tool_key));
+
+    if (!searchTool && !deepTool) return grouped.integration;
+
+    const primary = searchTool ?? deepTool!;
+
+    // Row is available / enabled when AT LEAST ONE of the underlying tools is.
+    const available_globally =
+      (searchTool?.available_globally ?? false) || (deepTool?.available_globally ?? false);
+    const enabled_globally =
+      (searchTool?.enabled_globally ?? false) || (deepTool?.enabled_globally ?? false);
+    const enabled_for_user =
+      (searchTool?.enabled_for_user ?? false) || (deepTool?.enabled_for_user ?? false);
+    const effective_enabled =
+      (searchTool?.effective_enabled ?? false) || (deepTool?.effective_enabled ?? false);
+    const status = effective_enabled ? "enabled" : primary.status;
+
+    const merged: ToolAvailability = {
+      ...primary,
+      tool_key: WEB_SEARCH_KEY,
+      tool_label: "Веб поиск",
+      display_name_ru: "Веб поиск",
+      description: "Быстрый поиск и глубокое итеративное исследование в интернете.",
+      description_ru: "Быстрый поиск и глубокое итеративное исследование в интернете.",
+      capabilities: ["search", "web_results", "deep_research", "research_report"],
+      source_type: "search",
+      requires_session_data: false,
+      available_globally,
+      enabled_globally,
+      enabled_for_user,
+      effective_enabled,
+      status,
+    };
+
+    return [merged, ...others];
+  }, [grouped.integration]);
+
   async function loadTools(background = false): Promise<void> {
     if (background) {
       setIsRefreshing(true);
@@ -64,6 +109,32 @@ export function ToolAccessSection() {
   }
 
   async function handleToggle(tool: ToolAvailability, nextEnabled: boolean): Promise<void> {
+    // For the merged "Веб поиск" row, toggle both underlying tools
+    if (tool.tool_key === WEB_SEARCH_KEY) {
+      const targets = grouped.integration.filter(
+        (t) => WEB_SEARCH_TOOL_KEYS.has(t.tool_key) && t.enabled_globally && t.available_globally,
+      );
+      setSavingKeys((prev) => ({ ...prev, [WEB_SEARCH_KEY]: true }));
+      try {
+        await Promise.all(
+          targets.map(async (t) => {
+            const updated = await updateUserToolEnabled(t.tool_key, nextEnabled);
+            setTools((prev) => prev.map((item) => (item.tool_key === updated.tool_key ? updated : item)));
+          }),
+        );
+        setError(null);
+      } catch (toggleError) {
+        setError(summarizeError(toggleError));
+      } finally {
+        setSavingKeys((prev) => {
+          const next = { ...prev };
+          delete next[WEB_SEARCH_KEY];
+          return next;
+        });
+      }
+      return;
+    }
+
     setSavingKeys((prev) => ({ ...prev, [tool.tool_key]: true }));
     try {
       const updated = await updateUserToolEnabled(tool.tool_key, nextEnabled);
@@ -126,7 +197,7 @@ export function ToolAccessSection() {
           />
           <ToolGroupCard
             group="integration"
-            tools={grouped.integration}
+            tools={displayIntegrations}
             savingKeys={savingKeys}
             onToggle={handleToggle}
           />

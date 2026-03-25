@@ -46,6 +46,7 @@ class SearchIntegrationConfig:
     enabled: bool
     base_url: str
     search_endpoint: str
+    fetch_endpoint: str
     timeout_sec: float
     max_results_default: int
     fetch_top_n_default: int
@@ -64,12 +65,16 @@ class SearchIntegrationConfig:
         search_endpoint = _clean_str(source_env.get("SEARCH_ENDPOINT")) or "/api/v1/search/"
         if not search_endpoint.startswith("/"):
             search_endpoint = f"/{search_endpoint}"
+        fetch_endpoint = _clean_str(source_env.get("SEARCH_FETCH_ENDPOINT")) or "/api/v1/fetch/"
+        if not fetch_endpoint.startswith("/"):
+            fetch_endpoint = f"/{fetch_endpoint}"
         enabled_default = bool(base_url)
         enabled = _get_bool(source_env, "SEARCH_ENABLED", enabled_default)
         return cls(
             enabled=enabled,
             base_url=base_url.rstrip("/"),
             search_endpoint=search_endpoint,
+            fetch_endpoint=fetch_endpoint,
             timeout_sec=_coerce_positive_float(
                 source_env.get("SEARCH_TIMEOUT_SEC"),
                 default=20.0,
@@ -88,6 +93,18 @@ class SearchIntegrationConfig:
     @property
     def available(self) -> bool:
         return self.enabled and bool(self.base_url)
+
+
+@dataclass(frozen=True)
+class FetchedPage:
+    url: str
+    content: str
+    status: str  # "ok" | "error"
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
 
 
 @dataclass(frozen=True)
@@ -429,3 +446,69 @@ class SearchIntegrationService:
             request_params=request_params,
             payload=payload,
         )
+
+    def fetch_pages(
+        self,
+        urls: list[str],
+        *,
+        max_chars: int | None = None,
+    ) -> list[FetchedPage]:
+        """
+        Fetch the text content of the given URLs via the search_service /fetch/ endpoint.
+
+        Returns a list of FetchedPage (one per URL, preserving order).
+        Never raises — per-URL errors are reported in FetchedPage.status / .error.
+        """
+        if not self.is_enabled:
+            raise SearchIntegrationError(
+                "Search integration is disabled or not configured."
+            )
+
+        clean_urls = [u for u in (_clean_str(u) for u in urls) if u]
+        if not clean_urls:
+            return []
+
+        fetch_url = urljoin(
+            f"{self.config.base_url}/",
+            self.config.fetch_endpoint.lstrip("/"),
+        )
+        body: dict[str, Any] = {"urls": clean_urls}
+        if max_chars is not None:
+            body["max_chars"] = max_chars
+
+        try:
+            raw = self._transport(fetch_url, body, self.config.timeout_sec)
+        except SearchIntegrationError:
+            raise
+        except Exception as exc:
+            raise SearchIntegrationError(f"Fetch request failed: {exc}") from exc
+
+        pages_raw = raw.get("pages") or []
+        results: list[FetchedPage] = []
+        url_set = {u: True for u in clean_urls}
+
+        for item in pages_raw:
+            if not isinstance(item, dict):
+                continue
+            url = _clean_str(item.get("url")) or ""
+            if url not in url_set:
+                continue
+            results.append(
+                FetchedPage(
+                    url=url,
+                    content=str(item.get("content") or ""),
+                    status=str(item.get("status") or "ok"),
+                    error=_clean_str(item.get("error")),
+                )
+            )
+
+        # Preserve original order; fill in any missing URLs
+        fetched_by_url = {p.url: p for p in results}
+        ordered: list[FetchedPage] = []
+        for url in clean_urls:
+            if url in fetched_by_url:
+                ordered.append(fetched_by_url[url])
+            else:
+                ordered.append(FetchedPage(url=url, content="", status="error", error="not returned"))
+
+        return ordered

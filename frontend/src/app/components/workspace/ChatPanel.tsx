@@ -1,16 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  BookOpen,
   Bot,
   Brain,
   Download,
+  FileSpreadsheet,
+  Globe,
   Loader2,
-  Paperclip,
   Pin,
+  Plus,
   RotateCcw,
   Send,
   Settings2,
   Square,
   User,
+  X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type {
@@ -72,9 +76,11 @@ export function ChatPanel({
   onPinArtifact,
 }: Props) {
   const [input, setInput] = useState("");
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
 
   useEffect(() => {
@@ -100,6 +106,28 @@ export function ChatPanel({
       node.removeEventListener("scroll", handleScroll);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isMenuOpen]);
+
+  function handleMenuAction(action: "upload" | "search" | "research"): void {
+    setIsMenuOpen(false);
+    if (action === "upload") {
+      onUploadClick();
+    } else if (action === "search") {
+      setInput((prev) => prev || "Найди в интернете: ");
+    } else {
+      setInput((prev) => prev || "Глубоко исследуй в интернете: ");
+    }
+  }
 
   async function handleSend(): Promise<void> {
     if (!input.trim() || isStreaming) {
@@ -261,16 +289,61 @@ export function ChatPanel({
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
-            className="min-h-[100px] w-full resize-none bg-transparent p-4 pr-28 text-[15px] outline-none"
+            className="min-h-[100px] w-full resize-none bg-transparent p-4 pl-14 pr-16 text-[15px] outline-none"
           />
-          <div className="absolute bottom-3 right-3 flex items-center gap-2">
+
+          {/* "+" action menu — bottom left */}
+          <div ref={menuRef} className="absolute bottom-3 left-3">
             <button
               type="button"
-              onClick={onUploadClick}
-              className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary"
+              onClick={() => setIsMenuOpen((v) => !v)}
+              className={`flex h-9 w-9 items-center justify-center rounded-xl border transition-all ${
+                isMenuOpen
+                  ? "border-primary/60 bg-primary/10 text-primary"
+                  : "border-border/50 bg-secondary/60 text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground"
+              }`}
+              title="Действия"
             >
-              <Paperclip className="h-5 w-5" />
+              {isMenuOpen ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
             </button>
+
+            <AnimatePresence>
+              {isMenuOpen ? (
+                <motion.div
+                  initial={{ opacity: 0, y: 6, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 6, scale: 0.97 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute bottom-full left-0 z-50 mb-2 min-w-[220px] overflow-hidden rounded-2xl border border-border/60 bg-card shadow-2xl"
+                >
+                  <div className="p-1.5">
+                    <ActionMenuItem
+                      icon={<FileSpreadsheet className="h-5 w-5" />}
+                      label="Загрузить CSV файл"
+                      description="Добавить данные для анализа"
+                      onClick={() => handleMenuAction("upload")}
+                    />
+                    <div className="my-1 h-px bg-border/40" />
+                    <ActionMenuItem
+                      icon={<Globe className="h-5 w-5" />}
+                      label="Поиск в сети"
+                      description="Быстрый поиск по запросу"
+                      onClick={() => handleMenuAction("search")}
+                    />
+                    <ActionMenuItem
+                      icon={<BookOpen className="h-5 w-5" />}
+                      label="Глубокое исследование"
+                      description="Многоитерационный анализ"
+                      onClick={() => handleMenuAction("research")}
+                    />
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+
+          {/* Send / Stop — bottom right */}
+          <div className="absolute bottom-3 right-3">
             {isStreaming ? (
               <button type="button" onClick={onStop} className="rounded-lg bg-rose-500 p-2 text-white">
                 <Square className="h-5 w-5" />
@@ -293,6 +366,34 @@ export function ChatPanel({
         </div>
       </div>
     </div>
+  );
+}
+
+function ActionMenuItem({
+  icon,
+  label,
+  description,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-secondary/80"
+    >
+      <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-secondary/80 text-foreground">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold text-foreground">{label}</div>
+        <div className="text-[11px] text-muted-foreground">{description}</div>
+      </div>
+    </button>
   );
 }
 

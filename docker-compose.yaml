@@ -1,4 +1,47 @@
 services:
+
+  # ─── SearXNG metasearch engine ──────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    volumes:
+      - ./search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ─── Search Service (SearXNG bridge) ────────────────────────────────────────
+  search_service:
+    image: llm-data-analyst-search:latest
+    build:
+      context: ./search_service
+      dockerfile: Dockerfile
+    environment:
+      - SEARXNG_API_URL=http://searxng:8080
+      - SEARXNG_MIN_SCORE=${SEARXNG_MIN_SCORE:-0.0}
+      - SEARCH_TIMEOUT_SEC=${SEARCH_TIMEOUT_SEC:-20.0}
+      - FETCH_TIMEOUT_SEC=${FETCH_TIMEOUT_SEC:-15.0}
+      - SEARCH_FETCH_MAX_CHARS=${SEARCH_FETCH_MAX_CHARS:-10000}
+    ports:
+      - "${SEARCH_SERVICE_PORT:-8610}:8000"
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ─── Backend ─────────────────────────────────────────────────────────────────
   backend:
     image: llm-data-analyst-backend:latest
     build:
@@ -39,6 +82,8 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       phoenix:
+        condition: service_healthy
+      search_service:
         condition: service_healthy
     restart: unless-stopped
 

@@ -2,12 +2,25 @@ from agent.tools.anomaly_planfact_tool import AnomalyPlanfactTool
 from agent.tools.base_tool import BaseExecTool
 from agent.tools.db_tool import DBTool
 from agent.tools.deep_research_tool import DeepResearchTool
+from agent.tools.factory import (
+    AnomalyPlanfactToolFactory,
+    DBToolFactory,
+    DeepResearchToolFactory,
+    ForecastToolFactory,
+    PandasToolFactory,
+    PlotlyToolFactory,
+    SearchToolFactory,
+    ToolFactory,
+    ValueToolFactory,
+)
 from agent.tools.forecast_tool import ForecastTool
 from agent.tools.pandas_tool import PandasTool
 from agent.tools.plotly_tool import PlotlyTool
 from agent.tools.search_tool import SearchTool
 from agent.tools.value_tool import ValueTool
+
 __all__ = [
+    # Tool instances
     "BaseExecTool",
     "DBTool",
     "PandasTool",
@@ -16,5 +29,15 @@ __all__ = [
     "AnomalyPlanfactTool",
     "DeepResearchTool",
     "ForecastTool",
-    "SearchTool"
+    "SearchTool",
+    # Factories
+    "ToolFactory",
+    "SearchToolFactory",
+    "DeepResearchToolFactory",
+    "ForecastToolFactory",
+    "AnomalyPlanfactToolFactory",
+    "PlotlyToolFactory",
+    "PandasToolFactory",
+    "ValueToolFactory",
+    "DBToolFactory",
 ]

@@ -28,7 +28,8 @@ from backend.callbacks import (
     ToolCollector,
 )
 from backend.config import settings
-from backend.deep_research_integration import DeepResearchIntegrationService
+from backend.deep_research_integration import DeepResearchConfig, DeepResearchIntegrationService
+from backend.deep_research_service import LocalDeepResearchService
 from backend.db_connections_service import DBConnectionsService
 from backend.db_runtime_service import DBRuntimeService
 from backend.forecast_integration import ForecastIntegrationService
@@ -105,7 +106,15 @@ auth_db.ensure_default_admin(
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
 search_integration_service = SearchIntegrationService.from_env()
-deep_research_integration_service = DeepResearchIntegrationService.from_env()
+_dr_config = DeepResearchConfig.from_env()
+if _dr_config.available:
+    # External deep-research backend URL is configured — use HTTP client
+    deep_research_integration_service = DeepResearchIntegrationService(_dr_config)
+else:
+    # No external URL — run research locally using the LLM + search bridge
+    deep_research_integration_service = LocalDeepResearchService.from_env(
+        search_service=search_integration_service
+    )
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
 rag_service = RAGService.from_env()

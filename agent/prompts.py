@@ -70,52 +70,89 @@ agent_prompt = """
 """
 
 
-search_tool_prompt = """Quick external search tool.
+search_tool_prompt = """Quick web search tool. Returns raw search results from SearXNG — fast, no LLM involved.
 Input: Python code with helper object `search`.
 
-What to use:
-- `search.search("...")` -> return a normalized search response as a Python object
-- `search.search_result("...", artifact_name="...")` -> return a ready table artifact with `source/recipe/provenance`
+Use it for:
+- Finding recent news, links, external materials, or fresh public information.
+- Quick factual lookups where 1-2 sources are enough.
+- Reading the full text of specific pages after seeing search results.
 
-Use it when the user asks to find external materials, links, sources, or fresh public information.
+Methods:
+- `search.search("...")` → dict with keys: query, answer, results (list), sources (list)
+- `search.search_result("...", artifact_name="...")` → ready table artifact with source/recipe/provenance
+- `search.fetch(urls)` → read full text of given URLs; returns list of {url, content, status, error}
+
+Two-step pattern (search → LLM picks URLs → fetch):
+1. Call `search.search(...)` to get results with titles/snippets.
+2. Inspect the results, pick the most relevant URLs.
+3. Call `search.fetch([url1, url2])` to get full page text.
 
 Rules:
-- prefer `search.search_result(...)` for user-facing search results
-- keep the last code line exactly `tool_result`
-- do not perform manual network calls; use only helper `search`
+- prefer `search.search_result(...)` for user-facing search result tables
+- use `search.fetch(...)` when you need full page content of specific URLs
+- last code line must be exactly `tool_result`
+- do not make manual HTTP calls; use only helper `search`
 
-Example:
+Example — search only:
 ```python
 tool_result = search.search_result(
-    "fresh materials about AI agent observability",
-    artifact_name="agent_observability_search",
+    "latest AI agent frameworks 2025",
+    artifact_name="ai_agent_frameworks",
     max_results=5,
 )
+tool_result
+```
+
+Example — search then selectively fetch:
+```python
+import pandas as pd
+
+results = search.search("крупнейшие LLM модели 2025", max_results=8, fetch_top_n=0)
+# pick the 2 most relevant URLs from results["results"]
+best_urls = [r["url"] for r in results["results"][:2] if r.get("url")]
+pages = search.fetch(best_urls)
+
+rows = [{"url": p["url"], "text": p["content"][:1000]} for p in pages if p["status"] == "ok"]
+tool_result = {
+    "schema_version": "1.0",
+    "artifact_type": "table",
+    "items": {"fetched_pages": pd.DataFrame(rows)},
+    "source": results.get("source", {}),
+    "recipe": [],
+    "meta": {},
+}
 tool_result
 ```
 """
 
 
-deep_research_tool_prompt = """Deep research tool for heavier external research workflows.
+deep_research_tool_prompt = """Deep iterative research tool. Runs multiple search iterations, cross-checks sources, and writes a structured Markdown report — thorough but slower than search_tool.
 Input: Python code with helper object `deep_research`.
 
-What to use:
-- `deep_research.research("...")` -> return a normalized deep research response as a Python object
-- `deep_research.research_result("...", artifact_name="...")` -> return a ready table artifact with `source/recipe/provenance`
+Use it for:
+- Analytical or comparative questions that need facts from multiple sources.
+- Topics where a single search is insufficient (market analysis, technology overviews, fact-checking).
+- When the user explicitly asks for a detailed report, deep research, or comprehensive analysis.
 
-Use it when the user asks for deep research, a detailed external analysis, or a longer research report.
+Do NOT use it for simple lookups that search_tool can handle.
+
+Methods:
+- `deep_research.research("...")` → normalized research response (summary, report_text, rows, sources)
+- `deep_research.research_result("...", artifact_name="...")` → ready table artifact with source/recipe/provenance
 
 Rules:
-- prefer `deep_research.research_result(...)` for user-facing research output
-- keep the last code line exactly `tool_result`
-- do not perform manual network calls; use only helper `deep_research`
+- prefer `deep_research.research_result(...)` for user-facing output
+- last code line must be exactly `tool_result`
+- do not make manual network calls; use only helper `deep_research`
+- set max_iterations=3..5 for broad topics; 2 is enough for focused ones
 
 Example:
 ```python
 tool_result = deep_research.research_result(
-    "detailed research on AI agent observability",
-    artifact_name="agent_observability_research",
-    max_iterations=3,
+    "сравнение современных open-source LLM для агентных задач",
+    artifact_name="llm_agent_comparison",
+    max_iterations=4,
 )
 tool_result
 ```
