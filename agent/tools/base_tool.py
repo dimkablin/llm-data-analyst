@@ -9,7 +9,6 @@ import traceback
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import pandas as pd
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError

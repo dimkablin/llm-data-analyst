@@ -17,7 +17,7 @@ def load_csv_data(uploaded_file: IO) -> pd.DataFrame | None:
     try:
         df = pd.read_csv(uploaded_file)
         return df
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -52,5 +52,5 @@ def load_db_data(
             query = f"SELECT * FROM {table}"
         df = pd.read_sql_query(query, engine)
         return df
-    except Exception as e:
+    except Exception:
         return None

@@ -187,6 +187,12 @@ class Settings:
         os.getenv("DB_CONNECTIONS_TEST_TIMEOUT_SEC", "8")
     )
 
+    rag_url: str = os.getenv("RAG_URL", "http://10.9.168.20:9621").strip()
+    rag_timeout_sec: int = int(os.getenv("RAG_TIMEOUT_SEC", "45"))
+    rag_verify_ssl: bool = _get_bool("RAG_VERIFY_SSL", False)
+    rag_query_mode: str = os.getenv("RAG_QUERY_MODE", "hybrid").strip().lower()
+    rag_top_k: int = int(os.getenv("RAG_TOP_K", "5"))
+
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)
     phoenix_project_name: str = os.getenv("PHOENIX_PROJECT_NAME", "llm-data-analyst")

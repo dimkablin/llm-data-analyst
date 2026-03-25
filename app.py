@@ -1,6 +1,13 @@
 import streamlit as st
 from dotenv import load_dotenv
+from agent.agent import Agent
+from components.chat import render_chat
+from components.dashboard import render_dashboard
+from components.profiling import render_profiling
+from components.sidebar import render_sidebar
+from utils.params_manager import params_manager
 
+load_dotenv()
 
 @st.cache_data
 def load_css(file_path: str) -> str:
@@ -40,16 +47,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
-load_dotenv()
-
-from agent.agent import Agent
-from components.chat import render_chat
-from components.dashboard import render_dashboard
-from components.profiling import render_profiling
-from components.sidebar import render_sidebar
-from utils.params_manager import params_manager
-
 
 def main() -> None:
     """

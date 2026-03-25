@@ -81,7 +81,7 @@ def render_table(artifact: Artifact) -> None:
         hide_index=False,
     )
     if st.button(
-        f"➕ Добавить таблицу на дашборд",
+        "➕ Добавить таблицу на дашборд",
         key=f"add_to_dashboard_{artifact.id}_{artifact.text}",
     ):
         params_manager.get("artifact_store").mark_for_dashboard(artifact.id)

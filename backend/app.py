@@ -831,7 +831,7 @@ def bind_session_db_connection_source(
     payload: SessionBindDBConnectionSourceRequest,
     current_user: AuthUser = Depends(get_current_user),
 ) -> SessionSourceStateResponse:
-    state = _load_owned_session(session_id, current_user)
+    _load_owned_session(session_id, current_user)
     connection = db_connections_service.get_connection(
         current_user.id,
         payload.connection_id,

@@ -91,11 +91,6 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
         return clean or None
 
     def _connect_kwargs(self) -> dict[str, Any]:
-        try:
-            import psycopg
-        except ImportError as exc:
-            raise RuntimeError("PostgreSQL connector dependency is not installed.") from exc
-
         connect_kwargs: dict[str, Any] = {
             "host": self.resolved.host,
             "port": self.resolved.port or 5432,

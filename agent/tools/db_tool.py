@@ -4,7 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time as datetime_time
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
@@ -131,7 +131,7 @@ def _make_json_safe(value: Any) -> Any:
         return str(value)
     if isinstance(value, Decimal):
         return float(value)
-    if isinstance(value, (datetime, date, time)):
+    if isinstance(value, (datetime, date, datetime_time)):
         return value.isoformat()
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
