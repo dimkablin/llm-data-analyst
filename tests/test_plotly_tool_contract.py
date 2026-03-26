@@ -79,6 +79,19 @@ tool_result
         self.assertIn("Создано через plotly_tool", text)
         self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
 
+    def test_positional_artifact_name_passes(self) -> None:
+        """LLMs often emit chart.result(fig, \"slug\") instead of artifact_name=."""
+        code = """
+fig = px.bar(df, x="category", y="value")
+tool_result = chart.result(fig, "comparison_plot")
+tool_result
+"""
+
+        text, payload = self.tool._run(code)
+
+        self.assertIn("Создано через plotly_tool", text)
+        self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 
+import pandas as pd
+
+from agent.tools.search_tool import SearchTool
 from backend.artifact_meta import build_artifact_meta
 from backend.search_integration import (
     SearchIntegrationConfig,
@@ -63,6 +66,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 enabled=True,
                 base_url="https://search.example",
                 search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
                 timeout_sec=9.0,
                 max_results_default=5,
                 fetch_top_n_default=3,
@@ -119,6 +123,7 @@ class SearchIntegrationTests(unittest.TestCase):
                 enabled=True,
                 base_url="https://search.example",
                 search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
                 timeout_sec=9.0,
                 max_results_default=5,
                 fetch_top_n_default=3,
@@ -162,6 +167,136 @@ class SearchIntegrationTests(unittest.TestCase):
         self.assertEqual(meta["provenance"]["source"], meta["source"])
         self.assertEqual(meta["provenance"]["recipe"], meta["recipe"])
         self.assertEqual(meta["recipe"][0]["kind"], "source_query")
+
+    def test_service_synthesizes_answer_when_bridge_returns_null_answer(self) -> None:
+        """search_service sets answer=null; integration builds a snippet summary for the agent."""
+
+        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
+            _ = (url, payload, timeout_sec)
+            return {
+                "answer": None,
+                "results": [
+                    {
+                        "title": "Paris - Wikipedia",
+                        "url": "https://en.wikipedia.org/wiki/Paris",
+                        "snippet": "Paris is the capital and largest city of France.",
+                    },
+                ],
+                "sources": ["https://en.wikipedia.org/wiki/Paris"],
+            }
+
+        service = SearchIntegrationService(
+            SearchIntegrationConfig(
+                enabled=True,
+                base_url="https://search.example",
+                search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
+                timeout_sec=9.0,
+                max_results_default=5,
+                fetch_top_n_default=0,
+            ),
+            transport=fake_transport,
+        )
+        result = service.search("capital of France", max_results=2, fetch_top_n=0)
+        self.assertIsNotNone(result.answer)
+        assert result.answer is not None
+        self.assertIn("Paris", result.answer)
+        self.assertIn("capital", result.answer.lower())
+
+
+class SearchToolRunDirectPayloadTests(unittest.TestCase):
+    """Dict-style tool input must expose payload['table'] for ToolCollector."""
+
+    def test_run_direct_uses_table_key_not_items_envelope(self) -> None:
+        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
+            _ = (url, payload, timeout_sec)
+            return {
+                "answer": "Synth",
+                "results": [
+                    {"title": "T1", "url": "https://x/1", "snippet": "S1"},
+                ],
+            }
+
+        service = SearchIntegrationService(
+            SearchIntegrationConfig(
+                enabled=True,
+                base_url="https://search.example",
+                search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
+                timeout_sec=9.0,
+                max_results_default=5,
+                fetch_top_n_default=0,
+            ),
+            transport=fake_transport,
+        )
+        tool = SearchTool(pd.DataFrame(), search_service=service)
+        _text, payload = tool._run_direct({"query": "q"})
+
+        self.assertIn("table", payload)
+        self.assertIsInstance(payload["table"], dict)
+        self.assertEqual(len(payload["table"]), 1)
+        df = next(iter(payload["table"].values()))
+        self.assertIsInstance(df, pd.DataFrame)
+        self.assertGreaterEqual(len(df), 1)
+        # Raw tool-result envelope must not sit at top level (breaks artifact extraction)
+        self.assertNotIn("items", payload)
+
+    def test_run_accepts_query_kwarg_like_langchain(self) -> None:
+        """Structured tool calls pass query=... as kwargs; _run must not raise TypeError."""
+
+        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
+            _ = (url, payload, timeout_sec)
+            return {
+                "answer": "Synth",
+                "results": [
+                    {"title": "T1", "url": "https://x/1", "snippet": "S1"},
+                ],
+            }
+
+        service = SearchIntegrationService(
+            SearchIntegrationConfig(
+                enabled=True,
+                base_url="https://search.example",
+                search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
+                timeout_sec=9.0,
+                max_results_default=5,
+                fetch_top_n_default=0,
+            ),
+            transport=fake_transport,
+        )
+        tool = SearchTool(pd.DataFrame(), search_service=service)
+        _text, payload = tool._run(query="capital of France", run_manager=None)
+
+        self.assertIn("table", payload)
+        self.assertIsInstance(payload["table"], dict)
+
+    def test_run_accepts_queries_list_kwarg(self) -> None:
+        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
+            _ = (url, payload, timeout_sec)
+            return {
+                "answer": "Synth",
+                "results": [
+                    {"title": "T1", "url": "https://x/1", "snippet": "S1"},
+                ],
+            }
+
+        service = SearchIntegrationService(
+            SearchIntegrationConfig(
+                enabled=True,
+                base_url="https://search.example",
+                search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
+                timeout_sec=9.0,
+                max_results_default=5,
+                fetch_top_n_default=0,
+            ),
+            transport=fake_transport,
+        )
+        tool = SearchTool(pd.DataFrame(), search_service=service)
+        _text, payload = tool._run(queries=["one", "two"], run_manager=None)
+
+        self.assertIn("table", payload)
 
 
 if __name__ == "__main__":

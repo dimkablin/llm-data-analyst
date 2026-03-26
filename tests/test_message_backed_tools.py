@@ -20,16 +20,13 @@ class MessageBackedToolTests(unittest.TestCase):
 
     def test_artifact_optional_policy_matches_external_message_tools(self) -> None:
         self.assertTrue(supports_artifact_optional_output(["search_tool"]))
-        self.assertTrue(supports_artifact_optional_output(["deep_research_tool"]))
-        self.assertTrue(
-            supports_artifact_optional_output(["search_tool", "deep_research_tool"])
-        )
+        self.assertTrue(supports_artifact_optional_output(["search_tool", "memory"]))
         self.assertFalse(supports_artifact_optional_output(["pandas_tool"]))
         self.assertFalse(
-            supports_artifact_optional_output(["deep_research_tool", "pandas_tool"])
+            supports_artifact_optional_output(["search_tool", "pandas_tool"])
         )
 
-    def test_evaluate_accepts_deep_research_without_artifacts(self) -> None:
+    def test_evaluate_accepts_search_without_artifacts(self) -> None:
         runner = self._build_runner()
         response = AgentResponse(
             final_text="Краткий вывод по внешнему исследованию.",
@@ -37,14 +34,14 @@ class MessageBackedToolTests(unittest.TestCase):
             artifacts=[],
             route="analysis",
             tool_calls=1,
-            tool_names=["deep_research_tool"],
+            tool_names=["search_tool"],
         )
 
         result = runner._evaluate_node(
             {
                 "response": response,
                 "callbacks": [],
-                "prompt": "Сделай глубокое исследование по теме",
+                "prompt": "Найди в интернете факты по теме",
                 "step_index": 1,
                 "max_steps": 2,
                 "capability_context": {},
@@ -81,12 +78,12 @@ class MessageBackedToolTests(unittest.TestCase):
     def test_finalize_keeps_message_backed_output_without_artifacts(self) -> None:
         runner = self._build_runner()
         response = AgentResponse(
-            final_text="Вот текстовый итог deep research без табличного артефакта.",
-            reasoning="Research completed.",
+            final_text="Вот текстовый итог поиска без табличного артефакта.",
+            reasoning="Search completed.",
             artifacts=[],
             route="analysis",
             tool_calls=1,
-            tool_names=["deep_research_tool"],
+            tool_names=["search_tool"],
         )
 
         result = runner._finalize_node(
@@ -94,7 +91,7 @@ class MessageBackedToolTests(unittest.TestCase):
                 "response": response,
                 "callbacks": [],
                 "route": "analysis",
-                "prompt": "Подготовь развернутый ресерч по теме",
+                "prompt": "Найди в сети краткую справку по теме",
                 "df": None,
                 "stop_reason": "ready",
                 "eval_passed": True,
@@ -106,9 +103,9 @@ class MessageBackedToolTests(unittest.TestCase):
         final_response = result["response"]
         self.assertEqual(
             final_response.final_text,
-            "Вот текстовый итог deep research без табличного артефакта.",
+            "Вот текстовый итог поиска без табличного артефакта.",
         )
-        self.assertEqual(final_response.tool_names, ["deep_research_tool"])
+        self.assertEqual(final_response.tool_names, ["search_tool"])
         self.assertEqual(final_response.artifacts, [])
 
     def test_finalize_still_rejects_artifact_first_tool_without_artifacts(self) -> None:

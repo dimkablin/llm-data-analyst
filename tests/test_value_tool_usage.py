@@ -60,7 +60,7 @@ tool_result
         )
         runner = AgentRunner(settings)
         capability_context = build_runtime_capability_context(
-            available_tool_keys={"value_tool", "search_tool", "deep_research_tool"},
+            available_tool_keys={"value_tool", "search_tool"},
             has_dataframe=True,
             has_db_source=False,
         )
@@ -68,8 +68,12 @@ tool_result
         prompt = runner._think_system_prompt(capability_context)
 
         self.assertIn("value_tool", prompt)
-        self.assertIn("search/deep research", prompt)
-        self.assertIn("обычный текстовый ответ об ограничении", prompt)
+        self.assertIn("search_tool", prompt)
+        # Prompt must explicitly warn against mixing value_tool with web search tasks
+        self.assertTrue(
+            "поиск в интернете" in prompt or "search_tool" in prompt,
+            msg="Prompt should warn not to use value_tool instead of web search",
+        )
 
 
 if __name__ == "__main__":

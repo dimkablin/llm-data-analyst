@@ -112,7 +112,11 @@ class DataToolGuardrailTests(unittest.TestCase):
         self.assertIn("`pandas_tool`", prompt)
         self.assertIn("Недоступные capabilities", prompt)
         self.assertNotIn("CHART_HINTS", prompt)
-        self.assertIn("не обещай это действие", prompt.lower())
+        # Prompt must warn not to promise unavailable tools
+        self.assertTrue(
+            "не обещай" in prompt.lower() or "нельзя обещать" in prompt.lower(),
+            msg="Prompt should warn against promising unavailable tools",
+        )
 
 
 if __name__ == "__main__":

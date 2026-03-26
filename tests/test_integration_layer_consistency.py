@@ -7,11 +7,6 @@ from backend.anomaly_planfact_integration import (
     AnomalyPlanfactIntegrationError,
     AnomalyPlanfactIntegrationService,
 )
-from backend.deep_research_integration import (
-    DeepResearchConfig,
-    DeepResearchIntegrationError,
-    DeepResearchIntegrationService,
-)
 from backend.forecast_integration import (
     ForecastConfig,
     ForecastIntegrationError,
@@ -32,24 +27,10 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 enabled=True,
                 base_url="https://search.example",
                 search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
                 timeout_sec=10.0,
                 max_results_default=5,
                 fetch_top_n_default=3,
-            )
-        )
-        deep_research = DeepResearchIntegrationService(
-            DeepResearchConfig(
-                enabled=True,
-                base_url="https://research.example",
-                create_endpoint="/research/",
-                execute_endpoint="/research/{id}/execute",
-                detail_endpoint="/research/{id}",
-                create_timeout_sec=20.0,
-                execute_timeout_sec=90.0,
-                poll_timeout_sec=30.0,
-                poll_interval_sec=1.0,
-                max_iterations_default=3,
-                language_default="ru",
             )
         )
         rag = RAGService(
@@ -84,7 +65,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
 
         descriptors = [
             search.source_descriptor(),
-            deep_research.source_descriptor(),
             rag.source_descriptor(),
             forecast.source_descriptor(),
             anomaly.source_descriptor(),
@@ -99,7 +79,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             self.assertIn("description_ru", descriptor)
 
         self.assertFalse(search.source_descriptor()["requires_session_data"])
-        self.assertFalse(deep_research.source_descriptor()["requires_session_data"])
         self.assertFalse(rag.source_descriptor()["requires_session_data"])
         self.assertTrue(forecast.source_descriptor()["requires_session_data"])
         self.assertTrue(anomaly.source_descriptor()["requires_session_data"])
@@ -112,6 +91,7 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 enabled=True,
                 base_url="https://search.example",
                 search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
                 timeout_sec=10.0,
                 max_results_default=5,
                 fetch_top_n_default=3,
@@ -119,29 +99,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             transport=lambda url, payload, timeout: {
                 "results": [{"title": "Doc", "url": "https://example.com/doc"}]
             },
-        )
-        deep_research = DeepResearchIntegrationService(
-            DeepResearchConfig(
-                enabled=True,
-                base_url="https://research.example",
-                create_endpoint="/research/",
-                execute_endpoint="/research/{id}/execute",
-                detail_endpoint="/research/{id}",
-                create_timeout_sec=20.0,
-                execute_timeout_sec=90.0,
-                poll_timeout_sec=30.0,
-                poll_interval_sec=1.0,
-                max_iterations_default=3,
-                language_default="ru",
-            ),
-            transport=lambda method, url, payload, timeout: (
-                {"research_id": "r-1", "status": "created"}
-                if url.endswith("/research/")
-                else {
-                    "status": "completed",
-                    "final_report": {"summary": "Ready", "findings": ["Finding"]},
-                }
-            ),
         )
         rag = RAGService(
             RAGConfig(
@@ -185,7 +142,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
 
         payloads = [
             search.build_artifact_payload(search.search("agents")),
-            deep_research.build_artifact_payload(deep_research.run_research("agents")),
             forecast.build_artifact_payload(
                 forecast.run_forecast(
                     [
@@ -227,6 +183,7 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 enabled=True,
                 base_url="https://search.example",
                 search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
                 timeout_sec=10.0,
                 max_results_default=5,
                 fetch_top_n_default=3,
@@ -236,26 +193,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         with self.assertRaises(SearchIntegrationError) as search_exc:
             search.search("agents")
         self.assertIn("request timed out", str(search_exc.exception).lower())
-
-        deep_research = DeepResearchIntegrationService(
-            DeepResearchConfig(
-                enabled=True,
-                base_url="https://research.example",
-                create_endpoint="/research/",
-                execute_endpoint="/research/{id}/execute",
-                detail_endpoint="/research/{id}",
-                create_timeout_sec=20.0,
-                execute_timeout_sec=90.0,
-                poll_timeout_sec=30.0,
-                poll_interval_sec=1.0,
-                max_iterations_default=3,
-                language_default="ru",
-            ),
-            transport=lambda method, url, payload, timeout: (_ for _ in ()).throw(TimeoutError()),
-        )
-        with self.assertRaises(DeepResearchIntegrationError) as research_exc:
-            deep_research.run_research("agents")
-        self.assertIn("request timed out", str(research_exc.exception).lower())
 
         rag = RAGService(
             RAGConfig(
