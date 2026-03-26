@@ -7,11 +7,15 @@ Tier-2 (_classify_intent LLM fallback) is patched to return a controlled value.
 from __future__ import annotations
 
 import unittest
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 from backend.config import Settings
+
+if TYPE_CHECKING:
+    from backend.agent_runner import AgentRunner
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -30,7 +34,7 @@ def _make_runner(
     *,
     search_enabled: bool = False,
     rag_enabled: bool = False,
-) -> "AgentRunner":
+) -> AgentRunner:
     from backend.agent_runner import AgentRunner
     from backend.search_integration import SearchIntegrationService, SearchIntegrationConfig
     from backend.rag_service import RAGService
