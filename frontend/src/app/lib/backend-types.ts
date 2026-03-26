@@ -118,6 +118,22 @@ export type AuthResult = {
 
 export type AnalysisDepth = "light" | "medium" | "deep";
 
+/** Upper bound on outer ReAct steps enforced server-side per analysis depth. */
+export const ANALYSIS_DEPTH_STEP_CEILING: Record<AnalysisDepth, number> = {
+  light: 20,
+  medium: 30,
+  deep: 50,
+};
+
+export function clampAgentMaxStepsForDepth(depth: AnalysisDepth, value: number): number {
+  const cap = ANALYSIS_DEPTH_STEP_CEILING[depth];
+  const v = Math.round(value);
+  if (!Number.isFinite(v)) {
+    return Math.min(20, cap);
+  }
+  return Math.min(Math.max(2, v), cap);
+}
+
 export type UserSettings = {
   theme: "light" | "dark";
   default_include_reasoning: boolean;
@@ -240,4 +256,9 @@ export type PhoenixOverview = {
   token_usage: PhoenixTokenUsageRow[];
   traces: PhoenixTraceRow[];
   warnings: string[];
+};
+
+export type UserMemory = {
+  profile: string;
+  notes: string;
 };

@@ -12,6 +12,7 @@ import type {
   SessionSourceState,
   SessionSummary,
   ToolAvailability,
+  UserMemory,
   UserSettings,
 } from "./backend-types";
 
@@ -128,6 +129,22 @@ export async function updateUserSettings(payload: Partial<UserSettings>): Promis
   });
   await assertOk(response);
   return (await response.json()) as UserSettings;
+}
+
+export async function getUserMemory(): Promise<UserMemory> {
+  const response = await authFetch("/auth/memory");
+  await assertOk(response);
+  return (await response.json()) as UserMemory;
+}
+
+export async function updateUserMemory(payload: Partial<UserMemory>): Promise<UserMemory> {
+  const response = await authFetch("/auth/memory", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await assertOk(response);
+  return (await response.json()) as UserMemory;
 }
 
 export async function getUserTools(): Promise<ToolAvailability[]> {

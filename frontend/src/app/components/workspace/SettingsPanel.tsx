@@ -1,7 +1,15 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Brain, Cpu, Info, Settings, Shield, Sliders, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import type { AnalysisDepth, RuntimeModelProfile, UserSettings } from "../../lib/backend-types";
+import { getUserMemory, updateUserMemory } from "../../lib/backend-api";
+import {
+  ANALYSIS_DEPTH_STEP_CEILING,
+  clampAgentMaxStepsForDepth,
+  type AnalysisDepth,
+  type RuntimeModelProfile,
+  type UserSettings,
+} from "../../lib/backend-types";
+import { MarkdownBlock } from "../MarkdownBlock";
 
 type Props = {
   onClose: () => void;
@@ -98,7 +106,13 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
             </label>
             <DepthButtons
               value={draft.analysis_depth}
-              onChange={(value) => setDraft((prev) => ({ ...prev, analysis_depth: value }))}
+              onChange={(value) =>
+                setDraft((prev) => ({
+                  ...prev,
+                  analysis_depth: value,
+                  agent_max_steps: clampAgentMaxStepsForDepth(value, prev.agent_max_steps),
+                }))
+              }
             />
           </div>
         </SectionCard>
@@ -110,16 +124,27 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
             <NumberField label="Макс. токенов" value={draft.llm_max_tokens_default} step={128} onChange={(value) => setDraft((prev) => ({ ...prev, llm_max_tokens_default: Math.round(value) }))} />
             <NumberField label="Токены reasoning" value={draft.llm_max_tokens_reasoning} step={128} onChange={(value) => setDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
             <NumberField label="Таймаут backend, сек" value={draft.backend_query_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
-            <NumberField label="Макс. шагов" value={draft.agent_max_steps} step={1} onChange={(value) => setDraft((prev) => ({ ...prev, agent_max_steps: Math.round(value) }))} />
+            <NumberField
+              label="Макс. шагов"
+              value={draft.agent_max_steps}
+              min={2}
+              max={ANALYSIS_DEPTH_STEP_CEILING[draft.analysis_depth]}
+              hint={`Потолок по уровню глубины: ${ANALYSIS_DEPTH_STEP_CEILING[draft.analysis_depth]}. Фактически min(значение, потолок); раньше — остановка по решению модели.`}
+              step={1}
+              onChange={(value) =>
+                setDraft((prev) => ({
+                  ...prev,
+                  agent_max_steps: clampAgentMaxStepsForDepth(prev.analysis_depth, value),
+                }))
+              }
+            />
             <NumberField label="Таймаут шага, сек" value={draft.agent_step_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
             <NumberField label="Внутр. рекурсия" value={draft.agent_inner_recursion_limit} step={1} onChange={(value) => setDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
           </div>
         </SectionCard>
 
-        <SectionCard title="Future-ready блок" icon={<Shield className="h-3.5 w-3.5" />}>
-          <div className="rounded-xl border border-border/40 bg-background/25 p-4 text-sm text-muted-foreground">
-            Блок оставлен как расширяемая зона под будущие runtime-переключатели и feature flags.
-          </div>
+        <SectionCard title="Память сессии" icon={<Brain className="h-3.5 w-3.5" />}>
+          <SessionMemoryBlock />
         </SectionCard>
       </div>
 
@@ -133,6 +158,102 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
         >
           {isSaving ? "Сохранение..." : "Сохранить изменения"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function SessionMemoryBlock() {
+  const [notes, setNotes] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isClearing, setIsClearing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    void load();
+  }, []);
+
+  async function load() {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const mem = await getUserMemory();
+      setNotes(mem.notes ?? "");
+    } catch {
+      setError("Не удалось загрузить память сессии");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleClear() {
+    setIsClearing(true);
+    setError(null);
+    try {
+      const updated = await updateUserMemory({ notes: "" });
+      setNotes(updated.notes ?? "");
+    } catch {
+      setError("Ошибка при очистке памяти");
+    } finally {
+      setIsClearing(false);
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-[13px] text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Загрузка…
+      </div>
+    );
+  }
+
+  const isEmpty = !notes?.trim();
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground leading-relaxed">
+        Заметки, которые агент накапливает в процессе диалога — предпочтения, паттерны, наблюдения. Обновляются автоматически после каждого запроса.
+      </p>
+
+      {error && (
+        <p className="rounded-lg bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>
+      )}
+
+      <div className={`relative min-h-[80px] rounded-xl border border-border/40 px-4 py-3 ${isEmpty ? "bg-muted/20" : "bg-background/30"}`}>
+        {isEmpty ? (
+          <p className="text-[13px] italic text-muted-foreground">Заметок пока нет — агент заполнит их в ходе диалога.</p>
+        ) : (
+          <MarkdownBlock
+            content={notes ?? ""}
+            className="text-[13px] [&_p]:mb-1 [&_ul]:mb-1 [&_li]:my-0 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs"
+          />
+        )}
+      </div>
+
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Обновить
+        </button>
+        {!isEmpty && (
+          <button
+            type="button"
+            onClick={() => void handleClear()}
+            disabled={isClearing}
+            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+          >
+            <Trash2 className="h-3 w-3" />
+            {isClearing ? "Очистка…" : "Очистить"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -155,19 +276,28 @@ function NumberField({
   value,
   onChange,
   step,
+  min,
+  max,
+  hint,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
   step?: number;
+  min?: number;
+  max?: number;
+  hint?: string;
 }) {
   return (
     <div className="space-y-2">
       <label className="text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">{label}</label>
+      {hint ? <p className="text-[10px] leading-snug text-muted-foreground">{hint}</p> : null}
       <input
         type="number"
         value={Number.isFinite(value) ? value : 0}
         step={step}
+        min={min}
+        max={max}
         onChange={(event) => onChange(parseFloat(event.target.value || "0"))}
         className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-3.5 text-[14px] font-medium outline-none transition-all focus:border-primary/50 focus:ring-4 focus:ring-primary/10"
       />
@@ -192,9 +322,9 @@ function DepthButtons({
   onChange: (value: AnalysisDepth) => void;
 }) {
   const options: Array<{ id: AnalysisDepth; label: string; desc: string }> = [
-    { id: "light", label: "Легкий", desc: "Быстрее" },
-    { id: "medium", label: "Средний", desc: "Баланс" },
-    { id: "deep", label: "Глубокий", desc: "Детальнее" },
+    { id: "light", label: "Легкий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.light} шагов max` },
+    { id: "medium", label: "Средний", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.medium} шагов max` },
+    { id: "deep", label: "Глубокий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.deep} шагов max` },
   ];
   return (
     <div className="space-y-2">

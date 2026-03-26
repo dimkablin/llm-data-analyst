@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   llm_max_tokens_default: 1200,
   llm_max_tokens_reasoning: 2200,
   backend_query_timeout_sec: 180,
-  agent_max_steps: 5,
+  agent_max_steps: 20,
   agent_step_timeout_sec: 45,
   agent_inner_recursion_limit: 6,
 };

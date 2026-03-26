@@ -18,13 +18,19 @@ import {
 } from "lucide-react";
 import { Navigation } from "../components/Navigation";
 import { ToolAccessSection } from "../components/account/ToolAccessSection";
+import { UserMemorySection } from "../components/account/UserMemorySection";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useAppSession } from "../context/AppSessionContext";
 import { changePassword, createAdminUser, deleteAdminUser, listAdminUsers, updateAdminUser } from "../lib/backend-api";
 import type { AccentId } from "../lib/accent";
 import { getStoredAccent, setStoredAccent } from "../lib/accent";
-import type { AuthUser, UserSettings } from "../lib/backend-types";
+import {
+  ANALYSIS_DEPTH_STEP_CEILING,
+  clampAgentMaxStepsForDepth,
+  type AuthUser,
+  type UserSettings,
+} from "../lib/backend-types";
 import { formatDateTime, summarizeError } from "../lib/format";
 
 type AccountTab = "general" | "notifications" | "security" | "users" | "account";
@@ -253,7 +259,17 @@ export function Account() {
                       </Select>
                     </Field>
                     <Field label="Глубина анализа">
-                      <Select value={settingsDraft.analysis_depth} onValueChange={(value) => setSettingsDraft((prev) => ({ ...prev, analysis_depth: value === "medium" ? "medium" : value === "deep" ? "deep" : "light" }))}>
+                      <Select
+                        value={settingsDraft.analysis_depth}
+                        onValueChange={(value) => {
+                          const depth = value === "medium" ? "medium" : value === "deep" ? "deep" : "light";
+                          setSettingsDraft((prev) => ({
+                            ...prev,
+                            analysis_depth: depth,
+                            agent_max_steps: clampAgentMaxStepsForDepth(depth, prev.agent_max_steps),
+                          }));
+                        }}
+                      >
                         <SelectTrigger className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm">
                           <SelectValue />
                         </SelectTrigger>
@@ -279,7 +295,20 @@ export function Account() {
                         <NumField label="Макс. токенов" value={settingsDraft.llm_max_tokens_default} step={128} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_max_tokens_default: Math.round(value) }))} />
                         <NumField label="Токены reasoning" value={settingsDraft.llm_max_tokens_reasoning} step={128} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
                         <NumField label="Timeout backend, сек" value={settingsDraft.backend_query_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
-                        <NumField label="Макс. шагов" value={settingsDraft.agent_max_steps} step={1} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_max_steps: Math.round(value) }))} />
+                        <NumField
+                          label="Макс. шагов"
+                          value={settingsDraft.agent_max_steps}
+                          min={2}
+                          max={ANALYSIS_DEPTH_STEP_CEILING[settingsDraft.analysis_depth]}
+                          hint={`Потолок с уровнем: ${ANALYSIS_DEPTH_STEP_CEILING[settingsDraft.analysis_depth]}. Раньше — по решению модели.`}
+                          step={1}
+                          onChange={(value) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              agent_max_steps: clampAgentMaxStepsForDepth(prev.analysis_depth, value),
+                            }))
+                          }
+                        />
                         <NumField label="Timeout шага, сек" value={settingsDraft.agent_step_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
                         <NumField label="Внутр. рекурсия" value={settingsDraft.agent_inner_recursion_limit} step={1} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
                       </div>
@@ -364,30 +393,36 @@ export function Account() {
             ) : null}
 
             {activeTab === "account" ? (
-              <SectionBlock title="Аккаунт" subtitle="Профиль, дата создания и быстрые переходы." icon={<User className="h-4 w-4" />}>
-                <div className="space-y-5">
-                  <div className="rounded-2xl border border-border/50 bg-secondary/30 p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-1">
-                        <p className="text-sm text-muted-foreground">Логин: <span className="font-semibold text-foreground">{user.username}</span></p>
-                        <p className="text-sm text-muted-foreground">Роль: <span className="font-semibold text-foreground">{user.is_admin ? "Администратор" : "Пользователь"}</span></p>
-                        <p className="text-sm text-muted-foreground">Создан: {formatDateTime(user.created_at)}</p>
-                      </div>
-                      <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-emerald-400">
-                        <BadgeCheck className="h-4 w-4" />
-                        active
+              <>
+                <SectionBlock title="Аккаунт" subtitle="Профиль, дата создания и быстрые переходы." icon={<User className="h-4 w-4" />}>
+                  <div className="space-y-5">
+                    <div className="rounded-2xl border border-border/50 bg-secondary/30 p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm text-muted-foreground">Логин: <span className="font-semibold text-foreground">{user.username}</span></p>
+                          <p className="text-sm text-muted-foreground">Роль: <span className="font-semibold text-foreground">{user.is_admin ? "Администратор" : "Пользователь"}</span></p>
+                          <p className="text-sm text-muted-foreground">Создан: {formatDateTime(user.created_at)}</p>
+                        </div>
+                        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-emerald-400">
+                          <BadgeCheck className="h-4 w-4" />
+                          active
+                        </div>
                       </div>
                     </div>
+                    <div className="flex flex-wrap gap-3">
+                      <Link to="/workspace" className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground">Открыть workspace</Link>
+                      <button type="button" onClick={() => { void logout().then(() => navigate("/auth", { replace: true })); }} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-secondary px-5 py-2.5 text-sm font-bold hover:bg-muted">
+                        <LogOut className="h-4 w-4" />
+                        Выйти из аккаунта
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap gap-3">
-                    <Link to="/workspace" className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground">Открыть workspace</Link>
-                    <button type="button" onClick={() => { void logout().then(() => navigate("/auth", { replace: true })); }} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-secondary px-5 py-2.5 text-sm font-bold hover:bg-muted">
-                      <LogOut className="h-4 w-4" />
-                      Выйти из аккаунта
-                    </button>
-                  </div>
-                </div>
-              </SectionBlock>
+                </SectionBlock>
+
+                <SectionBlock title="Память" subtitle="Персональный контекст агента для текущего пользователя." icon={<Cpu className="h-4 w-4" />}>
+                  <UserMemorySection />
+                </SectionBlock>
+              </>
             ) : null}
           </section>
         </div>
@@ -482,11 +517,39 @@ function ToggleCard({ title, desc, enabled, onChange }: { title: string; desc: s
   );
 }
 
-function NumField({ label, value, onChange, step }: { label: string; value: number; onChange: (value: number) => void; step?: number }) {
+function NumField({
+  label,
+  value,
+  onChange,
+  step,
+  min,
+  max,
+  hint,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  step?: number;
+  min?: number;
+  max?: number;
+  hint?: string;
+}) {
   return (
     <div className="space-y-2">
       <label className="text-xs font-bold uppercase tracking-widest text-muted-foreground">{label}</label>
-      <input type="number" value={Number.isFinite(value) ? value : 0} step={step} onChange={(event) => { const parsed = parseFloat(event.target.value); onChange(Number.isFinite(parsed) ? parsed : 0); }} className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm outline-none transition-colors focus:border-primary/50" />
+      {hint ? <p className="text-[10px] leading-snug text-muted-foreground">{hint}</p> : null}
+      <input
+        type="number"
+        value={Number.isFinite(value) ? value : 0}
+        step={step}
+        min={min}
+        max={max}
+        onChange={(event) => {
+          const parsed = parseFloat(event.target.value);
+          onChange(Number.isFinite(parsed) ? parsed : 0);
+        }}
+        className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm outline-none transition-colors focus:border-primary/50"
+      />
     </div>
   );
 }
