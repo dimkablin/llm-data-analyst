@@ -33,6 +33,7 @@ arize-phoenix-otel = ">=0.8,<1.0"
 openinference-instrumentation-langchain = ">=0.1,<1.0"
 cryptography = "^46.0.3"
 psycopg = {version = "^3.2.12", extras = ["binary"]}
+duckdb = "^1.5.1"
 
 
 [tool.poetry.group.dev.dependencies]

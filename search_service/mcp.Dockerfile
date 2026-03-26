@@ -11,6 +11,7 @@ RUN git clone https://github.com/nitish-raj/searxng-mcp-bridge.git .
 
 RUN npm install
 
+ENV SEARXNG_INSTANCE_URL="http://searxng:8080"
 ENV SEARXNG_URL="http://searxng:8080"
 ENV HOST="0.0.0.0"
 ENV PORT="8001"

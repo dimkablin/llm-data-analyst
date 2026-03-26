@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 
-from backend.agent_runner import AgentResponse, AgentRunner
-from backend.config import Settings
-from backend.tool_policy import supports_artifact_optional_output
+from backend.agent import AgentResponse, AgentRunner
+from backend.core import Settings
+from backend.tools import supports_artifact_optional_output
 
 
 class MessageBackedToolTests(unittest.TestCase):

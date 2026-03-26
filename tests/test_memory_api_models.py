@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.models import UserMemoryResponse, UserMemoryUpdateRequest
+from backend.api.models import UserMemoryResponse, UserMemoryUpdateRequest
 
 
 class UserMemoryResponseTests(unittest.TestCase):

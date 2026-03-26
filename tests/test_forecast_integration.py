@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from backend.artifact_meta import build_artifact_meta
-from backend.forecast_integration import (
+from backend.artifacts import build_artifact_meta
+from backend.integrations import (
     ForecastConfig,
     ForecastIntegrationError,
     ForecastIntegrationService,

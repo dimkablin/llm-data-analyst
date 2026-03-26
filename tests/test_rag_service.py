@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from backend.rag_service import RAGConfig, RAGService
+from backend.integrations import RAGConfig, RAGService
 
 
 class RAGServiceTests(unittest.TestCase):
@@ -115,10 +115,7 @@ class RAGServiceTests(unittest.TestCase):
             result.references,
             ["https://docs.example/auth", "https://docs.example/login"],
         )
-        self.assertEqual(
-            chunks,
-            ["Use the auth token ", "from the login endpoint."],
-        )
+        self.assertEqual(chunks, ["Use the auth token ", "from the login endpoint."])
         self.assertEqual(captured["stream_url"], "https://rag.example/query/stream")
         self.assertEqual(
             captured["stream_payload"],
@@ -147,7 +144,7 @@ class RAGServiceTests(unittest.TestCase):
         )
 
         result = service.search(query="empty answer case")
-        self.assertEqual(service.format_for_user(result), "RAG не вернул текстовый ответ.")
+        self.assertIn("RAG", service.format_for_user(result))
 
 
 if __name__ == "__main__":

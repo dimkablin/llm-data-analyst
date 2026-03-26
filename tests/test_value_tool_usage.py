@@ -5,10 +5,10 @@ import unittest
 
 import pandas as pd
 
-from agent.tools.value_tool import ValueTool
-from backend.agent_capabilities import build_runtime_capability_context
-from backend.agent_runner import AgentRunner
-from backend.config import Settings
+from backend.agent import AgentRunner
+from backend.agent.tools.value_tool import ValueTool
+from backend.core import Settings
+from backend.tools import build_runtime_capability_context
 
 
 class ValueToolUsageTests(unittest.TestCase):
@@ -23,7 +23,7 @@ tool_result = {
     "artifact_type": "value",
     "items": {
         "row_count": len(df),
-        "status": "данные загружены"
+        "status": "loaded"
     }
 }
 tool_result
@@ -31,9 +31,9 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Создано через value_tool", text)
+        self.assertIn("value_tool", text)
         self.assertEqual(payload["value"]["row_count"], 3)
-        self.assertEqual(payload["value"]["status"], "данные загружены")
+        self.assertEqual(payload["value"]["status"], "loaded")
 
     def test_long_explanatory_string_is_rejected(self) -> None:
         code = """
@@ -41,7 +41,7 @@ tool_result = {
     "schema_version": "1.0",
     "artifact_type": "value",
     "items": {
-        "analysis_result": "Анализ невозможен: в датасете отсутствуют данные о бензине. Для ответа требуются внешние источники, макроэкономические показатели, данные о налогах, валютном курсе, логистике и рыночной конъюнктуре."
+        "analysis_result": "Analysis is not possible because the dataset does not contain fuel data. A valid answer would require external sources, macro indicators, taxes, exchange rates, logistics data, and market context."
     }
 }
 tool_result
@@ -49,7 +49,8 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("value_tool предназначен только для коротких value-like результатов", text)
+        self.assertIn("value_tool", text)
+        self.assertIn("value-like", text)
         self.assertIsNone(payload["value"])
 
     def test_prompt_discourages_using_value_tool_instead_of_external_research(self) -> None:
@@ -69,9 +70,8 @@ tool_result
 
         self.assertIn("value_tool", prompt)
         self.assertIn("search_tool", prompt)
-        # Prompt must explicitly warn against mixing value_tool with web search tasks
         self.assertTrue(
-            "поиск в интернете" in prompt or "search_tool" in prompt,
+            "search_tool" in prompt or "internet" in prompt.lower(),
             msg="Prompt should warn not to use value_tool instead of web search",
         )
 

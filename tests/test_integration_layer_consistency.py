@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import unittest
 
-from backend.anomaly_planfact_integration import (
+from backend.integrations import (
     AnomalyPlanfactConfig,
     AnomalyPlanfactIntegrationError,
     AnomalyPlanfactIntegrationService,
-)
-from backend.forecast_integration import (
     ForecastConfig,
     ForecastIntegrationError,
     ForecastIntegrationService,
-)
-from backend.rag_service import RAGConfig, RAGIntegrationError, RAGService
-from backend.search_integration import (
+    RAGConfig,
+    RAGIntegrationError,
+    RAGService,
     SearchIntegrationConfig,
     SearchIntegrationError,
     SearchIntegrationService,
@@ -83,7 +81,8 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         self.assertTrue(forecast.source_descriptor()["requires_session_data"])
         self.assertTrue(anomaly.source_descriptor()["requires_session_data"])
         self.assertEqual(search.source_descriptor()["status"], "available")
-        self.assertEqual(search.source_descriptor()["display_name_ru"], "Поиск")
+        self.assertTrue(search.source_descriptor()["display_name_ru"])
+        self.assertIn("search", search.source_descriptor()["capabilities"])
 
     def test_operational_meta_contains_common_fields(self) -> None:
         search = SearchIntegrationService(

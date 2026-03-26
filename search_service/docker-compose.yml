@@ -27,6 +27,8 @@ services:
       dockerfile: mcp.Dockerfile
     container_name: searxng-mcp-server
     environment:
+      # v0.11+ bridge reads SEARXNG_INSTANCE_URL (SEARXNG_URL is legacy)
+      - SEARXNG_INSTANCE_URL=http://searxng:8080
       - SEARXNG_URL=http://searxng:8080
       - HOST=0.0.0.0
       - PORT=8001

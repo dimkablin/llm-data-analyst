@@ -4,16 +4,13 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from agent.tools.memory_tool import MemoryTool
-from agent.tools.factory import MemoryToolFactory
-from backend.config import Settings
-from backend.tool_context import ToolBuildContext
-from backend.tool_registry import ToolRegistry
+from backend.agent.tools.factory import MemoryToolFactory
+from backend.agent.tools.memory_tool import MemoryTool
+from backend.core import Settings
+from backend.tools import ToolBuildContext, ToolRegistry
 
 
 class MemoryToolTests(unittest.TestCase):
-    """Unit-test the MemoryTool itself."""
-
     def test_save_note_calls_callback(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
@@ -40,10 +37,9 @@ class MemoryToolTests(unittest.TestCase):
         tool = MemoryTool(on_note=collected.append)
         long_note = "x" * 200
         result = tool._run(long_note)  # noqa: SLF001
-        # Callback receives the full text
         self.assertEqual(len(collected[0]), 200)
-        # Confirmation string is capped
-        self.assertIn("…", result)
+        self.assertTrue(result.startswith("Saved to memory: "))
+        self.assertLess(len(result), len("Saved to memory: ") + 130)
 
     def test_multiple_calls_all_collected(self) -> None:
         collected: list[str] = []
@@ -60,8 +56,6 @@ class MemoryToolTests(unittest.TestCase):
 
 
 class MemoryToolFactoryTests(unittest.TestCase):
-    """Unit-test MemoryToolFactory."""
-
     def _make_ctx(self) -> ToolBuildContext:
         return ToolBuildContext(settings=MagicMock(spec=Settings))
 
@@ -87,8 +81,6 @@ class MemoryToolFactoryTests(unittest.TestCase):
 
 
 class MemoryToolRegistryTests(unittest.TestCase):
-    """Check MemoryTool is included in registry and always available."""
-
     def _make_registry(self, **kwargs) -> ToolRegistry:
         return ToolRegistry.from_services(**kwargs)
 

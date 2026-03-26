@@ -7,8 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from backend.auth_db import AuthDB
-from backend.user_memory import MEM_NOTES, MEM_PROFILE, UserMemory, UserMemoryService
+from backend.auth import AuthDB, MEM_NOTES, MEM_PROFILE, UserMemory, UserMemoryService
 
 
 def _make_db(tmpdir: str) -> AuthDB:

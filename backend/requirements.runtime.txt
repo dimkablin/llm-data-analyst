@@ -18,3 +18,4 @@ arize-phoenix-otel==0.15.0
 openinference-instrumentation-langchain==0.1.61
 cryptography==46.0.3
 psycopg[binary]==3.2.12
+duckdb==1.5.1

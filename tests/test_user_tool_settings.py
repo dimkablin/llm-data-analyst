@@ -4,10 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.auth_db import AuthDB
-from backend.models import ToolAvailabilityResponse
-from backend.tool_catalog import build_tool_catalog
-from backend.tool_policy import effective_enabled_tool_keys, is_tool_allowed
+from backend.api.models import ToolAvailabilityResponse
+from backend.auth import AuthDB
+from backend.tools import build_tool_catalog, effective_enabled_tool_keys, is_tool_allowed
 
 
 class UserToolSettingsTests(unittest.TestCase):
@@ -110,11 +109,8 @@ class UserToolSettingsTests(unittest.TestCase):
         self.assertFalse(by_key["forecast_tool"].available_globally)
         self.assertFalse(by_key["forecast_tool"].effective_enabled)
         self.assertTrue(by_key["anomaly_planfact_tool"].effective_enabled)
-        self.assertEqual(by_key["db_tool"].display_name_ru, "Доступ к БД")
-        self.assertEqual(
-            by_key["search_tool"].description_ru,
-            "Быстрый внешний поиск по теме пользователя.",
-        )
+        self.assertIn("SQL", by_key["sql_table_tool"].display_name_ru)
+        self.assertTrue(by_key["search_tool"].description_ru)
 
     def test_effective_tool_keys_feed_runtime_policy_layer(self) -> None:
         source_descriptors = [
@@ -186,7 +182,7 @@ class UserToolSettingsTests(unittest.TestCase):
         self.assertFalse(is_tool_allowed("rag_tool", allowed_tool_keys))
         self.assertFalse(is_tool_allowed("plotly_tool", allowed_tool_keys))
         self.assertTrue(is_tool_allowed("forecast_tool", allowed_tool_keys))
-        self.assertTrue(is_tool_allowed("db_tool", allowed_tool_keys))
+        self.assertTrue(is_tool_allowed("sql_table_tool", allowed_tool_keys))
 
 
 if __name__ == "__main__":

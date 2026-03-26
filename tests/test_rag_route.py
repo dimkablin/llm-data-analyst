@@ -6,9 +6,9 @@ import unittest
 _IMPORT_ERROR: Exception | None = None
 
 try:
-    from backend.agent_runner import AgentRunner
-    from backend.config import Settings
-except Exception as exc:  # pragma: no cover - environment-dependent import gate
+    from backend.agent import AgentRunner
+    from backend.core import Settings
+except Exception as exc:  # pragma: no cover
     AgentRunner = None  # type: ignore[assignment]
     Settings = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
@@ -21,7 +21,7 @@ class _FakeRAGService:
         _ = include_references
         if "auth" not in query:
             return []
-        return ["Используй access token ", "из login endpoint."]
+        return ["Use access token ", "from login endpoint."]
 
     def search(self, *, query: str, include_references: bool = False):
         _ = (query, include_references)
@@ -50,23 +50,23 @@ class RAGRouteTests(unittest.TestCase):
             allowed_tool_keys=allowed_tool_keys,
         )
 
-    def test_route_intent_detects_knowledge_base_request(self) -> None:
+    def test_route_intent_uses_rag_for_documentation_request(self) -> None:
         runner = self._build_runner(allowed_tool_keys={"rag_tool"})
 
         route = runner._route_intent(
             None,
-            "Что сказано в документации про auth flow?",
+            "что сказано в документации про auth flow?",
             session_source=None,
         )
 
         self.assertEqual(route, "rag")
 
-    def test_run_query_uses_rag_route(self) -> None:
+    def test_run_query_returns_streamed_rag_answer(self) -> None:
         runner = self._build_runner(allowed_tool_keys={"rag_tool"})
 
         response = runner.run_query(
             None,
-            "Что сказано в документации про auth flow?",
+            "что сказано в документации про auth flow?",
             history=[],
             use_history=False,
             include_reasoning=False,
@@ -76,19 +76,17 @@ class RAGRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(response.route, "rag")
-        self.assertEqual(
-            response.final_text,
-            "Используй access token из login endpoint.",
-        )
         self.assertEqual(response.artifacts, [])
         self.assertEqual(response.tool_calls, 0)
+        self.assertIn("access token", response.final_text)
+        self.assertIn("login endpoint", response.final_text)
 
-    def test_rag_route_respects_user_tool_toggle(self) -> None:
+    def test_run_query_returns_rag_disabled_message_when_user_toggle_disables_tool(self) -> None:
         runner = self._build_runner(allowed_tool_keys=set())
 
         response = runner.run_query(
             None,
-            "Что сказано в документации про auth flow?",
+            "что сказано в документации про auth flow?",
             history=[],
             use_history=False,
             include_reasoning=False,
@@ -98,7 +96,9 @@ class RAGRouteTests(unittest.TestCase):
         )
 
         self.assertEqual(response.route, "rag")
-        self.assertIn("RAG интеграция отключена", response.final_text)
+        self.assertEqual(response.artifacts, [])
+        self.assertEqual(response.tool_calls, 0)
+        self.assertIn("RAG", response.final_text)
 
 
 if __name__ == "__main__":

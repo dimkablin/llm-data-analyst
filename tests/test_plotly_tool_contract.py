@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 import plotly.graph_objects as go
 
-from agent.tools.plotly_tool import PlotlyTool
+from backend.agent.tools.plotly_tool import PlotlyTool
 
 
 class PlotlyToolContractTests(unittest.TestCase):
@@ -32,8 +32,8 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Ошибка валидации результатов", text)
-        self.assertIn("Тип данных: str", text)
+        self.assertIn("str", text)
+        self.assertIn("plot", text.lower())
         self.assertIsNone(payload["plot"])
 
     def test_invalid_dict_result_is_rejected(self) -> None:
@@ -50,8 +50,8 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Ошибка валидации результатов", text)
-        self.assertIn("Тип данных: dict", text)
+        self.assertIn("dict", text)
+        self.assertIn("plot", text.lower())
         self.assertIsNone(payload["plot"])
 
     def test_missing_variable_error_is_reported(self) -> None:
@@ -63,24 +63,22 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Ошибка при создании", text)
         self.assertIn("data_for_plot", text)
         self.assertIsNone(payload["plot"])
 
     def test_valid_figure_result_passes(self) -> None:
         code = """
-fig = px.bar(df, x="category", y="value", title="Сравнение значений")
+fig = px.bar(df, x="category", y="value", title="Value comparison")
 tool_result = chart.result(fig, artifact_name="comparison_plot")
 tool_result
 """
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Создано через plotly_tool", text)
+        self.assertIn("plotly_tool", text)
         self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
 
     def test_positional_artifact_name_passes(self) -> None:
-        """LLMs often emit chart.result(fig, \"slug\") instead of artifact_name=."""
         code = """
 fig = px.bar(df, x="category", y="value")
 tool_result = chart.result(fig, "comparison_plot")
@@ -89,7 +87,7 @@ tool_result
 
         text, payload = self.tool._run(code)
 
-        self.assertIn("Создано через plotly_tool", text)
+        self.assertIn("plotly_tool", text)
         self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
 
 

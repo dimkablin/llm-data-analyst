@@ -41,6 +41,31 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ─── Postgres (test / examples datasets) ───────────────────────────────────
+  # Loads examples/*/dataset.csv into schema `examples` on first data volume init.
+  # From host: localhost:${POSTGRES_EXAMPLES_PORT:-5433}
+  # From backend container (same compose): host postgres_examples, port 5432, db examples.
+  postgres_examples:
+    image: postgres:16-alpine
+    container_name: llm-analyst-postgres-examples
+    environment:
+      POSTGRES_USER: ${POSTGRES_EXAMPLES_USER:-analyst}
+      POSTGRES_PASSWORD: ${POSTGRES_EXAMPLES_PASSWORD:-analyst}
+      POSTGRES_DB: ${POSTGRES_EXAMPLES_DB:-examples}
+    ports:
+      - "${POSTGRES_EXAMPLES_PORT:-5433}:5432"
+    volumes:
+      - postgres_examples_data:/var/lib/postgresql/data
+      - ./examples:/examples:ro
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_EXAMPLES_USER:-analyst} -d ${POSTGRES_EXAMPLES_DB:-examples}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
   # ─── Backend ─────────────────────────────────────────────────────────────────
   backend:
     image: llm-data-analyst-backend:latest
@@ -144,3 +169,4 @@ services:
 
 volumes:
   phoenix_data:
+  postgres_examples_data:
