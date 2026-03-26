@@ -17,6 +17,8 @@ USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 THEME_VALUES = {"light", "dark"}
 ANSWER_STYLE_VALUES = {"concise", "detailed"}
 ANALYSIS_DEPTH_VALUES = {"light", "medium", "deep"}
+# Must match backend.agent_runner.DEPTH_PROFILES max_steps_cap.
+ANALYSIS_DEPTH_MAX_OUTER_STEPS = {"light": 20, "medium": 30, "deep": 50}
 
 
 @dataclass(frozen=True)
@@ -173,9 +175,9 @@ class AuthDB:
                     llm_max_tokens_default INTEGER NOT NULL DEFAULT 2048,
                     llm_max_tokens_reasoning INTEGER NOT NULL DEFAULT 4096,
                     backend_query_timeout_sec INTEGER NOT NULL DEFAULT 180,
-                    agent_max_steps INTEGER NOT NULL DEFAULT 5,
+                    agent_max_steps INTEGER NOT NULL DEFAULT 20,
                     agent_step_timeout_sec INTEGER NOT NULL DEFAULT 45,
-                    agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 6,
+                    agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 14,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
@@ -219,6 +221,15 @@ class AuthDB:
                     secret_blob_encrypted TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(connection_id) REFERENCES user_db_connections(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS user_memories (
+                    user_id    INTEGER NOT NULL,
+                    mem_type   TEXT    NOT NULL,
+                    content    TEXT    NOT NULL DEFAULT '',
+                    updated_at REAL    NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, mem_type),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
                 """
             )
@@ -320,7 +331,7 @@ class AuthDB:
             conn.execute(
                 """
                 ALTER TABLE user_settings
-                ADD COLUMN agent_max_steps INTEGER NOT NULL DEFAULT 5
+                ADD COLUMN agent_max_steps INTEGER NOT NULL DEFAULT 20
                 """
             )
         if "agent_step_timeout_sec" not in existing_columns:
@@ -334,7 +345,16 @@ class AuthDB:
             conn.execute(
                 """
                 ALTER TABLE user_settings
-                ADD COLUMN agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 6
+                ADD COLUMN agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 14
+                """
+            )
+        else:
+            # Migrate existing rows that still have the old default of 6
+            conn.execute(
+                """
+                UPDATE user_settings
+                SET agent_inner_recursion_limit = 14
+                WHERE agent_inner_recursion_limit <= 6
                 """
             )
         if "analysis_depth" not in existing_columns:
@@ -405,7 +425,7 @@ class AuthDB:
                 agent_inner_recursion_limit,
                 updated_at
             )
-            VALUES (?, 'dark', 1, 'detailed', 'light', 0.7, 0.5, 2048, 4096, 180, 5, 45, 6, ?)
+            VALUES (?, 'dark', 1, 'detailed', 'light', 0.7, 0.5, 2048, 4096, 180, 20, 45, 14, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
             (user_id, self._now_iso()),
@@ -630,9 +650,12 @@ class AuthDB:
             llm_max_tokens_default=int(row["llm_max_tokens_default"] or 2048),
             llm_max_tokens_reasoning=int(row["llm_max_tokens_reasoning"] or 4096),
             backend_query_timeout_sec=int(row["backend_query_timeout_sec"] or 180),
-            agent_max_steps=int(row["agent_max_steps"] or 5),
+            agent_max_steps=min(
+                max(2, int(row["agent_max_steps"] or 20)),
+                ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(depth, 20),
+            ),
             agent_step_timeout_sec=int(row["agent_step_timeout_sec"] or 45),
-            agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 6),
+            agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 14),
         )
 
     def get_user_settings(self, user_id: int) -> UserSettings:
@@ -662,7 +685,7 @@ class AuthDB:
                 llm_max_tokens_default=2048,
                 llm_max_tokens_reasoning=4096,
                 backend_query_timeout_sec=180,
-                agent_max_steps=5,
+                agent_max_steps=20,
                 agent_step_timeout_sec=45,
                 agent_inner_recursion_limit=6,
             )
@@ -751,6 +774,8 @@ class AuthDB:
                 if agent_max_steps is not None
                 else current.agent_max_steps
             )
+            _depth_cap = ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(next_analysis_depth, 20)
+            next_agent_max_steps = min(max(2, next_agent_max_steps), _depth_cap)
             next_agent_step_timeout_sec = (
                 int(agent_step_timeout_sec)
                 if agent_step_timeout_sec is not None
@@ -1288,3 +1313,27 @@ class AuthDB:
                 ),
             )
         return self.get_db_connection(user_id, connection_id)
+
+    # ── User memory (profile / notes) ────────────────────────────────────────
+
+    def get_user_memory(self, user_id: int, mem_type: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT content FROM user_memories WHERE user_id = ? AND mem_type = ?",
+                (user_id, mem_type),
+            ).fetchone()
+        return str(row["content"]) if row else ""
+
+    def set_user_memory(self, user_id: int, mem_type: str, content: str) -> None:
+        import time as _time
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_memories (user_id, mem_type, content, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, mem_type) DO UPDATE
+                    SET content = excluded.content,
+                        updated_at = excluded.updated_at
+                """,
+                (user_id, mem_type, content, _time.time()),
+            )

@@ -43,9 +43,9 @@ class UserSettingsResponse(BaseModel):
     llm_max_tokens_default: int = Field(default=1200, ge=128, le=32768)
     llm_max_tokens_reasoning: int = Field(default=2200, ge=128, le=32768)
     backend_query_timeout_sec: int = Field(default=180, ge=15, le=1800)
-    agent_max_steps: int = Field(default=5, ge=2, le=20)
+    agent_max_steps: int = Field(default=20, ge=2, le=50)
     agent_step_timeout_sec: int = Field(default=45, ge=5, le=600)
-    agent_inner_recursion_limit: int = Field(default=6, ge=2, le=20)
+    agent_inner_recursion_limit: int = Field(default=14, ge=2, le=30)
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -64,9 +64,9 @@ class UserSettingsUpdateRequest(BaseModel):
     llm_max_tokens_default: int | None = Field(default=None, ge=128, le=32768)
     llm_max_tokens_reasoning: int | None = Field(default=None, ge=128, le=32768)
     backend_query_timeout_sec: int | None = Field(default=None, ge=15, le=1800)
-    agent_max_steps: int | None = Field(default=None, ge=2, le=20)
+    agent_max_steps: int | None = Field(default=None, ge=2, le=50)
     agent_step_timeout_sec: int | None = Field(default=None, ge=5, le=600)
-    agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=20)
+    agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=30)
 
 
 class ToolEnabledUpdateRequest(BaseModel):
@@ -328,3 +328,15 @@ class PhoenixOverviewResponse(BaseModel):
     token_usage: list[PhoenixTokenUsageRow]
     traces: list[PhoenixTraceRow]
     warnings: list[str] = Field(default_factory=list)
+
+
+# ── User memory ──────────────────────────────────────────────────────────────
+
+class UserMemoryResponse(BaseModel):
+    profile: str
+    notes: str
+
+
+class UserMemoryUpdateRequest(BaseModel):
+    profile: str | None = None
+    notes: str | None = None

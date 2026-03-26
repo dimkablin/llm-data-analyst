@@ -138,14 +138,14 @@ class Settings:
     tool_exec_timeout_sec: int = int(os.getenv("TOOL_EXEC_TIMEOUT_SEC", "25"))
     tool_cache_size: int = int(os.getenv("TOOL_CACHE_SIZE", "48"))
     backend_query_timeout_sec: int = int(os.getenv("BACKEND_QUERY_TIMEOUT_SEC", "180"))
-    agent_max_steps: int = int(os.getenv("AGENT_MAX_STEPS", "5"))
+    agent_max_steps: int = int(os.getenv("AGENT_MAX_STEPS", "20"))
     agent_step_timeout_sec: int = int(os.getenv("AGENT_STEP_TIMEOUT_SEC", "45"))
     agent_history_max_messages: int = int(os.getenv("AGENT_HISTORY_MAX_MESSAGES", "8"))
     agent_history_summary_chars: int = int(
         os.getenv("AGENT_HISTORY_SUMMARY_CHARS", "700")
     )
     agent_inner_recursion_limit: int = int(
-        os.getenv("AGENT_INNER_RECURSION_LIMIT", "6")
+        os.getenv("AGENT_INNER_RECURSION_LIMIT", "14")
     )
     agent_prompt_max_columns: int = int(os.getenv("AGENT_PROMPT_MAX_COLUMNS", "16"))
     agent_prompt_head_rows: int = int(os.getenv("AGENT_PROMPT_HEAD_ROWS", "3"))

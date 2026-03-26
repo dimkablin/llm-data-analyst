@@ -104,16 +104,20 @@ def get_prompt(
 ) -> str:
     """
     Формирует system prompt для ReAct-агента с учетом структуры DataFrame.
+    Если df пустой (нет столбцов) — контекст данных не включается, агент
+    работает только на основе prefix/suffix (например, для поиска без данных).
     """
     prompt_parts: list[str] = []
     if prefix:
         prompt_parts.append(prefix)
 
-    prompt_parts.append(get_detailed_data_info(df, max_columns=data_info_max_columns))
+    has_real_data = df is not None and len(df.columns) > 0
+    if has_real_data:
+        prompt_parts.append(get_detailed_data_info(df, max_columns=data_info_max_columns))
 
-    if include_df_in_prompt:
-        df_head = str(df.head(number_of_head_rows).to_markdown())
-        prompt_parts.append(f"\nПервые строки данных:\n{df_head}")
+        if include_df_in_prompt:
+            df_head = str(df.head(number_of_head_rows).to_markdown())
+            prompt_parts.append(f"\nПервые строки данных:\n{df_head}")
 
     if suffix:
         prompt_parts.append(suffix)

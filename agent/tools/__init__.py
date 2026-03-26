@@ -1,11 +1,9 @@
 from agent.tools.anomaly_planfact_tool import AnomalyPlanfactTool
 from agent.tools.base_tool import BaseExecTool
 from agent.tools.db_tool import DBTool
-from agent.tools.deep_research_tool import DeepResearchTool
 from agent.tools.factory import (
     AnomalyPlanfactToolFactory,
     DBToolFactory,
-    DeepResearchToolFactory,
     ForecastToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
@@ -27,13 +25,11 @@ __all__ = [
     "PlotlyTool",
     "ValueTool",
     "AnomalyPlanfactTool",
-    "DeepResearchTool",
     "ForecastTool",
     "SearchTool",
     # Factories
     "ToolFactory",
     "SearchToolFactory",
-    "DeepResearchToolFactory",
     "ForecastToolFactory",
     "AnomalyPlanfactToolFactory",
     "PlotlyToolFactory",

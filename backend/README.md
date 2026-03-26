@@ -23,8 +23,7 @@ poetry run uvicorn backend.app:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000} -
 
 ## External integrations (env)
 
-- `SEARCH_BACKEND_URL` - quick external search backend
-- `DEEP_RESEARCH_BACKEND_URL` - deep research backend
+- `SEARCH_BACKEND_URL` - quick external search backend (search_service)
 - `RAG_URL` - knowledge-base / RAG backend base URL
 - `RAG_ENABLED` - force on/off RAG integration
 - `RAG_QUERY_ENDPOINT` - sync query endpoint (default `/query`)

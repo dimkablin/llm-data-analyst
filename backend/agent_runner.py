@@ -33,7 +33,6 @@ from backend.callbacks import (
     strip_thinking,
 )
 from backend.config import Settings
-from backend.deep_research_integration import DeepResearchIntegrationService
 from backend.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.forecast_integration import ForecastIntegrationService
 from backend.observability import record_llm_usage_on_active_span
@@ -48,6 +47,7 @@ from backend.tool_policy import (
     supports_artifact_optional_output,
 )
 from backend.tool_registry import ToolRegistry
+from backend.user_memory import UserMemory
 
 
 ANALYTICAL_HINTS = (
@@ -122,10 +122,8 @@ SEARCH_HINTS = (
     "latest",
     "news",
     "recent",
-)
-DEEP_RESEARCH_HINTS = (
+    # broader web-research phrasing (covered by search_tool + fetch)
     "deep research",
-    "research",
     "глубокое исследование",
     "развернутый ресерч",
     "подробный анализ по теме",
@@ -148,41 +146,55 @@ CHAT_HINTS_RE = re.compile(
     r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
     re.IGNORECASE,
 )
+# Substrings in user prompt → remind the ACT model to finish with plotly_tool, not only tables.
+_VISUALIZATION_HINT_TOKENS: tuple[str, ...] = (
+    "график",
+    "графики",
+    "диаграмм",
+    "визуализац",
+    "chart",
+    "charts",
+    "histogram",
+    "scatter",
+    "столбчат",
+    "линейн",
+    "plotly",
+)
 RECOVERY_TEXT_PREFIX = "Шаг анализа завершился с ограничением итераций модели"
 GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефакты построены"
 
 DEPTH_PROFILES: dict[str, dict[str, Any]] = {
     "light": {
-        "max_steps": 2,
-        "inner_recursion_limit": 3,
+        # Верхний лимит внешних итераций ReAct (модель останавливается раньше при успехе / оценке).
+        "max_steps_cap": 20,
         "evaluate_enabled": False,
         "think_instruction": (
-            "Составь КРАТКИЙ план (1-2 шага).\n"
-            "Используй минимум инструментов.\n"
-            "Предпочитай value_tool только для коротких одиночных метрик или компактных summary, "
-            "pandas_tool для простых таблиц.\n"
-            "Не подменяй внешние search/deep research задачи value artifact, если соответствующие tools доступны."
+            "Стиль: лёгкий и быстрый.\n"
+            "Составь план из столько шагов, сколько реально нужно — без раздувания.\n"
+            "Остановись мысленно на минимально достаточной цепочке инструментов.\n"
+            "Предпочитай value_tool для коротких метрик, pandas_tool для компактных таблиц.\n"
+            "Не подменяй внешние search-задачи value-артефактом, если search_tool доступен.\n"
+            "Внешний лимит итераций высокий — не обязан исчерпывать его; заверши, когда вопрос закрыт или данных мало."
         ),
     },
     "medium": {
-        "max_steps": 4,
-        "inner_recursion_limit": 5,
+        "max_steps_cap": 30,
         "evaluate_enabled": True,
         "think_instruction": (
-            "Составь план анализа (2-4 шага).\n"
-            "Применяй фильтры и агрегации по необходимости.\n"
-            "Используй графики, если запрос подразумевает визуализацию."
+            "Стиль: сбалансированный.\n"
+            "Планируй столько шагов, сколько нужно для уверенного ответа; избегай лишних повторов.\n"
+            "Фильтры, агрегации и графики — по мере необходимости, не «для галочки».\n"
+            "Если после пары шагов результат уже ясен — не размножай шаги; при нехватке данных явно зафиксируй ограничение."
         ),
     },
     "deep": {
-        "max_steps": 8,
-        "inner_recursion_limit": 8,
+        "max_steps_cap": 50,
         "evaluate_enabled": True,
         "think_instruction": (
-            "Составь ДЕТАЛЬНЫЙ план (4-8 шагов).\n"
-            "Проведи глубокий анализ: корреляции, распределения, тренды.\n"
-            "Используй комбинацию инструментов для полной картины.\n"
-            "Добавь валидацию данных и проверку выбросов."
+            "Стиль: глубокий.\n"
+            "Допускается длинная цепочка шагов, если это оправдано запросом.\n"
+            "Корреляции, распределения, тренды, проверка выбросов — когда уместно.\n"
+            "Всё равно завершай, когда анализ исчерпан или дальше нет смысла без новых данных."
         ),
     },
 }
@@ -235,25 +247,27 @@ class AgentRunner:
         settings: Settings,
         db_runtime_service: DBRuntimeService | None = None,
         search_service: SearchIntegrationService | None = None,
-        deep_research_service: DeepResearchIntegrationService | None = None,
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
         rag_service: RAGService | None = None,
         allowed_tool_keys: set[str] | None = None,
+        user_memory: UserMemory | None = None,
     ) -> None:
         self.settings = settings
         self.db_runtime_service = db_runtime_service
         self.search_service = search_service
-        self.deep_research_service = deep_research_service
         self.forecast_service = forecast_service
         self.anomaly_planfact_service = anomaly_planfact_service
         self.rag_service = rag_service
         self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
+        self.user_memory: UserMemory = user_memory or UserMemory(profile="", notes="")
+        # Buffer for notes appended by the memory tool during this request cycle.
+        self._session_memory_buffer: list[str] = []
         self._tool_registry = ToolRegistry.from_services(
             search_service=search_service,
-            deep_research_service=deep_research_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
+            memory_note_callback=self._session_memory_buffer.append,
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
@@ -262,6 +276,22 @@ class AgentRunner:
     def _resolve_depth_profile(self) -> dict[str, Any]:
         depth = self.settings.agent_analysis_depth
         return DEPTH_PROFILES.get(depth, DEPTH_PROFILES["light"])
+
+    def _depth_max_steps_cap(self) -> int:
+        """Upper bound on outer ReAct iterations for the current analysis depth."""
+        depth = str(self.settings.agent_analysis_depth or "light").strip().lower()
+        profile = DEPTH_PROFILES.get(depth, DEPTH_PROFILES["light"])
+        cap = profile.get("max_steps_cap")
+        return max(2, int(cap)) if isinstance(cap, int) else 20
+
+    def _effective_outer_max_steps(self, *, prompt: str) -> int:
+        """min(user setting, depth cap); insight-style prompts get +2 within cap."""
+        depth_cap = self._depth_max_steps_cap()
+        user_cap = max(2, int(self.settings.agent_max_steps))
+        max_steps = min(user_cap, depth_cap)
+        if self._is_insight_request(prompt):
+            max_steps = min(depth_cap, max_steps + 2)
+        return max_steps
 
     @staticmethod
     def _has_confirmed_analysis_output(response: AgentResponse | None) -> bool:
@@ -466,6 +496,10 @@ class AgentRunner:
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
 
+        memory_block = self.user_memory.build_block()
+        if memory_block:
+            messages.append(SystemMessage(content=memory_block))
+
         if use_history and history:
             max_msgs = max(0, self.settings.agent_history_max_messages)
             recent = history[-max_msgs:] if max_msgs > 0 else []
@@ -553,6 +587,7 @@ class AgentRunner:
             "history": self._history_cache_signature(history, use_history),
             "use_history": bool(use_history),
             "include_reasoning": bool(include_reasoning),
+            "analysis_depth": str(self.settings.agent_analysis_depth or "light"),
             "max_steps": self.settings.agent_max_steps,
             "step_timeout": self.settings.agent_step_timeout_sec,
             "inner_recursion_limit": self.settings.agent_inner_recursion_limit,
@@ -598,76 +633,111 @@ class AgentRunner:
             settings=self.settings,
             allowed_tool_keys=self.allowed_tool_keys,
         )
-        has_search_source = self._tool_registry.is_available("search_tool", _probe)
-        has_deep_research_source = self._tool_registry.is_available("deep_research_tool", _probe)
-        has_db_source = False
-        if isinstance(session_source, dict):
-            source_type = str(session_source.get("source_type", "")).strip().lower()
-            has_db_source = source_type == "db_connection"
+        has_search = self._tool_registry.is_available("search_tool", _probe)
+        has_rag = self.rag_service is not None and self.rag_service.is_enabled
+        has_db_source = (
+            isinstance(session_source, dict)
+            and str(session_source.get("source_type", "")).strip().lower() == "db_connection"
+        )
+        has_data = df is not None or has_db_source
+        has_any_tool = has_search or has_rag
 
         normalized = prompt.strip().lower()
+
+        # ── Tier 1: instant rules (no LLM) ──────────────────────────────────
         if not normalized:
             return "chat"
 
-        has_analytics_hint = any(hint in normalized for hint in ANALYTICAL_HINTS)
-        has_search_hint = has_search_source and any(
-            hint in normalized for hint in SEARCH_HINTS
-        )
-        has_deep_research_hint = has_deep_research_source and any(
-            hint in normalized for hint in DEEP_RESEARCH_HINTS
-        )
-        has_rag_hint = any(hint in normalized for hint in RAG_HINTS)
-        has_chat_hint = CHAT_HINTS_RE.search(normalized) is not None
-
-        if df is None and not has_db_source:
-            if has_rag_hint:
-                return "rag"
-            if has_search_hint or has_deep_research_hint:
-                return "analysis"
-            # No keyword hint — let the LLM decide if web search is needed.
-            if (has_search_source or has_deep_research_source) and self._llm_classify_needs_search(prompt):
-                return "analysis"
-            return "chat"
-
-        if has_chat_hint and not has_analytics_hint and not has_rag_hint:
-            return "chat"
-        if has_rag_hint:
+        if any(hint in normalized for hint in RAG_HINTS):
             return "rag"
-        if has_analytics_hint or has_search_hint or has_deep_research_hint:
+
+        # Clear greeting without data context → chat
+        if CHAT_HINTS_RE.search(normalized) and not has_data:
+            return "chat"
+
+        # Data is loaded → usually analysis, but pure greetings still go to chat.
+        if has_data:
+            _is_greeting = bool(CHAT_HINTS_RE.search(normalized))
+            _has_analytics = any(h in normalized for h in ANALYTICAL_HINTS)
+            _has_rag_kw = any(h in normalized for h in RAG_HINTS)
+            if _is_greeting and not _has_analytics and not _has_rag_kw:
+                return "chat"
             return "analysis"
 
-        # При наличии датасета все содержательные запросы считаем аналитическими.
-        return "analysis"
+        # Explicit keyword hints → analysis (fast path, no LLM needed)
+        if any(hint in normalized for hint in ANALYTICAL_HINTS):
+            return "analysis"
+        if has_search and any(hint in normalized for hint in SEARCH_HINTS):
+            return "analysis"
 
-    def _llm_classify_needs_search(self, prompt: str) -> bool:
-        """Fast single-token LLM call: should this query go to web search?
+        # No tools available → chat
+        if not has_any_tool:
+            return "chat"
 
-        Called only when no keyword hints matched and a search tool is available.
-        Returns True → route to "analysis" (search tools active).
-        Returns False → route to "chat" (no search).
-        On any error falls back to False (chat) so the UX degrades gracefully.
+        # ── Tier 2: analytics-aware LLM classifier ────────────────────────
+        return self._classify_intent(
+            prompt,
+            has_search=has_search,
+            has_rag=has_rag,
+        )
+
+    def _classify_intent(
+        self,
+        prompt: str,
+        *,
+        has_search: bool,
+        has_rag: bool,
+    ) -> Literal["chat", "analysis", "rag"]:
+        """Analytics-specialised LLM router.
+
+        Called only when Tier-1 rules are inconclusive and at least one tool
+        is available. Single small LLM call (~0.5 s). Fallback: "analysis".
         """
+        caps: list[str] = []
+        if has_search:
+            caps.append("- Web search (current events, news, URLs, external data)")
+        if has_rag:
+            caps.append("- Internal knowledge base search")
+
+        caps_block = "\n".join(caps) if caps else "- None"
+
         system = (
-            "You are a query router. Your only job: decide if the user query requires "
-            "a live web search for current, recent, or external information — or if it "
-            "can be answered from general knowledge / is conversational.\n"
-            "Reply with exactly one word: SEARCH or CHAT."
+            "You are the intent router for a data analytics AI assistant.\n\n"
+            "The assistant specialises in:\n"
+            "- Analyzing tabular data (CSV, pandas DataFrames, SQL databases)\n"
+            "- Statistical analysis, forecasting, anomaly detection\n"
+            "- Data visualisation (charts, plots)\n"
+            "- Web research: business topics, markets, current events, news\n"
+            "- General conversation about data science and analytics\n\n"
+            f"Available tools:\n{caps_block}\n\n"
+            "Classify the user query into exactly one category:\n"
+            "  chat      — conversational: greetings, explaining theory,\n"
+            "              general knowledge that needs no live data or tools\n"
+            "  analysis  — needs tools: search, research, calculations,\n"
+            "              anything requiring current or external information\n"
+            "  rag       — explicitly asks to search the internal knowledge base\n\n"
+            "When in doubt → analysis.\n"
+            "Reply with exactly one word: chat, analysis, or rag."
         )
         try:
             llm = self._build_llm(
                 role="evaluate",
                 include_reasoning=False,
                 timeout_sec=8,
-                max_tokens_override=5,
+                max_tokens_override=10,
             )
             result = llm.invoke([
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ])
-            text = self._content_to_text(result.content).strip().upper()
-            return "SEARCH" in text
+            text = self._content_to_text(result.content).strip().lower()
+            if "rag" in text:
+                return "rag"
+            if "analysis" in text:
+                return "analysis"
+            return "chat"
         except Exception:  # noqa: BLE001
-            return False
+            return "analysis"
 
     def _tool_allowed(self, tool_key: str) -> bool:
         return is_tool_allowed(tool_key, self.allowed_tool_keys)
@@ -894,17 +964,21 @@ class AgentRunner:
         )
 
     _THINK_SYSTEM_PROMPT_BASE = (
-        "Ты аналитик данных. Тебе дан вопрос пользователя и описание данных.\n"
-        "Сформулируй план анализа:\n"
-        "1) Какой тип задачи (метрика / таблица / график / комплексный)?\n"
-        "2) Какие инструменты вызвать и в каком порядке?\n"
-        "3) Какие проверки/фильтры применить?\n"
-        "4) Как сформулировать финальный ответ?\n"
-        "Будь конкретен: укажи названия столбцов, фильтры, агрегации.\n"
-        "Опирайся только на фактически доступные в текущем runtime tools и capabilities.\n"
-        "Если нужного capability нет, не обещай это действие и честно опиши ограничение.\n"
-        "Не используй `value_tool` как замену внешнему knowledge workflow: для search/deep research задач предпочитай соответствующие tools, "
-        "а при их недоступности давай обычный текстовый ответ об ограничении.\n"
+        "Ты — аналитический агент. Перед выполнением задачи составь краткий план.\n\n"
+        "Ответь на следующие вопросы:\n"
+        "1) Что хочет пользователь? (тип задачи: метрика / таблица / график / поиск / комплекс)\n"
+        "2) Какие инструменты использовать и в каком порядке?\n"
+        "   - данные CSV/датафрейм → pandas_tool, plotly_tool, value_tool\n"
+        "   - SQL-база → db_tool (schema discovery → аналитика → визуализация)\n"
+        "   - текущие события / внешняя информация → search_tool\n"
+        "   - ничего из выше + общий вопрос → прямой текстовый ответ без tool-вызовов\n"
+        "3) Конкретные параметры: столбцы, фильтры, агрегации, временной диапазон.\n"
+        "4) Как будет выглядеть финальный ответ (что покажем, что скажем)?\n\n"
+        "Правила:\n"
+        "- Используй только реально доступные в runtime tools.\n"
+        "- Если нужный инструмент недоступен, не обещай его использование — честно опиши ограничение.\n"
+        "- Не путай `value_tool` (Python-вычисление по данным) с поиском в интернете.\n"
+        "- Для свежей информации / новостей → search_tool (при доступности).\n"
     )
 
     def _think_system_prompt(self, capability_context: dict[str, Any] | None = None) -> str:
@@ -917,20 +991,29 @@ class AgentRunner:
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
         if capability_block:
             prompt += f"\n{capability_block}\n"
+        memory_block = self.user_memory.build_block()
+        if memory_block:
+            prompt += f"\n{memory_block}\n"
         return prompt
 
     _EVALUATE_PROMPT_TEMPLATE = (
         "Вопрос пользователя: {question}\n"
         "Полученные артефакты: {artifact_summary}\n"
         "Runtime capabilities: {capability_summary}\n"
+        "Использованные инструменты (включая неудачные): {used_tools}\n"
         "Текст ответа: {response_text}\n\n"
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
-        "Критерии оценки:\n"
-        "- Ответ прямо отвечает на вопрос пользователя?\n"
-        "- Все утверждения подкреплены артефактами (таблица/график/метрика)?\n"
-        "- Если нужный capability недоступен в runtime, честное объяснение ограничения допустимо даже без tool artifacts.\n"
-        "- Нет выдуманных данных?\n"
+        "Критерии оценки (PASS если выполнено хотя бы одно):\n"
+        "1. Ответ прямо отвечает на вопрос и подкреплён хотя бы одним артефактом "
+        "(table/plot/value — в т.ч. таблица результатов search_tool).\n"
+        "2. Если нужный capability недоступен/вернул ошибку в runtime — честное объяснение ограничения допустимо.\n"
+        "3. Поиск (search_tool) был запущен, но не вернул полезных данных (network/timeout) — "
+        "ответ с анализом из датасета вместо поиска допустим.\n"
+        "4. В списке артефактов есть table от веб-поиска (search_results и т.п.) — "
+        "это УЖЕ подтверждение задачи «найти в интернете»; PASS если текст ответа кратко резюмирует "
+        "найденное или перечисляет факты, даже без отдельных графиков по датасету.\n"
+        "FAIL только если: ответ пустой, полностью нерелевантен вопросу, или состоит только из описания технических ошибок.\n"
         "Только JSON, без пояснений."
     )
 
@@ -956,6 +1039,24 @@ class AgentRunner:
                 "Используй tool-вызовы для получения данных. "
                 "Передавай в tool только чистый Python-код (без markdown-блоков и без ```)."
             ),
+            *(
+                [
+                    "",
+                    "[ROLE: CHARTS]",
+                    (
+                        "Пользователь просит визуализацию: обязательно доведи до успешного `plotly_tool` "
+                        "(`chart.result(fig, ...)`) с понятным `artifact_name`. "
+                        "Не подменяй график только `pandas_tool`/`value_tool`. "
+                        "В коде plotly используй `df` или явно объявленную переменную выборки — не ссылайся на `df_plot`, "
+                        "если не создал её строкой выше."
+                    ),
+                ]
+                if any(
+                    tok in user_prompt.lower()
+                    for tok in _VISUALIZATION_HINT_TOKENS
+                )
+                else []
+            ),
             "",
             "[ROLE: CONTRACT]",
             (
@@ -964,7 +1065,12 @@ class AgentRunner:
             ),
             "",
             "[ROLE: STEP]",
-            f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {self.settings.agent_analysis_depth}.",
+            (
+                f"Текущий шаг: {step_index}/{max_steps}. "
+                f"Уровень анализа: {self.settings.agent_analysis_depth}. "
+                "Верхний лимит итераций — только страховка; остановись раньше, если ответ уже достаточен "
+                "или данных/инструментов не хватает — тогда кратко опиши ограничение."
+            ),
         ]
 
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
@@ -983,7 +1089,11 @@ class AgentRunner:
             [
                 "",
                 "[ROLE: FINALIZE]",
-                "Финальный текст только по фактам из tool-результата. Без выдуманных значений.",
+                "ВАЖНО: НЕ повторяй и НЕ пересказывай план из секции [ROLE: PLAN].",
+                "Напиши ПРЯМОЙ ОТВЕТ на вопрос пользователя — только по фактам из tool-результатов.",
+                "• Если search_tool вернул сниппеты или выборку страниц — процитируй ключевые факты из текста.",
+                "• Если pandas/plotly вернули данные — интерпретируй числа и тренды в тексте.",
+                "• Финальный ответ = конкретные факты и выводы, а НЕ описание процесса анализа.",
             ]
         )
 
@@ -1537,10 +1647,7 @@ class AgentRunner:
             tools=tools,
             verbose=False,
             return_intermediate_steps=True,
-            max_iterations=max(1, min(
-                self.settings.agent_inner_recursion_limit,
-                int(self._depth_profile.get("inner_recursion_limit", self.settings.agent_inner_recursion_limit)),
-            )),
+            max_iterations=max(1, self.settings.agent_inner_recursion_limit),
             max_execution_time=float(self.settings.agent_step_timeout_sec),
             prefix=agent_prompt,
             include_df_in_prompt=True,
@@ -1551,9 +1658,7 @@ class AgentRunner:
         prompt_messages = self._build_messages(prompt, history, use_history)
         runtime_config: dict[str, Any] = {
             "callbacks": callbacks,
-            "recursion_limit": max(8, min(24, int(self._depth_profile.get(
-                "inner_recursion_limit", self.settings.agent_inner_recursion_limit
-            )))),
+            "recursion_limit": max(8, min(24, self.settings.agent_inner_recursion_limit)),
         }
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -1833,10 +1938,7 @@ class AgentRunner:
         )
         tools: list = self._tool_registry.build_tools(_ctx)
 
-        depth_max = int(self._depth_profile.get("max_steps", self.settings.agent_max_steps))
-        max_steps = max(2, min(depth_max, self.settings.agent_max_steps))
-        if self._is_insight_request(prompt):
-            max_steps = max(max_steps, min(10, max_steps + 2))
+        max_steps = self._effective_outer_max_steps(prompt=prompt)
 
         data_context = ""
         if df is not None:
@@ -2074,8 +2176,14 @@ class AgentRunner:
             return {"eval_passed": False, "eval_reason": reason}
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
+        # Search attempted but returned errors still counts as "attempted"
+        search_attempted = bool(
+            response
+            and response.tool_calls > 0
+            and "search_tool" in (response.tool_names or [])
+        )
 
-        if not has_confirmed_output and not unavailable_capabilities:
+        if not has_confirmed_output and not unavailable_capabilities and not search_attempted:
             reason = "Нет подтвержденных tool-вызовов с артефактами"
             self._emit_phase_event(
                 callbacks, phase="evaluate", title="Оценка результата",
@@ -2095,11 +2203,13 @@ class AgentRunner:
         artifact_lines = self._artifact_method_lines(response.artifacts, max_items=6)
         artifact_summary = "\n".join(artifact_lines) if artifact_lines else "нет артефактов"
 
+        used_tools_text = ", ".join(sorted(set(response.tool_names))) if response.tool_names else "нет"
         evaluate_prompt = self._EVALUATE_PROMPT_TEMPLATE.format(
             question=prompt.strip(),
             artifact_summary=artifact_summary,
             capability_summary=str(capability_context.get("prompt_block", "нет")),
-            response_text=self._truncate(response.final_text, 600),
+            used_tools=used_tools_text,
+            response_text=self._truncate(response.final_text, 1200),
         )
 
         self._emit_phase_event(
@@ -2169,7 +2279,12 @@ class AgentRunner:
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
 
-        if eval_passed and has_confirmed_output and response.final_text.strip():
+        # Also accept when the evaluator approved a search result even
+        # if there are no "data" artifacts (search itself is the artifact).
+        _search_tools = {"search_tool"}
+        _search_attempted = any(t in (response.tool_names or []) for t in _search_tools)
+
+        if eval_passed and response.final_text.strip() and (has_confirmed_output or _search_attempted):
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Завершаю цикл ReAct",
@@ -2256,8 +2371,18 @@ class AgentRunner:
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
 
+        _search_tools = {"search_tool"}
+        _used_search = any(t in (response.tool_names or []) for t in _search_tools)
+
         if route == "analysis":
             if response.artifacts:
+                _plan_prefixes = (
+                    "план анализа", "план решения", "план (", "plan анализа",
+                    "план:", "plan:", "корректировка плана",
+                    "интеграция внешней", "извлечение ключевых",
+                )
+                _final_lower = response.final_text.strip().lower()
+                _looks_like_plan = any(_final_lower.startswith(p) for p in _plan_prefixes)
                 should_rewrite = (
                     not response.final_text.strip()
                     or response.final_text.strip().startswith(RECOVERY_TEXT_PREFIX)
@@ -2266,6 +2391,8 @@ class AgentRunner:
                     or self._is_insight_request(prompt)
                     or prompt.strip().endswith("?")
                     or len(response.final_text.strip()) < 260
+                    or _looks_like_plan
+                    or _used_search  # always synthesize when search was used
                 )
                 if should_rewrite:
                     grounded_summary = self._artifact_grounded_summary(

@@ -15,11 +15,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from typing import Callable
+
 from agent.tools.factory import (
     AnomalyPlanfactToolFactory,
     DBToolFactory,
-    DeepResearchToolFactory,
     ForecastToolFactory,
+    MemoryToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
     SearchToolFactory,
@@ -29,7 +31,6 @@ from agent.tools.factory import (
 
 if TYPE_CHECKING:
     from backend.anomaly_planfact_integration import AnomalyPlanfactIntegrationService
-    from backend.deep_research_integration import DeepResearchIntegrationService
     from backend.forecast_integration import ForecastIntegrationService
     from backend.search_integration import SearchIntegrationService
     from backend.tool_context import ToolBuildContext
@@ -60,9 +61,9 @@ class ToolRegistry:
         cls,
         *,
         search_service: SearchIntegrationService | None = None,
-        deep_research_service: DeepResearchIntegrationService | None = None,
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
+        memory_note_callback: Callable[[str], None] | None = None,
     ) -> ToolRegistry:
         """Assemble a registry from optional integration services plus all built-in tools."""
         factories: list[ToolFactory] = []
@@ -74,8 +75,6 @@ class ToolRegistry:
             factories.append(ForecastToolFactory(forecast_service))
         if anomaly_planfact_service is not None:
             factories.append(AnomalyPlanfactToolFactory(anomaly_planfact_service))
-        if deep_research_service is not None:
-            factories.append(DeepResearchToolFactory(deep_research_service))
 
         # Built-in tools are always registered; their own is_available guards handle
         # data-context requirements (df / db_runtime_config / allowed_tool_keys).
@@ -85,5 +84,8 @@ class ToolRegistry:
             ValueToolFactory(),
             DBToolFactory(),
         ])
+
+        # Memory tool is always available (no data or service requirements).
+        factories.append(MemoryToolFactory(memory_note_callback or (lambda _: None)))
 
         return cls(factories)

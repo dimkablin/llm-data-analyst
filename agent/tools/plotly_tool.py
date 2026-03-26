@@ -11,6 +11,77 @@ from agent.tools.db_tool import DBAnalyticsHelper, DemoDBConnectionView
 from backend.artifact_meta import build_chart_recipe_step, normalize_recipe_steps
 from backend.db_runtime_service import RuntimeDBConnectionConfig
 
+# Cohesive palette + dark layout aligned with frontend `ArtifactSurface` iframe (#09090b).
+_CHART_COLORWAY: tuple[str, ...] = (
+    "#818cf8",
+    "#22d3ee",
+    "#34d399",
+    "#fbbf24",
+    "#f472b6",
+    "#a78bfa",
+    "#2dd4bf",
+    "#fb7185",
+    "#93c5fd",
+)
+
+
+def apply_default_chart_style(fig: Any) -> Any:
+    """Polish Plotly figures before serialization: typography, grid, dark theme."""
+    if not isinstance(fig, go.Figure):
+        return fig
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(9,9,11,0)",
+        plot_bgcolor="rgba(24,24,27,0.72)",
+        font=dict(
+            family="system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif",
+            size=12,
+            color="#e4e4e7",
+        ),
+        colorway=list(_CHART_COLORWAY),
+        margin=dict(l=54, r=32, t=52, b=52),
+        title=dict(
+            font=dict(size=15, color="#fafafa", family="system-ui, sans-serif"),
+            x=0.02,
+            xanchor="left",
+            pad=dict(t=8, b=8),
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(39,39,42,0.96)",
+            bordercolor="#52525b",
+            font=dict(size=12, color="#fafafa"),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(9,9,11,0.55)",
+            borderwidth=0,
+            font=dict(size=11, color="#d4d4d8"),
+        ),
+    )
+    axis_grid = dict(
+        showgrid=True,
+        gridcolor="rgba(63,63,70,0.55)",
+        zeroline=False,
+        linecolor="#3f3f46",
+        tickfont=dict(color="#a1a1aa", size=11),
+        title_font=dict(color="#d4d4d8", size=12),
+    )
+    fig.update_xaxes(**axis_grid)
+    fig.update_yaxes(**axis_grid)
+    fig.update_traces(
+        marker_line_width=0,
+        selector=dict(type="bar"),
+    )
+    fig.update_traces(
+        line=dict(width=2.25),
+        selector=dict(type="scatter"),
+    )
+    return fig
+
 
 @dataclass
 class ChartArtifactHelper:
@@ -19,8 +90,8 @@ class ChartArtifactHelper:
     def result(
         self,
         fig: Any,
-        *,
         artifact_name: str = "chart",
+        *,
         recipe: list[dict[str, Any]] | None = None,
         source: dict[str, Any] | None = None,
         summary: str | None = None,
@@ -28,10 +99,11 @@ class ChartArtifactHelper:
         meta: dict[str, Any] | None = None,
         depends_on: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
+        styled = apply_default_chart_style(fig)
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "artifact_type": "plot",
-            "items": {str(artifact_name or 'chart'): fig},
+            "items": {str(artifact_name or 'chart'): styled},
         }
         if source:
             payload["source"] = dict(source)

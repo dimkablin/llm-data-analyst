@@ -28,8 +28,6 @@ from backend.callbacks import (
     ToolCollector,
 )
 from backend.config import settings
-from backend.deep_research_integration import DeepResearchConfig, DeepResearchIntegrationService
-from backend.deep_research_service import LocalDeepResearchService
 from backend.db_connections_service import DBConnectionsService
 from backend.db_runtime_service import DBRuntimeService
 from backend.forecast_integration import ForecastIntegrationService
@@ -61,10 +59,13 @@ from backend.models import (
     SessionSummaryResponse,
     ToolAvailabilityResponse,
     ToolEnabledUpdateRequest,
+    UserMemoryResponse,
+    UserMemoryUpdateRequest,
     UserSettingsResponse,
     UserSettingsUpdateRequest,
     UploadResponse,
 )
+from backend.user_memory import UserMemoryService
 from backend.observability import initialize_phoenix
 from backend.observability import build_trace_context, query_trace_context
 from backend.observability_service import PhoenixObservabilityService
@@ -103,18 +104,10 @@ auth_db.ensure_default_admin(
     settings.auth_default_admin_username,
     settings.auth_default_admin_password,
 )
+user_memory_service = UserMemoryService(auth_db)
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
 search_integration_service = SearchIntegrationService.from_env()
-_dr_config = DeepResearchConfig.from_env()
-if _dr_config.available:
-    # External deep-research backend URL is configured — use HTTP client
-    deep_research_integration_service = DeepResearchIntegrationService(_dr_config)
-else:
-    # No external URL — run research locally using the LLM + search bridge
-    deep_research_integration_service = LocalDeepResearchService.from_env(
-        search_service=search_integration_service
-    )
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
 rag_service = RAGService.from_env()
@@ -122,7 +115,6 @@ runner = AgentRunner(
     settings,
     db_runtime_service=db_runtime_service,
     search_service=search_integration_service,
-    deep_research_service=deep_research_integration_service,
     forecast_service=forecast_integration_service,
     anomaly_planfact_service=anomaly_planfact_integration_service,
     rag_service=rag_service,
@@ -255,7 +247,6 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
 def _integration_source_descriptors() -> list[dict[str, Any]]:
     return [
         search_integration_service.source_descriptor(),
-        deep_research_integration_service.source_descriptor(),
         rag_service.source_descriptor(),
         forecast_integration_service.source_descriptor(),
         anomaly_planfact_integration_service.source_descriptor(),
@@ -440,6 +431,27 @@ def auth_update_settings(
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
     )
+
+
+@app.get("/auth/memory", response_model=UserMemoryResponse)
+def auth_get_memory(
+    current_user: AuthUser = Depends(get_current_user),
+) -> UserMemoryResponse:
+    mem = user_memory_service.load(current_user.id)
+    return UserMemoryResponse(profile=mem.profile, notes=mem.notes)
+
+
+@app.patch("/auth/memory", response_model=UserMemoryResponse)
+def auth_update_memory(
+    payload: UserMemoryUpdateRequest,
+    current_user: AuthUser = Depends(get_current_user),
+) -> UserMemoryResponse:
+    if payload.profile is not None:
+        user_memory_service.set_profile(current_user.id, payload.profile)
+    if payload.notes is not None:
+        user_memory_service.set_notes(current_user.id, payload.notes)
+    mem = user_memory_service.load(current_user.id)
+    return UserMemoryResponse(profile=mem.profile, notes=mem.notes)
 
 
 @app.get("/auth/tools", response_model=list[ToolAvailabilityResponse])
@@ -1227,15 +1239,16 @@ async def _execute_query(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    user_memory = user_memory_service.load(current_user.id)
     runtime_runner = AgentRunner(
         runtime_settings,
         db_runtime_service=db_runtime_service,
         search_service=search_integration_service,
-        deep_research_service=deep_research_integration_service,
         forecast_service=forecast_integration_service,
         anomaly_planfact_service=anomaly_planfact_integration_service,
         rag_service=rag_service,
         allowed_tool_keys=allowed_tool_keys,
+        user_memory=user_memory,
     )
 
     try:
@@ -1295,6 +1308,17 @@ async def _execute_query(
                 payload.query, fallback.text, reasoning=fallback.reasoning,
             )
         return fallback
+
+    try:
+        if runtime_runner._session_memory_buffer:  # noqa: SLF001
+            _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
+            user_memory_service.schedule_consolidation(
+                current_user.id,
+                list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                _mem_llm.invoke,
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
     artifacts = [serialize_artifact(a) for a in response.artifacts]
     duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1399,15 +1423,16 @@ async def query_stream(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    user_memory = user_memory_service.load(current_user.id)
     runtime_runner = AgentRunner(
         runtime_settings,
         db_runtime_service=db_runtime_service,
         search_service=search_integration_service,
-        deep_research_service=deep_research_integration_service,
         forecast_service=forecast_integration_service,
         anomaly_planfact_service=anomaly_planfact_integration_service,
         rag_service=rag_service,
         allowed_tool_keys=allowed_tool_keys,
+        user_memory=user_memory,
     )
 
     async def run_agent() -> None:
@@ -1434,6 +1459,17 @@ async def query_stream(
                         trace_context,
                         session_source,
                     )
+
+            try:
+                if runtime_runner._session_memory_buffer:  # noqa: SLF001
+                    _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
+                    user_memory_service.schedule_consolidation(
+                        current_user.id,
+                        list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                        _mem_llm.invoke,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
             artifacts = [serialize_artifact(a) for a in response.artifacts]
             duration_ms = int((time.perf_counter() - started_at) * 1000)

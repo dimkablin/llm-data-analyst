@@ -6,9 +6,7 @@ DATAFRAME_BASE_TOOL_KEYS: frozenset[str] = frozenset(
     {"pandas_tool", "value_tool", "plotly_tool"}
 )
 DB_BASE_TOOL_KEYS: frozenset[str] = frozenset({"db_tool"})
-ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset(
-    {"search_tool", "deep_research_tool"}
-)
+ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset({"search_tool", "memory"})
 
 
 def normalize_allowed_tool_keys(

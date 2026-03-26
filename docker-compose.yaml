@@ -59,6 +59,15 @@ services:
     env_file:
       - .env
     environment:
+      # Search: env_file may omit SEARCH_*; defaults target search_service in this compose file
+      - SEARCH_ENABLED=${SEARCH_ENABLED:-true}
+      - SEARCH_BACKEND_URL=${SEARCH_BACKEND_URL:-http://search_service:8000}
+      - SEARCH_ENDPOINT=${SEARCH_ENDPOINT:-/api/v1/search/}
+      - SEARCH_FETCH_ENDPOINT=${SEARCH_FETCH_ENDPOINT:-/api/v1/fetch/}
+      - SEARCH_TIMEOUT_SEC=${SEARCH_TIMEOUT_SEC:-20}
+      - SEARCH_MAX_RESULTS_DEFAULT=${SEARCH_MAX_RESULTS_DEFAULT:-5}
+      - SEARCH_FETCH_TOP_N_DEFAULT=${SEARCH_FETCH_TOP_N_DEFAULT:-3}
+      - SEARCH_SOURCE_LABEL=${SEARCH_SOURCE_LABEL:-Search}
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - BACKEND_SESSION_TTL_DAYS=${BACKEND_SESSION_TTL_DAYS:-7}
       - BACKEND_MAX_DATASET_MB=${BACKEND_MAX_DATASET_MB:-100}

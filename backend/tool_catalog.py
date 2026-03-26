@@ -73,17 +73,6 @@ INTEGRATION_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         source_type="search",
     ),
     ToolCatalogSpec(
-        tool_key="deep_research_tool",
-        tool_label="Deep Research",
-        display_name_ru="Глубокое исследование",
-        description="External deep research and research-report integration.",
-        description_ru="Развернутый внешний ресерч с подробным результатом.",
-        capabilities=("deep_research", "research_report", "web_results"),
-        requires_session_data=False,
-        kind="integration",
-        source_type="deep_research",
-    ),
-    ToolCatalogSpec(
         tool_key="rag_tool",
         tool_label="RAG",
         display_name_ru="База знаний",

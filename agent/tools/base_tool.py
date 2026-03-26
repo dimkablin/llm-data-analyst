@@ -214,6 +214,13 @@ class BaseExecTool(BaseTool):
             r"\bos\b|\bsys\b|\bpathlib\b|\bsubprocess\b|\bshutil\b",
             "Системные библиотеки недоступны в инструменте.",
         ),
+        (
+            r"\bpd\.read_csv\b|\bpd\.read_excel\b|\bpd\.read_parquet\b"
+            r"|\bpd\.read_json\b|\bpd\.read_table\b|\bpd\.read_feather\b"
+            r"|\bpandas\.read_csv\b|\bpandas\.read_excel\b",
+            "Загрузка файлов запрещена. DataFrame `df` уже доступен в области видимости — "
+            "используй его напрямую без pd.read_csv/read_excel.",
+        ),
     )
     response_format: str = "content_and_artifact"
     execution_timeout_sec: float = 25.0

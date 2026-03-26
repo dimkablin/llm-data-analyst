@@ -357,6 +357,38 @@ class SearchIntegrationService:
             published_at=published_at,
         )
 
+    @staticmethod
+    def _synthesize_answer_from_results(
+        query: str,
+        results: list[SearchResultItem],
+        *,
+        max_items: int = 4,
+        max_snippet_chars: int = 420,
+    ) -> str | None:
+        """
+        search_service returns answer=null by design (no LLM there). For the agent we still
+        need a compact, query-grounded text block so the inner LLM can answer from the web.
+        """
+        if not results:
+            return None
+        lines: list[str] = []
+        for item in results[:max_items]:
+            title = (item.title or "").strip()
+            url = (item.url or "").strip()
+            snip = (item.snippet or "").strip().replace("\n", " ")
+            if len(snip) > max_snippet_chars:
+                snip = snip[: max_snippet_chars - 1] + "…"
+            if snip:
+                lines.append(f"• {title}: {snip}")
+            elif title and url:
+                lines.append(f"• {title} — {url}")
+        if not lines:
+            return None
+        return (
+            f"Краткая выжимка по запросу «{query}» (топ результатов поиска):\n"
+            + "\n".join(lines)
+        )
+
     def _normalize_response(
         self,
         *,
@@ -386,6 +418,9 @@ class SearchIntegrationService:
         warnings: list[str] = []
         if not results:
             warnings.append("Search backend returned no normalized results.")
+
+        if not answer and results:
+            answer = self._synthesize_answer_from_results(query, results)
 
         return SearchQueryResult(
             query=query,

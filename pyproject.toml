@@ -40,6 +40,11 @@ pre-commit = "^4.2.0"
 black = "^25.1.0"
 isort = "^6.0.1"
 pytest = "^9.0.2"
+ruff = "^0.15.7"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
 
 [build-system]
 requires = ["poetry-core"]
