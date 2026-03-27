@@ -16,7 +16,7 @@ from backend.api.models import (
     SessionTitleUpdateRequest,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["Сессии"])
 
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore

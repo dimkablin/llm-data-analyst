@@ -88,7 +88,7 @@ APP_BASE_PATH=/scibox/llm-data-analyst/
 ```bash
 # Backend
 pip install -r backend/requirements.runtime.txt
-uvicorn backend.app:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000} --reload
+uvicorn backend.api.app:app --host 0.0.0.0 --port ${BACKEND_PORT:-8000} --reload
 
 # Frontend
 cd frontend

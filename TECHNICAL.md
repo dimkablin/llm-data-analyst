@@ -207,7 +207,7 @@ React + TypeScript + Vite.
 
 | Модуль | Назначение |
 |--------|------------|
-| `backend/app.py` | FastAPI endpoints, SSE, timeout/fallback |
+| `backend/api/app.py` | FastAPI app wiring, routes, SSE, timeout/fallback |
 | `backend/agent_runner.py` | LangGraph-агент, узлы ReAct, построение LLM |
 | `backend/config.py` | `Settings` dataclass, чтение всех env-переменных |
 | `backend/session_store.py` | Хранение сессий, DataFrame, артефактов |

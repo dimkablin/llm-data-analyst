@@ -26,21 +26,11 @@ ENV CURL_CA_BUNDLE=/opt/certs/inno_pki_chain.pem
 RUN adduser --disabled-password --gecos "" --no-create-home appuser
 RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_storage
 
-COPY agent ./agent
-COPY api ./api
-COPY artifacts ./artifacts
-COPY auth ./auth
 COPY backend ./backend
-COPY core ./core
-COPY data_access ./data_access
-COPY integrations ./integrations
-COPY observability ./observability
-COPY sessions ./sessions
-COPY tools ./tools
 
 RUN chown -R appuser:appuser /app /opt/certs
 USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "backend.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

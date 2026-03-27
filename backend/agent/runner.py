@@ -1623,6 +1623,28 @@ class AgentRunner:
         return "", None
 
     @staticmethod
+    def _reset_text_collectors(callbacks: list) -> None:
+        for cb in callbacks:
+            if isinstance(cb, LLMTextCollector):
+                cb.messages.clear()
+
+    @staticmethod
+    def _response_has_artifact_type(
+        response: AgentResponse | None,
+        artifact_type: str,
+    ) -> bool:
+        if response is None:
+            return False
+        expected = str(artifact_type or "").strip().lower()
+        if not expected:
+            return False
+        for artifact in response.artifacts:
+            current = str(getattr(artifact, "artifact_type", "")).strip().lower()
+            if current == expected:
+                return True
+        return False
+
+    @staticmethod
     def _collect_progress_collectors(callbacks: list) -> list[AgentProgressCollector]:
         result: list[AgentProgressCollector] = []
         for cb in callbacks:
@@ -1775,6 +1797,7 @@ class AgentRunner:
         session_source: dict[str, Any] | None = None,
         tool_db_runtime: RuntimeDBConnectionConfig | None = None,
     ) -> AgentResponse:
+        self._reset_text_collectors(callbacks)
         llm = self._build_llm(
             role="tool",
             include_reasoning=include_reasoning,
@@ -2317,6 +2340,44 @@ class AgentRunner:
                 tool_names=tool_names,
             )
 
+        requires_plot = (
+            any(tok in str(state.get("prompt", "")).lower() for tok in _VISUALIZATION_HINT_TOKENS)
+            and any(str(getattr(tool, "name", "")).strip() == "plotly_tool" for tool in tools)
+        )
+        if requires_plot and not self._response_has_artifact_type(response, "plot"):
+            retry_prompt = (
+                f"{state.get('prompt', '').strip()}\n\n"
+                "[ROLE: VISUALIZATION_RETRY]\n"
+                "Предыдущая попытка не построила plot-артефакт. "
+                "Сейчас выполни только то, что нужно для успешного графика:\n"
+                "- обязательно вызови `plotly_tool`\n"
+                "- создай реальный Plotly `Figure`\n"
+                "- верни результат через `chart.result(fig, artifact_name=\"...\")`\n"
+                "- не пересказывай план и не ограничивайся таблицей или метрикой"
+            )
+            self._emit_progress_event(
+                callbacks,
+                phase="act",
+                title=f"Повторяю шаг {step_index} для графика",
+                details="Предыдущая попытка не вернула plot-артефакт. Форсирую отдельный вызов plotly_tool.",
+                step_index=step_index,
+                max_steps=max_steps,
+            )
+            retry_response = self._analysis_step(
+                df=tool_df,
+                prompt=retry_prompt,
+                history=state.get("history", []),
+                use_history=state.get("use_history", True),
+                include_reasoning=state.get("include_reasoning", False),
+                callbacks=callbacks,
+                trace_context=state.get("trace_context"),
+                tools=tools,
+                session_source=state.get("session_source"),
+                tool_db_runtime=tool_db_runtime,
+            )
+            if self._response_has_artifact_type(retry_response, "plot"):
+                response = retry_response
+
         elapsed_sec = time.perf_counter() - started_at
         if elapsed_sec > max(1, self.settings.agent_step_timeout_sec):
             response.reasoning = (
@@ -2378,6 +2439,23 @@ class AgentRunner:
             self._emit_phase_event(
                 callbacks, phase="evaluate", title="Оценка результата",
                 content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+            )
+            return {"eval_passed": False, "eval_reason": reason}
+
+        requires_plot = (
+            any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS)
+            and self._tool_allowed("plotly_tool")
+        )
+        if requires_plot and not self._response_has_artifact_type(response, "plot"):
+            reason = "Запрошена визуализация, но plot-артефакт не построен"
+            self._emit_phase_event(
+                callbacks,
+                phase="evaluate",
+                title="Оценка результата",
+                content=reason,
+                step_index=step_index,
+                max_steps=max_steps,
+                status="fail",
             )
             return {"eval_passed": False, "eval_reason": reason}
 
@@ -2855,5 +2933,3 @@ class AgentRunner:
         except Exception:
             # Warmup is best-effort; backend should stay available even if model is cold.
             return
-
-

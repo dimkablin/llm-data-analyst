@@ -10,7 +10,7 @@ from backend.api.models import (
     MessageResponse,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["Администрирование"])
 
 # Singleton set during app startup
 _auth_db: AuthDB = None  # type: ignore

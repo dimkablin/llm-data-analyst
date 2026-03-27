@@ -20,7 +20,7 @@ from backend.api.models import (
     QueryResponse,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["Запросы и агент"])
 
 CHAT_FALLBACK_RE = re.compile(
     r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",

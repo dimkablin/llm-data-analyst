@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from backend.auth.auth_db import AuthUser, AuthDB
@@ -13,7 +13,7 @@ from backend.api.models import (
     MessageResponse,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["Подключения к БД"])
 
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore

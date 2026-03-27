@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Any
@@ -56,7 +56,24 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="LLM Data Analyst Backend", version="0.2.0", lifespan=_lifespan)
+_OPENAPI_TAGS: list[dict[str, str]] = [
+    {"name": "Сервис", "description": "Проверка доступности и параметры runtime."},
+    {"name": "Аутентификация", "description": "Регистрация, вход, профиль, настройки и инструменты."},
+    {"name": "Администрирование", "description": "Управление пользователями (только администратор)."},
+    {"name": "Сессии", "description": "Чаты и состояние сессий."},
+    {"name": "Данные", "description": "Загрузка данных в сессию."},
+    {"name": "Источники", "description": "Источники данных и привязка к сессии."},
+    {"name": "Запросы и агент", "description": "Запросы к агенту и стриминг ответов."},
+    {"name": "Подключения к БД", "description": "Сохранённые подключения к БД и схемы."},
+    {"name": "Наблюдаемость", "description": "Обзор Phoenix / трассировки."},
+]
+
+app = FastAPI(
+    title="LLM Data Analyst Backend",
+    version="0.2.0",
+    lifespan=_lifespan,
+    openapi_tags=_OPENAPI_TAGS,
+)
 
 origins = (
     ["*"]

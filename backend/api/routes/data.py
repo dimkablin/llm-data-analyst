@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 
@@ -10,7 +10,7 @@ from backend.api.deps import get_current_user
 from backend.api.models import UploadResponse
 from backend.core.config import settings
 
-router = APIRouter()
+router = APIRouter(tags=["Данные"])
 
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore

@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from backend.auth.auth_db import AuthUser
 from backend.api.deps import get_current_user
 from backend.api.models import PhoenixOverviewResponse
 
-router = APIRouter()
+router = APIRouter(tags=["Наблюдаемость"])
 
 # Singleton set during app startup
 _phoenix_observability_service = None  # type: ignore

@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from backend.auth.auth_db import AuthUser
 from backend.api.deps import get_current_user
 from backend.core.config import settings
 
-router = APIRouter()
+router = APIRouter(tags=["Сервис"])
 
 
 @router.get("/health")
