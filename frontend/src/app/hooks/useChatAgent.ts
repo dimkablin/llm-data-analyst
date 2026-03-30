@@ -434,6 +434,9 @@ export function useChatAgent({
               setStreamReasoning((prev) => prev + text);
             },
             onPhaseToken: (token) => {
+              if (!includeReasoning) {
+                return;
+              }
               phaseTokenBufRef.current += token;
               if (!phaseFlushRef.current) {
                 phaseFlushRef.current = setTimeout(() => {

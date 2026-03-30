@@ -2361,45 +2361,6 @@ class AgentRunner:
             any(tok in str(state.get("prompt", "")).lower() for tok in _VISUALIZATION_HINT_TOKENS)
             and any(str(getattr(tool, "name", "")).strip() == "plotly_tool" for tool in tools)
         )
-        plotly_was_called = "plotly_tool" in response.tool_names
-        if (
-            requires_plot
-            and not self._response_has_artifact_type(response, "plot")
-            and not plotly_was_called
-        ):
-            retry_prompt = (
-                f"{state.get('prompt', '').strip()}\n\n"
-                "[ROLE: VISUALIZATION_RETRY]\n"
-                "Предыдущая попытка не построила plot-артефакт. "
-                "Сейчас выполни только то, что нужно для успешного графика:\n"
-                "- обязательно вызови `plotly_tool`\n"
-                "- создай реальный Plotly `Figure`\n"
-                "- верни результат через `chart.result(fig, artifact_name=\"...\")`\n"
-                "- не пересказывай план и не ограничивайся таблицей или метрикой"
-            )
-            self._emit_progress_event(
-                callbacks,
-                phase="act",
-                title=f"Повторяю шаг {step_index} для графика",
-                details="Предыдущая попытка не вернула plot-артефакт. Форсирую отдельный вызов plotly_tool.",
-                step_index=step_index,
-                max_steps=max_steps,
-            )
-            retry_response = self._analysis_step(
-                df=tool_df,
-                prompt=retry_prompt,
-                history=state.get("history", []),
-                use_history=state.get("use_history", True),
-                include_reasoning=state.get("include_reasoning", False),
-                callbacks=callbacks,
-                trace_context=state.get("trace_context"),
-                tools=tools,
-                session_source=state.get("session_source"),
-                tool_db_runtime=tool_db_runtime,
-            )
-            if self._response_has_artifact_type(retry_response, "plot"):
-                response = retry_response
-
         elapsed_sec = time.perf_counter() - started_at
         if elapsed_sec > max(1, self.settings.agent_step_timeout_sec):
             response.reasoning = (

@@ -192,6 +192,30 @@ def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | 
     )
 
 
+def _build_stream_callbacks(
+    *,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+    session_source: dict[str, Any],
+    include_reasoning: bool,
+) -> tuple[list[Any], Any, Any, Any, Any]:
+    text_collector = _LLMTextCollector()
+    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop)
+    progress_collector = _AgentProgressCollector()
+    phase_collector = _PhaseCollector()
+    token_collector = _TokenStreamCallbackHandler(queue, loop)
+    callbacks: list[Any] = [
+        token_collector,
+        text_collector,
+        tool_collector,
+        progress_collector,
+        phase_collector,
+    ]
+    if include_reasoning:
+        callbacks.append(_PhaseTokenStreamHandler(queue, loop))
+    return callbacks, token_collector, tool_collector, progress_collector, phase_collector
+
+
 def _sse_event(event: str, data: Any) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
@@ -674,13 +698,12 @@ async def query_stream(
     loop = asyncio.get_running_loop()
     agent_finished = asyncio.Event()
 
-    text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop)
-    progress_collector = _AgentProgressCollector()
-    phase_collector = _PhaseCollector()
-    token_collector = _TokenStreamCallbackHandler(queue, loop)
-    phase_token_handler = _PhaseTokenStreamHandler(queue, loop)
-    callbacks = [token_collector, text_collector, tool_collector, progress_collector, phase_collector, phase_token_handler]
+    callbacks, token_collector, tool_collector, progress_collector, phase_collector = _build_stream_callbacks(
+        queue=queue,
+        loop=loop,
+        session_source=session_source,
+        include_reasoning=payload.include_reasoning,
+    )
     started_at = time.perf_counter()
     _auth_db.touch_session(session_id)
     trace_context = _build_trace_context_fn(
