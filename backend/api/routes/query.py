@@ -38,7 +38,6 @@ _forecast_integration_service = None  # type: ignore
 _anomaly_planfact_integration_service = None  # type: ignore
 _rag_service = None  # type: ignore
 _user_memory_service = None  # type: ignore
-_serialize_artifact_fn = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
 _settings = None  # type: ignore
@@ -67,7 +66,6 @@ def setup(
     anomaly_planfact_integration_service,
     rag_service,
     user_memory_service,
-    serialize_artifact_fn,
     build_trace_context_fn,
     query_trace_context_fn,
     app_settings,
@@ -85,7 +83,7 @@ def setup(
     global _auth_db, _store, _runner, _db_runtime_service
     global _search_integration_service, _forecast_integration_service
     global _anomaly_planfact_integration_service, _rag_service
-    global _user_memory_service, _serialize_artifact_fn
+    global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
     global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
     global _PhaseCollector, _TokenStreamCallbackHandler, _PhaseTokenStreamHandler
@@ -101,7 +99,6 @@ def setup(
     _anomaly_planfact_integration_service = anomaly_planfact_integration_service
     _rag_service = rag_service
     _user_memory_service = user_memory_service
-    _serialize_artifact_fn = serialize_artifact_fn
     _build_trace_context_fn = build_trace_context_fn
     _query_trace_context_fn = query_trace_context_fn
     _settings = app_settings

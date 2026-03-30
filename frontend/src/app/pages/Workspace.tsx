@@ -307,6 +307,7 @@ export function Workspace() {
                   >
                     <SettingsPanel
                       onClose={() => setShowSettings(false)}
+                      sessionId={sessionId}
                       sessionTitle={sessionTitle}
                       datasetName={datasetName}
                       settings={settings}

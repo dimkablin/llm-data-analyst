@@ -474,6 +474,8 @@ class AgentRunner:
             extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if self.settings.llm_top_k > 0:
             extra_body["top_k"] = self.settings.llm_top_k
+        if self.settings.llm_num_ctx > 0:
+            extra_body["num_ctx"] = self.settings.llm_num_ctx
 
         kwargs: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -1153,15 +1155,14 @@ class AgentRunner:
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
         "Критерии оценки (PASS если выполнено хотя бы одно):\n"
-        "1. Ответ прямо отвечает на вопрос и подкреплён хотя бы одним артефактом "
-        "(table/plot/value — в т.ч. таблица результатов search_tool).\n"
-        "2. Если нужный capability недоступен/вернул ошибку в runtime — честное объяснение ограничения допустимо.\n"
-        "3. Поиск (search_tool) был запущен, но не вернул полезных данных (network/timeout) — "
-        "ответ с анализом из датасета вместо поиска допустим.\n"
-        "4. В списке артефактов есть table от веб-поиска (search_results и т.п.) — "
-        "это УЖЕ подтверждение задачи «найти в интернете»; PASS если текст ответа кратко резюмирует "
-        "найденное или перечисляет факты, даже без отдельных графиков по датасету.\n"
-        "FAIL только если: ответ пустой, полностью нерелевантен вопросу, или состоит только из описания технических ошибок.\n"
+        "1. Ответ прямо и по существу отвечает на вопрос пользователя.\n"
+        "2. Для простых вопросов (метаданные, структура, количество строк/столбцов) "
+        "достаточно корректного текстового ответа без артефактов.\n"
+        "3. Для аналитических вопросов ответ подкреплён артефактами (table/plot/value) "
+        "или содержит конкретные числа/факты из данных.\n"
+        "4. Если capability недоступен или вернул ошибку — честное объяснение ограничения допустимо.\n"
+        "FAIL только если: ответ пустой, полностью нерелевантен вопросу, "
+        "содержит только технические ошибки, или LLM придумала данные не вызвав инструмент.\n"
         "Только JSON, без пояснений."
     )
 
@@ -1550,7 +1551,7 @@ class AgentRunner:
                         f"В датасете {int(row_count)} строк и {int(column_count)} столбцов."
                     )
 
-        if not direct_answer:
+        if not direct_answer and not self._response_looks_like_plan_or_trace(base_text):
             candidate = self._first_sentence(str(base_text or ""))
             if candidate:
                 direct_answer = candidate
@@ -1625,6 +1626,44 @@ class AgentRunner:
         if asks_direct_answer and has_generic and len(text) < 180:
             return True
         return False
+
+    @staticmethod
+    def _response_looks_like_plan_or_trace(response_text: str) -> bool:
+        text = str(response_text or "").strip().lower()
+        if not text:
+            return True
+
+        plan_prefixes = (
+            "план анализа",
+            "план решения",
+            "план выполнения",
+            "план:",
+            "plan:",
+            "корректировка плана",
+            "интеграция внешней",
+            "извлечение ключевых",
+            "что хочет пользователь?",
+            "какие инструменты использовать",
+            "выполняю шаг",
+            "проверяю результат шага",
+            "доработка через повторный цикл",
+            "рассуждение (chain of thought)",
+        )
+        if any(text.startswith(prefix) for prefix in plan_prefixes):
+            return True
+
+        trace_markers = (
+            '"name": "value_tool"',
+            '"name": "pandas_tool"',
+            '"name": "memory_tool"',
+            '"artifact_type": "value"',
+            '"artifact_type": "table"',
+            "tool_result",
+            "value_tool(",
+            "pandas_tool(",
+            "memory_tool(",
+        )
+        return any(marker in text for marker in trace_markers)
 
     @staticmethod
     def _latest_collected_text(callbacks: list) -> tuple[str, str | None]:
@@ -2415,7 +2454,6 @@ class AgentRunner:
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
         capability_context = state.get("capability_context") or {}
-        unavailable_capabilities = capability_context.get("unavailable_capability_keys") or []
 
         if response is None:
             self._emit_phase_event(
@@ -2431,6 +2469,19 @@ class AgentRunner:
                 "eval_passed": False,
                 "eval_reason": "Нет ответа после шага ACT.",
             }
+
+        has_confirmed_output = self._has_confirmed_analysis_output(response)
+        if has_confirmed_output and (
+            self._response_too_generic(prompt, response.final_text)
+            or self._response_looks_like_plan_or_trace(response.final_text)
+        ):
+            grounded_summary = self._artifact_grounded_summary(
+                prompt,
+                response.artifacts,
+                base_text=response.final_text,
+            )
+            if grounded_summary:
+                response.final_text = grounded_summary
 
         if not response.final_text.strip():
             reason = "Пустой финальный ответ"
@@ -2460,35 +2511,6 @@ class AgentRunner:
                     content=reason, step_index=step_index, max_steps=max_steps, status="fail",
                 )
                 return {"eval_passed": False, "eval_reason": reason}
-
-        has_confirmed_output = self._has_confirmed_analysis_output(response)
-        # Search attempted but returned errors still counts as "attempted"
-        search_attempted = bool(
-            response
-            and response.tool_calls > 0
-            and "search_tool" in (response.tool_names or [])
-        )
-
-        wf = state.get("df")
-        has_tabular_frame = wf is not None and len(wf.columns) > 0
-        db_metadata_answer_ok = (
-            str(capability_context.get("source_mode", "")).strip() == "db"
-            and not has_tabular_frame
-            and bool(str(response.final_text or "").strip())
-        )
-
-        if (
-            not has_confirmed_output
-            and not unavailable_capabilities
-            and not search_attempted
-            and not db_metadata_answer_ok
-        ):
-            reason = "Нет подтвержденных tool-вызовов с артефактами"
-            self._emit_phase_event(
-                callbacks, phase="evaluate", title="Оценка результата",
-                content=reason, step_index=step_index, max_steps=max_steps, status="fail",
-            )
-            return {"eval_passed": False, "eval_reason": reason}
 
         depth_eval = self._depth_profile.get("evaluate_enabled", True)
         if not self.settings.agent_evaluate_enabled or not depth_eval:
@@ -2581,12 +2603,7 @@ class AgentRunner:
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
 
-        # Also accept when the evaluator approved a search result even
-        # if there are no "data" artifacts (search itself is the artifact).
-        _search_tools = {"search_tool"}
-        _search_attempted = any(t in (response.tool_names or []) for t in _search_tools)
-
-        if eval_passed and response.final_text.strip() and (has_confirmed_output or _search_attempted):
+        if eval_passed and response.final_text.strip():
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Завершаю цикл ReAct",
@@ -2616,6 +2633,16 @@ class AgentRunner:
                 step_index=step_index, max_steps=max_steps,
             )
             return {"done": True, "stop_reason": "act_recursion_limit"}
+
+        # If no tools were called on a retry step, LLM is stuck — stop looping.
+        if step_index > 1 and response.tool_calls == 0:
+            self._emit_progress_event(
+                callbacks, phase="decide",
+                title="Остановка: инструменты не вызваны",
+                details="LLM не вызвала ни одного инструмента повторно, retry бессмысленен.",
+                step_index=step_index, max_steps=max_steps,
+            )
+            return {"done": True, "stop_reason": "no_tool_calls"}
 
         feedback = eval_reason or "Результат не прошёл оценку."
         self._emit_progress_event(

@@ -30,7 +30,6 @@ from backend.api.routes import (
     skills,
     sources,
 )
-from backend.artifacts.serialization import serialize_artifact
 from backend.auth.auth_db import AuthDB
 from backend.auth.user_memory import UserMemoryService
 from backend.core.config import settings
@@ -175,7 +174,6 @@ def _configure_routes() -> None:
         anomaly_planfact_integration_service=anomaly_planfact_integration_service,
         rag_service=rag_service,
         user_memory_service=user_memory_service,
-        serialize_artifact_fn=serialize_artifact,
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
         app_settings=settings,
@@ -208,4 +206,3 @@ def _configure_routes() -> None:
 
 
 _configure_routes()
-

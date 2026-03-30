@@ -13,6 +13,7 @@ import { MarkdownBlock } from "../MarkdownBlock";
 
 type Props = {
   onClose: () => void;
+  sessionId: string;
   sessionTitle: string;
   datasetName: string;
   settings: UserSettings;
@@ -20,7 +21,7 @@ type Props = {
   onSave: (payload: Partial<UserSettings>) => Promise<void>;
 };
 
-export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, modelProfile, onSave }: Props) {
+export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, settings, modelProfile, onSave }: Props) {
   const [draft, setDraft] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -66,6 +67,7 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
             Контекст сессии
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
+            <MetaRow label="Session ID" value={sessionId || "n/a"} />
             <MetaRow label="Сессия" value={sessionTitle || "Новый чат"} />
             <MetaRow label="Датасет" value={datasetName || "Не загружен"} />
             <MetaRow label="Провайдер" value={modelProfile?.provider || "backend"} />
