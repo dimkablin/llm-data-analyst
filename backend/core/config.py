@@ -159,6 +159,7 @@ class Settings:
     agent_analysis_depth: str = (
         os.getenv("AGENT_ANALYSIS_DEPTH", "light").strip().lower()
     )
+    skills_dir: str = os.getenv("AGENT_SKILLS_DIR", "./skills")
 
     session_ttl_days: int = int(os.getenv("BACKEND_SESSION_TTL_DAYS", "7"))
     max_dataset_mb: int = int(os.getenv("BACKEND_MAX_DATASET_MB", "100"))

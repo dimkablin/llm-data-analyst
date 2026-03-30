@@ -22,6 +22,7 @@ from backend.agent.pandas_agent import (
     normalize_agent_messages,
 )
 from backend.agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
+from backend.skills import SkillLoader
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.tools.capabilities import build_runtime_capability_context
 from backend.agent.callbacks import (
@@ -360,6 +361,7 @@ class AgentRunner:
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
+        self._skill_loader = SkillLoader.from_path(self.settings.skills_dir)
         self._graph = self._build_query_graph()
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
@@ -1115,7 +1117,11 @@ class AgentRunner:
         "- Для свежей информации / новостей → search_tool (при доступности).\n"
     )
 
-    def _think_system_prompt(self, capability_context: dict[str, Any] | None = None) -> str:
+    def _think_system_prompt(
+        self,
+        capability_context: dict[str, Any] | None = None,
+        query: str | None = None,
+    ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
         prompt = (
@@ -1128,6 +1134,9 @@ class AgentRunner:
         memory_block = self.user_memory.build_block()
         if memory_block:
             prompt += f"\n{memory_block}\n"
+        skills_block = self._skill_loader.build_prompt_block(query)
+        if skills_block:
+            prompt += f"\n{skills_block}\n"
         return prompt
 
     _EVALUATE_PROMPT_TEMPLATE = (
@@ -1813,6 +1822,9 @@ class AgentRunner:
             df=df,
         )
 
+        skills_block = self._skill_loader.build_prompt_block(prompt)
+        act_prefix = agent_prompt + (f"\n\n{skills_block}" if skills_block else "")
+
         agent = create_pandas_dataframe_agent(
             llm=llm,
             df=df.copy(),
@@ -1821,7 +1833,7 @@ class AgentRunner:
             return_intermediate_steps=True,
             max_iterations=max(1, self.settings.agent_inner_recursion_limit),
             max_execution_time=float(self.settings.agent_step_timeout_sec),
-            prefix=agent_prompt,
+            prefix=act_prefix,
             suffix=db_suffix or None,
             include_df_in_prompt=True,
             number_of_head_rows=max(1, self.settings.agent_prompt_head_rows),
@@ -2188,7 +2200,7 @@ class AgentRunner:
             )
 
         think_messages = [
-            SystemMessage(content=self._think_system_prompt(capability_context)),
+            SystemMessage(content=self._think_system_prompt(capability_context, query=prompt)),
             HumanMessage(content=f"{data_context}\n\n{user_block}"),
         ]
 
