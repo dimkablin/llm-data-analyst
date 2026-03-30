@@ -530,8 +530,10 @@ async def _execute_query(
     session_db_connection_id = _session_db_connection_id(state)
     has_active_source = df is not None or session_db_connection_id is not None
 
+    from backend.artifacts.execution import ExecutionStore
+    exec_store = ExecutionStore(session_id=session_id)
     text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source)
+    tool_collector = _ToolCollector(source_context=session_source, execution_store=exec_store)
     active_callbacks = list(callbacks or [])
     active_callbacks.extend([text_collector, tool_collector])
     started_at = time.perf_counter()
@@ -635,7 +637,8 @@ async def _execute_query(
     except Exception:  # noqa: BLE001
         pass
 
-    artifacts = [_serialize_artifact_fn(a) for a in response.artifacts]
+    from backend.artifacts.bridge import execution_to_api_payload
+    artifacts = [execution_to_api_payload(a) for a in response.artifacts]
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     effective_reasoning = _build_reasoning_trace(
         response_text=response.final_text,
@@ -718,12 +721,15 @@ async def query_stream(
     loop = asyncio.get_running_loop()
     agent_finished = asyncio.Event()
 
-    callbacks, token_collector, tool_collector, progress_collector, phase_collector = _build_stream_callbacks(
-        queue=queue,
-        loop=loop,
-        session_source=session_source,
-        include_reasoning=payload.include_reasoning,
-    )
+    from backend.artifacts.execution import ExecutionStore
+    exec_store = ExecutionStore(session_id=session_id)
+    text_collector = _LLMTextCollector()
+    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop, execution_store=exec_store)
+    progress_collector = _AgentProgressCollector()
+    phase_collector = _PhaseCollector()
+    token_collector = _TokenStreamCallbackHandler(queue, loop)
+    phase_token_handler = _PhaseTokenStreamHandler(queue, loop)
+    callbacks = [token_collector, text_collector, tool_collector, progress_collector, phase_collector, phase_token_handler]
     started_at = time.perf_counter()
     _auth_db.touch_session(session_id)
     trace_context = _build_trace_context_fn(
@@ -789,7 +795,8 @@ async def query_stream(
             except Exception:  # noqa: BLE001
                 pass
 
-            artifacts = [_serialize_artifact_fn(a) for a in response.artifacts]
+            from backend.artifacts.bridge import execution_to_api_payload
+            artifacts = [execution_to_api_payload(a) for a in response.artifacts]
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             streamed_reasoning = token_collector.collected_reasoning()
             merged_reasoning = _merge_reasoning_text(
@@ -946,5 +953,3 @@ async def query_stream(
         await reasoning_task
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-

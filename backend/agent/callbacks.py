@@ -10,7 +10,11 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 
 from backend.artifacts.artifact_meta import build_artifact_meta, extract_artifact_hints
-from backend.core.internal_models import ArtifactRecord
+from backend.artifacts.execution import (
+    ExecArtifactType,
+    ExecutionArtifact,
+    ExecutionStore,
+)
 
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
@@ -66,8 +70,9 @@ class ToolCollector(BaseCallbackHandler):
         source_context: dict[str, Any] | None = None,
         queue: asyncio.Queue | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
+        execution_store: ExecutionStore | None = None,
     ) -> None:
-        self.artifacts: list[ArtifactRecord] = []
+        self.artifacts: list[ExecutionArtifact] = []
         self.tool_calls: int = 0
         self.tool_names: list[str] = []
         self.events: list[dict[str, Any]] = []
@@ -75,6 +80,7 @@ class ToolCollector(BaseCallbackHandler):
         self._source_context = dict(source_context or {})
         self._queue = queue
         self._loop = loop
+        self.execution_store: ExecutionStore = execution_store or ExecutionStore(session_id="")
 
     def _push_event(self, event_type: str, data: Any) -> None:
         """Push event directly to SSE queue if available."""
@@ -179,32 +185,36 @@ class ToolCollector(BaseCallbackHandler):
             event_payload["status"] = "error"
             event_payload["error"] = str(payload.get("text"))
 
+        producer = tool_name or "unknown"
+
         if "plot" in payload and isinstance(payload["plot"], dict):
             event_payload["artifact_keys"].append("plot")
             for name, fig in payload["plot"].items():
                 if fig is None:
                     continue
-                self.artifacts.append(
-                    ArtifactRecord(
-                        artifact_type="plot",
-                        data=fig,
-                        text=name,
-                        meta=dict(artifact_meta),
-                    )
-                )
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.PLOT,
+                    producer_tool=producer,
+                    data=fig,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+
         if "table" in payload and isinstance(payload["table"], dict):
             event_payload["artifact_keys"].append("table")
             for name, table in payload["table"].items():
                 if table is None:
                     continue
-                self.artifacts.append(
-                    ArtifactRecord(
-                        artifact_type="table",
-                        data=table,
-                        text=name,
-                        meta=dict(artifact_meta),
-                    )
-                )
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.DATAFRAME,
+                    producer_tool=producer,
+                    data=table,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+
         if "value" in payload and isinstance(payload["value"], dict):
             event_payload["artifact_keys"].append("value")
             clean_value_payload = {
@@ -215,14 +225,14 @@ class ToolCollector(BaseCallbackHandler):
             if not clean_value_payload:
                 self.events.append(event_payload)
                 return
-            self.artifacts.append(
-                ArtifactRecord(
-                    artifact_type="value",
-                    data=clean_value_payload,
-                    text="values",
-                    meta=dict(artifact_meta),
-                )
-            )
+            ea = self.execution_store.put(ExecutionArtifact(
+                artifact_type=ExecArtifactType.SCALAR,
+                producer_tool=producer,
+                data=clean_value_payload,
+                name="values",
+                meta=dict(artifact_meta),
+            ))
+            self.artifacts.append(ea)
         self.events.append(event_payload)
         self._push_event("tool_end", {
             "tool_name": event_payload["tool_name"],
