@@ -27,6 +27,7 @@ from backend.api.routes import (
     observability_route,
     query,
     sessions,
+    skills,
     sources,
 )
 from backend.artifacts.serialization import serialize_artifact
@@ -64,6 +65,7 @@ _OPENAPI_TAGS: list[dict[str, str]] = [
     {"name": "Данные", "description": "Загрузка данных в сессию."},
     {"name": "Источники", "description": "Источники данных и привязка к сессии."},
     {"name": "Запросы и агент", "description": "Запросы к агенту и стриминг ответов."},
+    {"name": "Навыки", "description": "Просмотр доступных markdown skills и их идентификаторов."},
     {"name": "Подключения к БД", "description": "Сохранённые подключения к БД и схемы."},
     {"name": "Наблюдаемость", "description": "Обзор Phoenix / трассировки."},
 ]
@@ -188,6 +190,7 @@ def _configure_routes() -> None:
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,
     )
+    skills.setup(runner=runner)
     observability_route.setup(
         phoenix_observability_service=phoenix_observability_service,
     )
@@ -197,6 +200,7 @@ def _configure_routes() -> None:
     app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(sessions.router)
+    app.include_router(skills.router)
     app.include_router(data.router)
     app.include_router(sources.router)
     app.include_router(query.router)
@@ -204,5 +208,4 @@ def _configure_routes() -> None:
 
 
 _configure_routes()
-
 

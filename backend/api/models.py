@@ -224,6 +224,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
     use_history: bool = True
     include_reasoning: bool = False
+    selected_skill_ids: list[str] | None = None
     analysis_depth: str | None = Field(
         default=None,
         pattern="^(light|medium|deep)$",
@@ -269,6 +270,15 @@ class SessionStateResponse(BaseModel):
     source_ref_id: str | None = None
     source_label: str | None = None
     source_mode: str | None = None
+    selected_skill_ids: list[str] = Field(default_factory=list)
+
+
+class SkillResponse(BaseModel):
+    skill_id: str
+    name: str
+    description: str
+    triggers: list[str] = Field(default_factory=list)
+    source_path: str
 
 
 class PhoenixOverviewStats(BaseModel):
@@ -340,5 +350,4 @@ class UserMemoryResponse(BaseModel):
 class UserMemoryUpdateRequest(BaseModel):
     profile: str | None = None
     notes: str | None = None
-
 

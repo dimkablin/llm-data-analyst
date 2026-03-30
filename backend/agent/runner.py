@@ -22,7 +22,7 @@ from backend.agent.pandas_agent import (
     normalize_agent_messages,
 )
 from backend.agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
-from backend.skills import SkillLoader
+from backend.skills import SkillRegistry
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.tools.capabilities import build_runtime_capability_context
 from backend.agent.callbacks import (
@@ -255,7 +255,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
     "light": {
         # Верхний лимит внешних итераций ReAct (модель останавливается раньше при успехе / оценке).
         "max_steps_cap": 20,
-        "evaluate_enabled": False,
+        "evaluate_enabled": True,
         "think_instruction": (
             "Стиль: лёгкий и быстрый.\n"
             "Составь план из столько шагов, сколько реально нужно — без раздувания.\n"
@@ -314,6 +314,7 @@ class AgentGraphState(TypedDict, total=False):
     callbacks: list
     trace_context: dict[str, Any]
     session_source: dict[str, Any]
+    selected_skill_ids: list[str]
     route: Literal["chat", "analysis", "rag"]
 
     plan: str
@@ -342,6 +343,7 @@ class AgentRunner:
         rag_service: RAGService | None = None,
         allowed_tool_keys: set[str] | None = None,
         user_memory: UserMemory | None = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.db_runtime_service = db_runtime_service
@@ -361,7 +363,8 @@ class AgentRunner:
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
-        self._skill_loader = SkillLoader.from_path(self.settings.skills_dir)
+        self.skill_registry = skill_registry or SkillRegistry.from_path(self.settings.skills_dir)
+        self.skill_registry.load()
         self._graph = self._build_query_graph()
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
@@ -703,6 +706,7 @@ class AgentRunner:
         history: list[dict[str, Any]],
         use_history: bool,
         include_reasoning: bool,
+        selected_skill_ids: list[str] | None = None,
     ) -> str:
         payload = {
             "model": self.settings.llm_model,
@@ -712,6 +716,7 @@ class AgentRunner:
             "use_history": bool(use_history),
             "include_reasoning": bool(include_reasoning),
             "analysis_depth": str(self.settings.agent_analysis_depth or "light"),
+            "selected_skill_ids": list(selected_skill_ids or []),
             "max_steps": self.settings.agent_max_steps,
             "step_timeout": self.settings.agent_step_timeout_sec,
             "inner_recursion_limit": self.settings.agent_inner_recursion_limit,
@@ -1117,7 +1122,7 @@ class AgentRunner:
     def _think_system_prompt(
         self,
         capability_context: dict[str, Any] | None = None,
-        query: str | None = None,
+        selected_skill_ids: list[str] | None = None,
         tool_descriptions: str = "",
     ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
@@ -1134,7 +1139,7 @@ class AgentRunner:
         memory_block = self.user_memory.build_block()
         if memory_block:
             prompt += f"\n{memory_block}\n"
-        skills_block = self._skill_loader.build_prompt_block(query)
+        skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
         if skills_block:
             prompt += f"\n{skills_block}\n"
         return prompt
@@ -1805,6 +1810,7 @@ class AgentRunner:
         tools: list,
         session_source: dict[str, Any] | None = None,
         tool_db_runtime: RuntimeDBConnectionConfig | None = None,
+        selected_skill_ids: list[str] | None = None,
     ) -> AgentResponse:
         self._reset_text_collectors(callbacks)
         llm = self._build_llm(
@@ -1822,7 +1828,7 @@ class AgentRunner:
             df=df,
         )
 
-        skills_block = self._skill_loader.build_prompt_block(prompt)
+        skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
         act_prefix = agent_prompt + (f"\n\n{skills_block}" if skills_block else "")
 
         agent = create_pandas_dataframe_agent(
@@ -2203,7 +2209,7 @@ class AgentRunner:
         think_messages = [
             SystemMessage(content=self._think_system_prompt(
                 capability_context,
-                query=prompt,
+                selected_skill_ids=state.get("selected_skill_ids"),
                 tool_descriptions=tool_descriptions,
             )),
             HumanMessage(content=f"{data_context}\n\n{user_block}"),
@@ -2345,6 +2351,7 @@ class AgentRunner:
                 tools=tools,
                 session_source=state.get("session_source"),
                 tool_db_runtime=tool_db_runtime,
+                selected_skill_ids=state.get("selected_skill_ids"),
             )
         except Exception as exc:
             artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
@@ -2839,7 +2846,9 @@ class AgentRunner:
         callbacks: list,
         trace_context: dict[str, Any] | None = None,
         session_source: dict[str, Any] | None = None,
+        selected_skill_ids: list[str] | None = None,
     ) -> AgentResponse:
+        resolved_skill_ids = [skill.skill_id for skill in self.skill_registry.resolve_selection(selected_skill_ids)]
         request_kind = str((trace_context or {}).get("request_kind", "")).strip().lower()
         cache_allowed = self.settings.agent_cache_enabled and request_kind != "stream"
 
@@ -2849,6 +2858,7 @@ class AgentRunner:
             history=history,
             use_history=use_history,
             include_reasoning=include_reasoning,
+            selected_skill_ids=resolved_skill_ids,
         )
         if cache_allowed:
             cached = self._cache_get(cache_key)
@@ -2876,6 +2886,7 @@ class AgentRunner:
                     "callbacks": callbacks,
                     "trace_context": trace_context or {},
                     "session_source": session_source or {},
+                    "selected_skill_ids": resolved_skill_ids,
                 }
             )
         except Exception:

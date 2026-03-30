@@ -19,6 +19,7 @@ from backend.api.models import (
     QueryRequest,
     QueryResponse,
 )
+from backend.skills import SkillSelectionError
 
 router = APIRouter(tags=["Запросы и агент"])
 
@@ -173,6 +174,17 @@ def _tool_catalog_payload(user_id: int) -> list[dict[str, Any]]:
 
 def _enabled_tool_keys_for_user(user_id: int) -> set[str]:
     return _effective_enabled_tool_keys_fn(_tool_catalog_payload(user_id))
+
+
+def _effective_selected_skill_ids(
+    state: SessionState,
+    payload: QueryRequest,
+) -> list[str]:
+    if payload.selected_skill_ids is None:
+        selected_skill_ids = list(state.selected_skill_ids or [])
+    else:
+        selected_skill_ids = [str(skill_id).strip() for skill_id in payload.selected_skill_ids if str(skill_id).strip()]
+    return list(dict.fromkeys(selected_skill_ids))
 
 
 def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | None = None):
@@ -512,6 +524,7 @@ async def _execute_query(
     callbacks: list[object] | None = None,
 ) -> QueryResponse:
     state = _load_owned_session(session_id, current_user)
+    selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
     session_source = _session_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -546,9 +559,11 @@ async def _execute_query(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        skill_registry=_runner.skill_registry,
     )
 
     try:
+        runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
         with _query_trace_context_fn(
             session_id=session_id,
             user_id=current_user.id,
@@ -570,7 +585,10 @@ async def _execute_query(
                     active_callbacks,
                     trace_context,
                     session_source,
+                    selected_skill_ids,
                 )
+    except SkillSelectionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except TimeoutError:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         fallback = _build_fallback_response(
@@ -629,6 +647,7 @@ async def _execute_query(
         has_dataset=has_active_source,
     )
     if persist:
+        _store.set_selected_skill_ids(session_id, selected_skill_ids)
         _store.add_chat_message(session_id, "user", payload.query)
         _store.add_chat_message(
             session_id,
@@ -689,6 +708,7 @@ async def query_stream(
     current_user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
+    selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
     session_source = _session_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -729,10 +749,12 @@ async def query_stream(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        skill_registry=_runner.skill_registry,
     )
 
     async def run_agent() -> None:
         try:
+            runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
             with _query_trace_context_fn(
                 session_id=session_id,
                 user_id=current_user.id,
@@ -754,8 +776,8 @@ async def query_stream(
                         callbacks,
                         trace_context,
                         session_source,
+                        selected_skill_ids,
                     )
-
             try:
                 if runtime_runner._session_memory_buffer:  # noqa: SLF001
                     _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
@@ -783,6 +805,7 @@ async def query_stream(
                 duration_ms=duration_ms,
                 has_dataset=has_active_source,
             )
+            _store.set_selected_skill_ids(session_id, selected_skill_ids)
             _store.add_chat_message(session_id, "user", payload.query)
             _store.add_chat_message(
                 session_id,
@@ -806,6 +829,9 @@ async def query_stream(
                 force_reasoning=True,
             ).model_dump()
             await queue.put(("final", final_payload))
+        except SkillSelectionError as exc:
+            await queue.put(_sse_event("error", {"detail": str(exc)}))
+            return
         except TimeoutError:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             fallback_payload = _build_fallback_response(

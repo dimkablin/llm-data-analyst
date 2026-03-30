@@ -218,6 +218,6 @@ def get_session(
         source_ref_id=state.source_ref_id,
         source_label=state.source_label,
         source_mode=state.source_mode,
+        selected_skill_ids=list(state.selected_skill_ids or []),
     )
-
 

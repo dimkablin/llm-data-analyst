@@ -31,6 +31,7 @@ class SessionState:
     source_ref_id: str | None = None
     source_label: str | None = None
     source_mode: str | None = None
+    selected_skill_ids: list[str] | None = None
 
 
 class SessionStore:
@@ -96,6 +97,7 @@ class SessionStore:
             source_ref_id=None,
             source_label=None,
             source_mode=None,
+            selected_skill_ids=[],
         )
         self._save_state(state)
         return state
@@ -118,6 +120,7 @@ class SessionStore:
             source_ref_id=raw.get("source_ref_id"),
             source_label=raw.get("source_label"),
             source_mode=raw.get("source_mode"),
+            selected_skill_ids=list(raw.get("selected_skill_ids", []) or []),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -142,6 +145,7 @@ class SessionStore:
             "source_ref_id": state.source_ref_id,
             "source_label": state.source_label,
             "source_mode": state.source_mode,
+            "selected_skill_ids": list(state.selected_skill_ids or []),
         }
         self._state_path(state.session_id).write_text(
             json.dumps(payload, ensure_ascii=False)
@@ -219,6 +223,21 @@ class SessionStore:
             source_label=clean_name,
             source_mode=source_mode,
         )
+
+    def set_selected_skill_ids(
+        self,
+        session_id: str,
+        selected_skill_ids: list[str] | None,
+    ) -> None:
+        normalized = [str(skill_id).strip() for skill_id in (selected_skill_ids or []) if str(skill_id).strip()]
+        deduped = list(dict.fromkeys(normalized))
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.selected_skill_ids = deduped
+            state.last_access = self._now_iso()
+            self._save_state(state)
 
     def get_dataframe(self, session_id: str) -> pd.DataFrame | None:
         if session_id in self._df_cache:
