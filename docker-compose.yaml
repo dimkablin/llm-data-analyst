@@ -5,7 +5,7 @@ services:
     image: searxng/searxng:latest
     container_name: searxng
     volumes:
-      - ./search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
+      - ./.search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080
     healthcheck:
@@ -20,7 +20,7 @@ services:
   search_service:
     image: llm-data-analyst-search:latest
     build:
-      context: ./search_service
+      context: ./.search_service
       dockerfile: Dockerfile
     environment:
       - SEARXNG_API_URL=http://searxng:8080
