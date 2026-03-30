@@ -1103,24 +1103,22 @@ class AgentRunner:
         "Ты — аналитический агент. Перед выполнением задачи составь краткий план.\n\n"
         "Ответь на следующие вопросы:\n"
         "1) Что хочет пользователь? (тип задачи: метрика / таблица / график / поиск / комплекс)\n"
-        "2) Какие инструменты использовать и в каком порядке?\n"
-        "   - данные CSV/датафрейм → pandas_tool, plotly_tool, value_tool\n"
-        "   - SQL-база → sql_table_tool (вопрос на языке → безопасный SELECT → таблица; графики — plotly_tool)\n"
-        "   - текущие события / внешняя информация → search_tool\n"
-        "   - ничего из выше + общий вопрос → прямой текстовый ответ без tool-вызовов\n"
+        "2) Какие инструменты использовать и в каком порядке? (выбирай ТОЛЬКО из доступных ниже)\n"
         "3) Конкретные параметры: столбцы, фильтры, агрегации, временной диапазон.\n"
         "4) Как будет выглядеть финальный ответ (что покажем, что скажем)?\n\n"
         "Правила:\n"
-        "- Используй только реально доступные в runtime tools.\n"
+        "- Используй только реально доступные в runtime tools (см. секцию ДОСТУПНЫЕ ИНСТРУМЕНТЫ).\n"
         "- Если нужный инструмент недоступен, не обещай его использование — честно опиши ограничение.\n"
         "- Не путай `value_tool` (Python-вычисление по данным) с поиском в интернете.\n"
         "- Для свежей информации / новостей → search_tool (при доступности).\n"
+        "- Если пользователь просит график / диаграмму — в плане ОБЯЗАТЕЛЬНО включи `plotly_tool`.\n"
     )
 
     def _think_system_prompt(
         self,
         capability_context: dict[str, Any] | None = None,
         query: str | None = None,
+        tool_descriptions: str = "",
     ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
@@ -1128,6 +1126,8 @@ class AgentRunner:
             self._THINK_SYSTEM_PROMPT_BASE
             + f"\n[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
         )
+        if tool_descriptions:
+            prompt += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{tool_descriptions}\n"
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
         if capability_block:
             prompt += f"\n{capability_block}\n"
@@ -2160,6 +2160,7 @@ class AgentRunner:
             csv_session_id=csv_session_id,
         )
         tools: list = self._tool_registry.build_tools(_ctx)
+        tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
 
         max_steps = self._effective_outer_max_steps(prompt=prompt)
 
@@ -2200,7 +2201,11 @@ class AgentRunner:
             )
 
         think_messages = [
-            SystemMessage(content=self._think_system_prompt(capability_context, query=prompt)),
+            SystemMessage(content=self._think_system_prompt(
+                capability_context,
+                query=prompt,
+                tool_descriptions=tool_descriptions,
+            )),
             HumanMessage(content=f"{data_context}\n\n{user_block}"),
         ]
 
@@ -2356,7 +2361,12 @@ class AgentRunner:
             any(tok in str(state.get("prompt", "")).lower() for tok in _VISUALIZATION_HINT_TOKENS)
             and any(str(getattr(tool, "name", "")).strip() == "plotly_tool" for tool in tools)
         )
-        if requires_plot and not self._response_has_artifact_type(response, "plot"):
+        plotly_was_called = "plotly_tool" in response.tool_names
+        if (
+            requires_plot
+            and not self._response_has_artifact_type(response, "plot")
+            and not plotly_was_called
+        ):
             retry_prompt = (
                 f"{state.get('prompt', '').strip()}\n\n"
                 "[ROLE: VISUALIZATION_RETRY]\n"
@@ -2458,18 +2468,22 @@ class AgentRunner:
             any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS)
             and self._tool_allowed("plotly_tool")
         )
+        plotly_was_attempted = "plotly_tool" in (response.tool_names or [])
         if requires_plot and not self._response_has_artifact_type(response, "plot"):
-            reason = "Запрошена визуализация, но plot-артефакт не построен"
-            self._emit_phase_event(
-                callbacks,
-                phase="evaluate",
-                title="Оценка результата",
-                content=reason,
-                step_index=step_index,
-                max_steps=max_steps,
-                status="fail",
-            )
-            return {"eval_passed": False, "eval_reason": reason}
+            if plotly_was_attempted:
+                # plotly_tool was called but failed — retry won't help
+                reason = "plotly_tool был вызван, но не смог построить график — пропускаю retry"
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="done",
+                )
+            else:
+                reason = "Запрошена визуализация, но plot-артефакт не построен"
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
         # Search attempted but returned errors still counts as "attempted"

@@ -61,13 +61,27 @@ class LLMTextCollector(BaseCallbackHandler):
 
 
 class ToolCollector(BaseCallbackHandler):
-    def __init__(self, source_context: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        source_context: dict[str, Any] | None = None,
+        queue: asyncio.Queue | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
         self.artifacts: list[ArtifactRecord] = []
         self.tool_calls: int = 0
         self.tool_names: list[str] = []
         self.events: list[dict[str, Any]] = []
         self._last_tool_name: str | None = None
         self._source_context = dict(source_context or {})
+        self._queue = queue
+        self._loop = loop
+
+    def _push_event(self, event_type: str, data: Any) -> None:
+        """Push event directly to SSE queue if available."""
+        if self._queue is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                self._queue.put_nowait, (event_type, data)
+            )
 
     @staticmethod
     def _resolve_tool_name(
@@ -109,14 +123,17 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self._last_tool_name = tool_name
             self.tool_names.append(tool_name)
-        self.events.append(
-            {
-                "phase": "start",
-                "tool_name": tool_name or "unknown",
-                "input_preview": input_str[:360],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        event = {
+            "phase": "start",
+            "tool_name": tool_name or "unknown",
+            "input_preview": input_str[:360],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.events.append(event)
+        self._push_event("tool_start", {
+            "tool_name": event["tool_name"],
+            "input_preview": event["input_preview"],
+        })
 
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
@@ -207,6 +224,11 @@ class ToolCollector(BaseCallbackHandler):
                 )
             )
         self.events.append(event_payload)
+        self._push_event("tool_end", {
+            "tool_name": event_payload["tool_name"],
+            "status": event_payload["status"],
+            "artifact_keys": event_payload.get("artifact_keys", []),
+        })
 
     @staticmethod
     def _normalize_output(output: object) -> object:

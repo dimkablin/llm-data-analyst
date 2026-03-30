@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from typing import Callable
 
+from backend.tools.catalog import ALL_TOOL_SPECS
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
     ForecastToolFactory,
@@ -37,6 +38,11 @@ if TYPE_CHECKING:
     )
     from backend.tools.context import ToolBuildContext
 
+# Pre-build a lookup from tool_key → short Russian description for planner prompts.
+_TOOL_DESCRIPTIONS_RU: dict[str, str] = {
+    spec.tool_key: spec.description_ru for spec in ALL_TOOL_SPECS
+}
+
 
 class ToolRegistry:
     """Ordered collection of :class:`ToolFactory` instances."""
@@ -55,6 +61,16 @@ class ToolRegistry:
     def build_tools(self, ctx: ToolBuildContext) -> list:
         """Materialise every available tool in insertion order."""
         return [f.build(ctx) for f in self._factories.values() if f.is_available(ctx)]
+
+    def describe_available_tools(self, ctx: ToolBuildContext) -> str:
+        """Return a compact multi-line block describing each available tool for the planner."""
+        lines: list[str] = []
+        for factory in self._factories.values():
+            if not factory.is_available(ctx):
+                continue
+            desc = _TOOL_DESCRIPTIONS_RU.get(factory.key, "")
+            lines.append(f"- `{factory.key}`: {desc}" if desc else f"- `{factory.key}`")
+        return "\n".join(lines)
 
     # ── Factory method ────────────────────────────────────────────────────────
 

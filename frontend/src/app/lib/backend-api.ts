@@ -350,12 +350,21 @@ export async function clearSessionSource(
   return (await response.json()) as SessionSourceState;
 }
 
+type ToolEvent = {
+  tool_name: string;
+  input_preview?: string;
+  status?: string;
+  artifact_keys?: string[];
+};
+
 type StreamHandlers = {
   onToken: (token: string) => void;
   onFinal: (payload: QueryResponse) => void;
   onReasoning: (payload: string, mode: "chunk" | "token") => void;
   onPhase?: (event: PhaseEvent) => void;
   onPhaseToken?: (token: string) => void;
+  onToolStart?: (event: ToolEvent) => void;
+  onToolEnd?: (event: ToolEvent) => void;
   onError: (error: string) => void;
 };
 
@@ -404,6 +413,14 @@ function consumeSseLine(
   }
   if (currentEvent === "phase_token" && typeof payload === "string") {
     handlers.onPhaseToken?.(payload);
+    return;
+  }
+  if (currentEvent === "tool_start" && typeof payload === "object" && payload !== null) {
+    handlers.onToolStart?.(payload as ToolEvent);
+    return;
+  }
+  if (currentEvent === "tool_end" && typeof payload === "object" && payload !== null) {
+    handlers.onToolEnd?.(payload as ToolEvent);
     return;
   }
   if (currentEvent === "error") {

@@ -675,7 +675,7 @@ async def query_stream(
     agent_finished = asyncio.Event()
 
     text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source)
+    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop)
     progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
     token_collector = _TokenStreamCallbackHandler(queue, loop)

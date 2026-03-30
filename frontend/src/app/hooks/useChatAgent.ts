@@ -417,6 +417,22 @@ export function useChatAgent({
                 return [...prev, phaseEvent];
               });
             },
+            onToolStart: (event) => {
+              if (!includeReasoning) return;
+              const text = `\n🔧 **${event.tool_name}** запущен`;
+              collectedReasoning += text;
+              setStreamReasoning((prev) => prev + text);
+            },
+            onToolEnd: (event) => {
+              if (!includeReasoning) return;
+              const status = event.status === "ok" ? "✅" : "❌";
+              const artifacts = event.artifact_keys?.length
+                ? ` → ${event.artifact_keys.join(", ")}`
+                : "";
+              const text = `\n${status} **${event.tool_name}** завершён${artifacts}`;
+              collectedReasoning += text;
+              setStreamReasoning((prev) => prev + text);
+            },
             onPhaseToken: (token) => {
               phaseTokenBufRef.current += token;
               if (!phaseFlushRef.current) {
