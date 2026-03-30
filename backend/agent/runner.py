@@ -1298,7 +1298,9 @@ class AgentRunner:
     def _extract_value_payload(artifacts: list) -> dict[str, Any]:
         merged: dict[str, Any] = {}
         for artifact in artifacts:
-            if str(getattr(artifact, "artifact_type", "")).strip() != "value":
+            raw_type = getattr(artifact, "artifact_type", "")
+            type_str = str(raw_type.value if hasattr(raw_type, "value") else raw_type).strip()
+            if type_str not in ("value", "scalar"):
                 continue
             data = getattr(artifact, "data", None)
             if isinstance(data, dict):
@@ -1407,11 +1409,12 @@ class AgentRunner:
     def _artifact_method_lines(self, artifacts: list, max_items: int = 8) -> list[str]:
         lines: list[str] = []
         for artifact in artifacts[:max_items]:
-            artifact_type = str(getattr(artifact, "artifact_type", "")).strip() or "artifact"
-            name = str(getattr(artifact, "text", "")).strip() or artifact_type
+            raw_type = getattr(artifact, "artifact_type", "")
+            artifact_type = str(raw_type.value if hasattr(raw_type, "value") else raw_type).strip() or "artifact"
+            name = str(getattr(artifact, "name", "") or getattr(artifact, "text", "")).strip() or artifact_type
             data = getattr(artifact, "data", None)
 
-            if artifact_type == "value" and isinstance(data, dict):
+            if artifact_type in ("value", "scalar") and isinstance(data, dict):
                 metric_keys = [str(key) for key in data.keys()]
                 preview = ", ".join(metric_keys[:5])
                 suffix = ", ..." if len(metric_keys) > 5 else ""
@@ -1421,7 +1424,7 @@ class AgentRunner:
                 )
                 continue
 
-            if artifact_type == "table":
+            if artifact_type in ("table", "dataframe", "sql_result"):
                 if isinstance(data, pd.Series):
                     data = data.to_frame()
                 if isinstance(data, pd.DataFrame):
@@ -1647,9 +1650,13 @@ class AgentRunner:
         expected = str(artifact_type or "").strip().lower()
         if not expected:
             return False
+        # Map legacy type names to ExecArtifactType values
+        _LEGACY_ALIASES = {"table": "dataframe", "value": "scalar"}
+        expected_exec = _LEGACY_ALIASES.get(expected, expected)
         for artifact in response.artifacts:
-            current = str(getattr(artifact, "artifact_type", "")).strip().lower()
-            if current == expected:
+            raw = getattr(artifact, "artifact_type", "")
+            current = str(raw.value if hasattr(raw, "value") else raw).strip().lower()
+            if current == expected or current == expected_exec:
                 return True
         return False
 
@@ -2412,9 +2419,10 @@ class AgentRunner:
         if response.tool_names:
             tool_summary_lines.append(f"Инструменты: {', '.join(response.tool_names)}")
         if response.artifacts:
-            types = [
-                str(getattr(a, "artifact_type", "")).strip() for a in response.artifacts
-            ]
+            types = []
+            for a in response.artifacts:
+                raw = getattr(a, "artifact_type", "")
+                types.append(str(raw.value if hasattr(raw, "value") else raw).strip())
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
         self._emit_phase_event(

@@ -12,8 +12,6 @@ from typing import Any
 
 import pandas as pd
 
-from backend.artifacts.serialization import serialize_artifact
-from backend.core.internal_models import ArtifactRecord
 
 _DF_CACHE_MAX_SIZE = 20
 
@@ -267,12 +265,13 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
-    def add_artifacts(self, session_id: str, artifacts: list[ArtifactRecord]) -> None:
+    def add_artifacts(self, session_id: str, artifacts: list) -> None:
+        from backend.artifacts.bridge import execution_to_api_payload
         with self._get_session_lock(session_id):
             state = self._load_state(session_id)
             if state is None:
                 return
-            serialized = [serialize_artifact(a) for a in artifacts]
+            serialized = [execution_to_api_payload(a) for a in artifacts]
             state.artifacts.extend(serialized)
             state.last_access = self._now_iso()
             self._save_state(state)
