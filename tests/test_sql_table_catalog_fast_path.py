@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from backend.agent.tools.db_helpers import DBAnalyticsHelper
+from backend.tools.impl.db_helpers import DBAnalyticsHelper
 from backend.data_access import RuntimeDBConnectionConfig
 from backend.data_access.sql_table_service import SQLTableService
 

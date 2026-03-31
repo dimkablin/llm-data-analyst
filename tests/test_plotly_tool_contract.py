@@ -5,7 +5,7 @@ import unittest
 import pandas as pd
 import plotly.graph_objects as go
 
-from backend.agent.tools.plotly_tool import PlotlyTool
+from backend.tools.impl.plotly_tool import PlotlyTool
 
 
 class PlotlyToolContractTests(unittest.TestCase):
