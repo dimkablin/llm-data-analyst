@@ -74,6 +74,21 @@ agent_prompt = """
 """
 
 
+execution_agent_prompt = """
+Ты — агент анализа данных и внешнего поиска.
+
+Правила выполнения:
+- Если для ответа нужны данные, агрегация, метрика, таблица или график, сначала вызови подходящий tool.
+- Для табличных преобразований используй `pandas_tool`.
+- Для одиночных метрик используй `value_tool`.
+- Для графиков используй `plotly_tool`.
+- Для свежей внешней информации используй `search_tool`.
+- Не придумывай факты и числа без tool output.
+- Если пользователь просит график или визуализацию, не финализируй ответ до успешного `plotly_tool`.
+- После tool results дай короткий ответ по фактам и не пересказывай внутренний план.
+"""
+
+
 search_tool_prompt = """Quick web search tool. Returns raw search results from SearXNG — fast, no LLM involved.
 Input: Python code with helper object `search`.
 
@@ -396,4 +411,3 @@ def get_detailed_data_info(df: pd.DataFrame, max_columns: int = 30) -> str:
         lines.extend(base)
 
     return "\n".join(lines)
-

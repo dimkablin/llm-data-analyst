@@ -21,7 +21,10 @@ from backend.agent.pandas_agent import (
     extract_agent_output_text,
     normalize_agent_messages,
 )
-from backend.agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
+from backend.agent.prompts import (
+    execution_agent_prompt,
+    get_detailed_data_info as _get_data_info,
+)
 from backend.skills import SkillRegistry
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.tools.capabilities import build_runtime_capability_context
@@ -1255,6 +1258,51 @@ class AgentRunner:
 
         return "\n".join(blocks).strip()
 
+    def _build_execution_system_prompt(
+        self,
+        *,
+        user_prompt: str,
+        plan: str,
+        refinement_feedback: str,
+        step_index: int,
+        max_steps: int,
+        capability_context: dict[str, Any] | None = None,
+    ) -> str:
+        source_mode = str((capability_context or {}).get("source_mode", "")).strip() or "dataset"
+        tool_descriptions = str((capability_context or {}).get("tool_descriptions", "")).strip()
+        available_tools = [
+            str(item).strip()
+            for item in (capability_context or {}).get("available_tool_keys", [])
+            if str(item).strip()
+        ]
+        tool_list = ", ".join(f"`{item}`" for item in available_tools) if available_tools else "нет"
+
+        blocks = [
+            execution_agent_prompt.strip(),
+            f"Режим данных: `{source_mode}`.",
+            f"Доступные tools в этом запуске: {tool_list}.",
+        ]
+        if tool_descriptions:
+            blocks.extend(["Описание доступных tools:", tool_descriptions])
+
+        blocks.append(
+            f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {self.settings.agent_analysis_depth}."
+        )
+        if plan.strip():
+            blocks.append(f"Ориентир плана: {plan.strip()}")
+        if refinement_feedback.strip():
+            blocks.append(
+                "Исправь предыдущую неудачную попытку: "
+                f"{refinement_feedback.strip()}"
+            )
+        if any(tok in user_prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
+            blocks.append(
+                "Запрошена визуализация: сначала построй хотя бы один график через `plotly_tool`, "
+                "потом формируй итоговый ответ."
+            )
+
+        return "\n".join(blocks).strip()
+
     def _collect_text_and_reasoning(
         self,
         *,
@@ -1857,6 +1905,7 @@ class AgentRunner:
         session_source: dict[str, Any] | None = None,
         tool_db_runtime: RuntimeDBConnectionConfig | None = None,
         selected_skill_ids: list[str] | None = None,
+        execution_system_prompt: str | None = None,
     ) -> AgentResponse:
         self._reset_text_collectors(callbacks)
         llm = self._build_llm(
@@ -1875,7 +1924,9 @@ class AgentRunner:
         )
 
         skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
-        act_prefix = agent_prompt + (f"\n\n{skills_block}" if skills_block else "")
+        act_prefix = (execution_system_prompt or execution_agent_prompt).strip()
+        if skills_block:
+            act_prefix = f"{act_prefix}\n\n{skills_block}"
 
         agent = create_pandas_dataframe_agent(
             llm=llm,
@@ -2243,6 +2294,7 @@ class AgentRunner:
             has_dataframe=df is not None,
             has_db_source=tool_db_runtime is not None,
         )
+        capability_context["tool_descriptions"] = tool_descriptions
 
         user_block = f"Вопрос пользователя: {prompt.strip()}"
         if refinement_feedback.strip():
@@ -2357,7 +2409,7 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
-        step_prompt = self._compose_step_prompt(
+        execution_system_prompt = self._build_execution_system_prompt(
             user_prompt=state.get("prompt", ""),
             plan=plan,
             refinement_feedback=refinement_feedback,
@@ -2388,7 +2440,7 @@ class AgentRunner:
         try:
             response = self._analysis_step(
                 df=tool_df,
-                prompt=step_prompt,
+                prompt=state.get("prompt", ""),
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
                 include_reasoning=state.get("include_reasoning", False),
@@ -2398,6 +2450,7 @@ class AgentRunner:
                 session_source=state.get("session_source"),
                 tool_db_runtime=tool_db_runtime,
                 selected_skill_ids=state.get("selected_skill_ids"),
+                execution_system_prompt=execution_system_prompt,
             )
         except Exception as exc:
             artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
