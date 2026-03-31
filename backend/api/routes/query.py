@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from dataclasses import replace
@@ -54,6 +55,8 @@ _AgentRunner = None  # type: ignore
 _effective_enabled_tool_keys_fn = None  # type: ignore
 _build_tool_catalog_fn = None  # type: ignore
 _known_tool_keys = None  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 def setup(
@@ -792,36 +795,48 @@ async def query_stream(
             except Exception:  # noqa: BLE001
                 pass
 
-            from backend.artifacts.bridge import execution_to_api_payload
-            artifacts = [execution_to_api_payload(a) for a in response.artifacts]
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             streamed_reasoning = token_collector.collected_reasoning()
             merged_reasoning = _merge_reasoning_text(
                 response.reasoning,
                 streamed_reasoning,
             )
-            effective_reasoning = _build_reasoning_trace(
-                response_text=response.final_text,
-                response_reasoning=merged_reasoning,
-                route=response.route,
-                tool_collector=tool_collector,
-                use_history=payload.use_history,
-                duration_ms=duration_ms,
-                has_dataset=has_active_source,
-            )
-            _store.set_selected_skill_ids(session_id, selected_skill_ids)
-            _store.add_chat_message(session_id, "user", payload.query)
-            _store.add_chat_message(
-                session_id,
-                "ai",
-                response.final_text,
-                artifacts=artifacts,
-                reasoning=effective_reasoning,
-            )
-            _store.add_artifacts(session_id, response.artifacts)
-            _auth_db.update_session_after_reply(
-                session_id, response.final_text, auto_title=None
-            )
+            try:
+                from backend.artifacts.bridge import execution_to_api_payload
+
+                artifacts = [execution_to_api_payload(a) for a in response.artifacts]
+                effective_reasoning = _build_reasoning_trace(
+                    response_text=response.final_text,
+                    response_reasoning=merged_reasoning,
+                    route=response.route,
+                    tool_collector=tool_collector,
+                    use_history=payload.use_history,
+                    duration_ms=duration_ms,
+                    has_dataset=has_active_source,
+                )
+                _store.set_selected_skill_ids(session_id, selected_skill_ids)
+                _store.add_chat_message(session_id, "user", payload.query)
+                _store.add_chat_message(
+                    session_id,
+                    "ai",
+                    response.final_text,
+                    artifacts=artifacts,
+                    reasoning=effective_reasoning,
+                )
+                _store.add_artifacts(session_id, response.artifacts)
+                _auth_db.update_session_after_reply(
+                    session_id, response.final_text, auto_title=None
+                )
+            except Exception:
+                logger.exception(
+                    "query_stream post-processing failed; returning agent response without persistence "
+                    "session_id=%s user_id=%s",
+                    session_id,
+                    current_user.id,
+                )
+                artifacts = []
+                effective_reasoning = merged_reasoning or response.reasoning
+
             final_payload = _build_response(
                 session_id,
                 response.final_text,
@@ -854,6 +869,11 @@ async def query_stream(
             )
             await queue.put(("final", fallback_payload.model_dump()))
         except Exception:
+            logger.exception(
+                "query_stream failed; returning fallback response session_id=%s user_id=%s",
+                session_id,
+                current_user.id,
+            )
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             fallback_payload = _build_fallback_response(
                 session_id=session_id,

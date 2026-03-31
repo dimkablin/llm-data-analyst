@@ -90,6 +90,22 @@ tool_result
         self.assertIn("plotly_tool", text)
         self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
 
+    def test_multiple_chart_result_calls_are_accumulated(self) -> None:
+        code = """
+fig1 = px.bar(df, x="category", y="value", title="Bar")
+fig2 = px.line(df, x="category", y="value", title="Line")
+
+chart.result(fig1, "bar_plot")
+chart.result(fig2, "line_plot")
+"""
+
+        text, payload = self.tool._run(code)
+
+        self.assertIn("plotly_tool", text)
+        self.assertEqual(set(payload["plot"].keys()), {"bar_plot", "line_plot"})
+        self.assertIsInstance(payload["plot"]["bar_plot"], go.Figure)
+        self.assertIsInstance(payload["plot"]["line_plot"], go.Figure)
+
 
 if __name__ == "__main__":
     unittest.main()
