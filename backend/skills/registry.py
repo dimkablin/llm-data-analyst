@@ -114,7 +114,9 @@ class SkillRegistry:
                 raise SkillSelectionError("Skill ids must be non-empty strings.")
             if normalized in seen:
                 continue
-            resolved.append(self.get(normalized))
+            if normalized not in self._skills_by_id:
+                raise SkillSelectionError(f"Unknown skill id: {normalized}")
+            resolved.append(self._skills_by_id[normalized])
             seen.add(normalized)
         return tuple(resolved)
 

@@ -68,6 +68,7 @@ class ExecutionGraphTracker:
         self._last_tool_id: str | None = None
         self._current_act_id: str | None = None
         self._started_at: dict[str, float] = {}
+        self._running_by_name: dict[str, str] = {}  # tool_name → node_id
 
     # ── Phase tracking ───────────────────────────────────────────────
 
@@ -118,6 +119,7 @@ class ExecutionGraphTracker:
         )
         self._nodes[node_id] = node
         self._started_at[node_id] = time.perf_counter()
+        self._running_by_name[tool_name] = node_id
 
         # Connect: act → first tool, or tool → tool.
         if self._last_tool_id:
@@ -136,13 +138,8 @@ class ExecutionGraphTracker:
         artifact_keys: list[str] | None = None,
         shared_vars_out: list[str] | None = None,
     ) -> None:
-        # Find the most recent tool node for this name.
-        node = None
-        for nid in reversed(list(self._nodes)):
-            n = self._nodes[nid]
-            if n.tool_name == tool_name and n.status == "running":
-                node = n
-                break
+        nid = self._running_by_name.pop(tool_name, None)
+        node = self._nodes.get(nid) if nid else None
         if not node:
             return
         node.status = status

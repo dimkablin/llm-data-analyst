@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ExecutionGraph, GraphNode } from "../../lib/backend-types";
 import { formatDurationMs } from "../../lib/format";
@@ -136,14 +137,16 @@ export function ExecutionGraphView({
   const phaseNodes = graph.nodes.filter((n) => n.type === "phase");
   const toolNodes = graph.nodes.filter((n) => n.type === "tool");
 
-  // Group tools by parent_id (act phase)
-  const toolsByParent = new Map<string, GraphNode[]>();
-  for (const t of toolNodes) {
-    const pid = t.parent_id ?? "";
-    const list = toolsByParent.get(pid) ?? [];
-    list.push(t);
-    toolsByParent.set(pid, list);
-  }
+  const toolsByParent = useMemo(() => {
+    const map = new Map<string, GraphNode[]>();
+    for (const t of toolNodes) {
+      const pid = t.parent_id ?? "";
+      const list = map.get(pid) ?? [];
+      list.push(t);
+      map.set(pid, list);
+    }
+    return map;
+  }, [toolNodes]);
 
   return (
     <div className="flex flex-wrap items-start gap-y-2">

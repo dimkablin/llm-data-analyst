@@ -287,7 +287,7 @@ class BaseExecTool(BaseTool):
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
         head = df.head(8).to_csv(index=False)
-        tail = df.tail(8).to_csv(index=False)
+        tail = df.iloc[-8:].to_csv(index=False)
         columns = ",".join(str(col) for col in df.columns[:64])
         payload = f"{df.shape}|{columns}|{head}|{tail}"
         return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
@@ -552,8 +552,8 @@ class BaseExecTool(BaseTool):
 
         # Inject shared variables from previous tool calls.
         shared_vars_in: dict[str, Any] | None = None
-        if self._shared_context is not None and len(self._shared_context) > 0:
-            shared_vars_in = self._shared_context.inject_all()
+        if self._shared_context is not None:
+            shared_vars_in = self._shared_context.inject_all() or None
 
         process = ctx.Process(
             target=_tool_worker,
