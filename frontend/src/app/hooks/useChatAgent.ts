@@ -4,6 +4,7 @@ import { getSession, streamQuery } from "../lib/backend-api";
 import type {
   ArtifactPayload,
   ChatMessage,
+  ExecutionGraph,
   PhaseEvent,
   QueryResponse,
   SessionState,
@@ -224,6 +225,7 @@ export function useChatAgent({
   const [streamDraft, setStreamDraft] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [streamPhases, setStreamPhases] = useState<PhaseEvent[]>([]);
+  const [streamGraph, setStreamGraph] = useState<ExecutionGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -239,12 +241,15 @@ export function useChatAgent({
     };
   }, []);
 
+  const isStreamingRef = useRef(isStreaming);
+  isStreamingRef.current = isStreaming;
+
   const hydrate = useCallback((
     session: SessionState,
     options?: { preserveStreamingForSessionId?: string | null },
   ) => {
     const preserveStreaming =
-      isStreaming &&
+      isStreamingRef.current &&
       options?.preserveStreamingForSessionId &&
       options.preserveStreamingForSessionId === session.session_id;
     const hydratedMessages = toChatMessages(session.session_id, session.chat_history);
@@ -270,7 +275,7 @@ export function useChatAgent({
       setIsStreaming(false);
       setLastQuery(null);
     }
-  }, [isStreaming]);
+  }, []);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -320,6 +325,7 @@ export function useChatAgent({
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
+      setStreamGraph(null);
       setIsStreaming(true);
       setStreamingSessionId(sessionId);
       setMessages((prev) => [
@@ -432,6 +438,9 @@ export function useChatAgent({
               const text = `\n${status} **${event.tool_name}** завершён${artifacts}`;
               collectedReasoning += text;
               setStreamReasoning((prev) => prev + text);
+            },
+            onGraphUpdate: (graph) => {
+              setStreamGraph(graph);
             },
             onPhaseToken: (token) => {
               if (!includeReasoning) {
@@ -549,6 +558,7 @@ export function useChatAgent({
             livePhases,
             metrics: finalPayload.metrics,
             artifacts: finalPayload.artifacts,
+            executionGraph: (finalPayload as Record<string, unknown>).execution_graph as ExecutionGraph | undefined,
           },
         ]);
         setArtifacts((prev) => [...prev, ...finalPayload.artifacts]);
@@ -629,6 +639,7 @@ export function useChatAgent({
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamGraph,
     error,
     lastQuery,
     hydrate,

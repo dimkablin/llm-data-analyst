@@ -1,4 +1,5 @@
 import type { ArtifactPayload, ChatMessage } from "./backend-types";
+import { formatDurationMs } from "./format";
 
 function saveFile(filename: string, payload: string, mimeType: string): void {
   const blob = new Blob([payload], { type: mimeType });
@@ -64,7 +65,7 @@ function buildChatHistoryHtml(
   const renderedMessages = messages
     .map((message, messageIndex) => {
       const metrics = message.metrics
-        ? `<div class="chips"><span>${message.metrics.duration_ms} ms</span><span>${message.metrics.artifact_count} artifacts</span><span>${escapeHtml(message.metrics.model)}</span></div>`
+        ? `<div class="chips"><span>${formatDurationMs(message.metrics.duration_ms)}</span><span>${message.metrics.artifact_count} artifacts</span><span>${escapeHtml(message.metrics.model)}</span></div>`
         : "";
       const reasoning = message.reasoning
         ? `<details><summary>Рассуждение</summary><pre>${escapeHtml(message.reasoning)}</pre></details>`

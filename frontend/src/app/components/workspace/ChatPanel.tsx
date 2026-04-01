@@ -20,10 +20,12 @@ import { AnimatePresence, motion } from "motion/react";
 import type {
   ArtifactPayload,
   ChatMessage,
+  ExecutionGraph,
   PhaseEvent,
   SessionSourceState,
 } from "../../lib/backend-types";
-import { formatTime } from "../../lib/format";
+import { ExecutionGraphView } from "./ExecutionGraphView";
+import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
 
 const QUICK_SUGGESTIONS = [
@@ -32,6 +34,8 @@ const QUICK_SUGGESTIONS = [
   "Найди аномалии и выбросы",
 ];
 
+const STREAM_REASONING_KEY = "__stream_reasoning__";
+
 type Props = {
   title: string;
   modelLabel?: string;
@@ -39,6 +43,7 @@ type Props = {
   streamDraft: string;
   streamReasoning: string;
   streamPhases: PhaseEvent[];
+  streamGraph?: ExecutionGraph | null;
   isStreaming: boolean;
   error: string | null;
   canRetry: boolean;
@@ -61,6 +66,7 @@ export function ChatPanel({
   streamDraft,
   streamReasoning,
   streamPhases,
+  streamGraph,
   isStreaming,
   error,
   canRetry,
@@ -147,7 +153,7 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-[28px] bg-card/40 backdrop-blur-md">
-      <div className="flex items-center justify-between border-b border-border/50 p-5">
+      <div className="flex items-center justify-between border-b border-border/50 p-3 lg:p-5">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-lg shadow-primary/20">
             <Bot className="h-5 w-5 text-primary-foreground" />
@@ -193,9 +199,9 @@ export function ChatPanel({
 
       <div
         ref={scrollContainerRef}
-        className="custom-scrollbar flex-1 overflow-y-auto p-6"
+        className="custom-scrollbar flex-1 overflow-y-auto p-3 lg:p-6"
       >
-        <div className="space-y-6">
+        <div className="space-y-4 lg:space-y-6">
           {messages.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-border/40 bg-secondary/20 p-6 text-sm text-muted-foreground">
               Начните диалог с аналитиком. Новый frontend остается основным, а live backend-сценарий уже подключен.
@@ -220,38 +226,29 @@ export function ChatPanel({
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/20 text-primary">
                   <Loader2 className="h-4 w-4 animate-spin" />
                 </div>
-                <div className="max-w-[85%] rounded-2xl rounded-tl-none border border-border/40 bg-secondary/50 px-5 py-4 text-sm leading-relaxed">
-                  <MarkdownBlock content={streamDraft || "Формирую ответ..."} />
+                <div className="flex min-w-0 max-w-[85%] flex-col gap-2">
+                  {(streamReasoning || streamPhases.length > 0) ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedReasoning((current) =>
+                          current === STREAM_REASONING_KEY ? null : STREAM_REASONING_KEY,
+                        )
+                      }
+                      className="flex items-center gap-2 rounded-lg border border-border/30 bg-secondary/50 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground"
+                    >
+                      <Brain className="h-3.5 w-3.5" />
+                      Ход мысли
+                    </button>
+                  ) : null}
+                  {expandedReasoning === STREAM_REASONING_KEY ? (
+                    <ReasoningPanel reasoning={streamReasoning} phases={streamPhases} graph={streamGraph} isLive />
+                  ) : null}
+                  <div className="rounded-2xl rounded-tl-none border border-border/40 bg-secondary/50 px-5 py-4 text-sm leading-relaxed">
+                    <MarkdownBlock content={streamDraft || "Формирую ответ..."} />
+                  </div>
                 </div>
               </div>
-              {streamReasoning ? (
-                <div className="rounded-2xl border border-border/40 bg-background/40 p-4 text-xs text-muted-foreground">
-                  <div className="mb-2 flex items-center gap-2 font-bold uppercase tracking-widest text-primary">
-                    <Brain className="h-3.5 w-3.5" />
-                    Live reasoning
-                  </div>
-                  <MarkdownBlock content={streamReasoning} className="text-xs" />
-                </div>
-              ) : null}
-              {streamPhases.length > 0 ? (
-                <div className="grid gap-2">
-                  {streamPhases.map((phase, index) => (
-                    <div
-                      key={`${phase.id || phase.timestamp}-${index}`}
-                      className="rounded-2xl border border-border/40 bg-background/30 px-4 py-3"
-                    >
-                      <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                        {phase.title}
-                      </div>
-                      <div className="mt-2 text-sm leading-relaxed">
-                        <MarkdownBlock
-                          content={phase.content || "_Шаг выполняется..._"}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
             </motion.div>
           ) : null}
 
@@ -259,7 +256,7 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="border-t border-border/50 bg-background/40 p-6 backdrop-blur-xl">
+      <div className="border-t border-border/50 bg-background/40 p-3 backdrop-blur-xl lg:p-6">
         {error ? (
           <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div>
         ) : null}
@@ -289,7 +286,7 @@ export function ChatPanel({
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
-            className="min-h-[100px] w-full resize-none bg-transparent p-4 pl-14 pr-16 text-[15px] outline-none"
+            className="min-h-[72px] w-full resize-none bg-transparent p-3 pl-12 pr-14 text-[13px] outline-none lg:min-h-[100px] lg:p-4 lg:pl-14 lg:pr-16 lg:text-[15px]"
           />
 
           {/* "+" action menu — bottom left */}
@@ -397,6 +394,85 @@ function ActionMenuItem({
   );
 }
 
+function ReasoningPanel({
+  reasoning,
+  phases,
+  graph,
+  isLive = false,
+}: {
+  reasoning?: string | null;
+  phases?: PhaseEvent[];
+  graph?: ExecutionGraph | null;
+  isLive?: boolean;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hasReasoning = Boolean(reasoning?.trim());
+  const hasPhases = Boolean(phases?.length);
+  const hasGraph = Boolean(graph?.nodes?.length);
+  useEffect(() => {
+    if (!isLive) {
+      return;
+    }
+    const node = scrollRef.current;
+    if (!node) {
+      return;
+    }
+    node.scrollTop = node.scrollHeight;
+  }, [isLive, phases, reasoning]);
+
+  if (!hasReasoning && !hasPhases && !hasGraph) {
+    return null;
+  }
+
+  const visiblePhases = phases ?? [];
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-border/30 bg-background/40 p-4 text-xs text-muted-foreground">
+      <div className="mb-3 flex items-center gap-2 font-bold uppercase tracking-widest text-primary">
+        <Brain className="h-3.5 w-3.5" />
+        {isLive ? "Live reasoning" : "Ход мысли"}
+      </div>
+
+      {hasGraph ? (
+        <div className="mb-3 pb-3 border-b border-border/20">
+          <ExecutionGraphView graph={graph!} isLive={isLive} />
+        </div>
+      ) : null}
+
+      <div className="relative">
+        <div
+          ref={scrollRef}
+          className="custom-scrollbar max-h-[27.5rem] overflow-y-auto pr-1"
+        >
+          {reasoning ? (
+            <MarkdownBlock content={reasoning} className="text-xs" />
+          ) : null}
+          {visiblePhases.length ? (
+            <div className={`${reasoning ? "mt-4 border-t border-border/20 pt-4" : ""} grid gap-2`}>
+              {visiblePhases.map((phase, index) => (
+                <div
+                  key={`${phase.id || phase.timestamp}-${index}`}
+                  className="rounded-xl border border-border/30 bg-background/30 px-3 py-3"
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                    {phase.title}
+                  </div>
+                  <div className="mt-2">
+                    <MarkdownBlock
+                      content={phase.content || (isLive ? "_Шаг выполняется..._" : "_Шаг выполнен._")}
+                      className="text-xs"
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   isReasoningOpen,
@@ -409,27 +485,27 @@ function MessageBubble({
   onPinArtifact: (artifact: ArtifactPayload) => void;
 }) {
   const isUser = message.role === "user";
-  const [isFullReasoningOpen, setIsFullReasoningOpen] = useState(false);
+  const [isFullReasoningOpen, setIsFullReasoningOpen] = useState(true);
   const hasFullTrace =
     Boolean(message.liveReasoningTrace?.trim()) ||
     Boolean(message.livePhases?.length);
   const displayedReasoning =
-    isFullReasoningOpen && message.liveReasoningTrace?.trim()
-      ? message.liveReasoningTrace
-      : message.reasoning;
+    !isFullReasoningOpen || !message.liveReasoningTrace?.trim()
+      ? message.reasoning
+      : message.liveReasoningTrace;
   const displayedPhases =
-    isFullReasoningOpen && message.livePhases?.length
-      ? message.livePhases
-      : message.phases;
+    !isFullReasoningOpen || !message.livePhases?.length
+      ? message.phases
+      : message.livePhases;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex gap-2 lg:gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
       <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg ${isUser ? "bg-secondary" : "bg-primary/20 text-primary"}`}>
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
 
       <div className={`flex min-w-0 max-w-[85%] flex-col gap-2 ${isUser ? "items-end" : ""}`}>
-        {!isUser && (message.reasoning || message.phases?.length) ? (
+        {!isUser && (displayedReasoning || displayedPhases?.length || hasFullTrace) ? (
           <button
             type="button"
             onClick={onToggleReasoning}
@@ -440,10 +516,10 @@ function MessageBubble({
           </button>
         ) : null}
 
-        {isReasoningOpen && (message.reasoning || message.phases?.length || hasFullTrace) ? (
-          <div className="min-w-0 overflow-x-auto rounded-2xl border border-border/30 bg-background/40 p-4 text-xs text-muted-foreground">
+        {isReasoningOpen && (displayedReasoning || displayedPhases?.length || hasFullTrace) ? (
+          <div className="min-w-0">
             {hasFullTrace ? (
-              <div className="mb-3 flex justify-end">
+              <div className="mb-2 flex justify-end">
                 <button
                   type="button"
                   onClick={() => setIsFullReasoningOpen((current) => !current)}
@@ -455,37 +531,15 @@ function MessageBubble({
                 </button>
               </div>
             ) : null}
-            {displayedReasoning ? (
-              <MarkdownBlock content={displayedReasoning} className="text-xs" />
-            ) : null}
-            {displayedPhases?.length ? (
-              <div className={`${displayedReasoning ? "mt-4 border-t border-border/20 pt-4" : ""} grid gap-2`}>
-                {displayedPhases.map((phase, index) => (
-                  <div
-                    key={`${phase.id || phase.timestamp}-${index}`}
-                    className="rounded-xl border border-border/30 bg-background/30 px-3 py-3"
-                  >
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                      {phase.title}
-                    </div>
-                    <div className="mt-2">
-                      <MarkdownBlock
-                        content={phase.content || "_Шаг выполнен._"}
-                        className="text-xs"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
+            <ReasoningPanel reasoning={displayedReasoning} phases={displayedPhases} graph={message.executionGraph} />
           </div>
         ) : null}
 
-        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-5 py-4 text-[15px] leading-relaxed shadow-sm ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
+        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-5 lg:py-4 lg:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-              <span>{message.metrics.duration_ms} ms</span>
+              <span>{formatDurationMs(message.metrics.duration_ms)}</span>
               <span>{message.metrics.model}</span>
               <span>{message.metrics.artifact_count} artifacts</span>
             </div>

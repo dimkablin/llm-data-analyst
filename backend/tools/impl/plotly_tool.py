@@ -162,6 +162,7 @@ class PlotlyTool(BaseExecTool):
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
+        shared_context: Any | None = None,
     ) -> None:
         """
         Инициализация инструмента с DataFrame и Plotly.
@@ -176,6 +177,7 @@ class PlotlyTool(BaseExecTool):
             include_plotly=True,
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
+            shared_context=shared_context,
         )
 
     def get_execution_scope(self) -> dict[str, Any]:

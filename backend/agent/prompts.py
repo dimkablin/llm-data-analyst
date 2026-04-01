@@ -25,7 +25,11 @@ agent_prompt = """
 - **Если пользователь просит графики / диаграммы / визуализацию** — нужен хотя бы один **успешный** `plotly_tool`; не считай задачу закрытой одной таблицей из `pandas_tool` или одним `value_tool`, если явно просили картинку.
 
 ### База данных (если подключена)
-- Разведка и аналитические выборки по таблицам → `sql_table_tool`: один аргумент `question` (что нужно узнать или посчитать); инструмент выбирает таблицу и строит безопасный read-only SQL.
+- Разведка и аналитические выборки по таблицам → `sql_table_tool`: один аргумент `question`.
+  Формулируй вопрос **конкретно**: укажи имя таблицы, нужные колонки, фильтры.
+  Примеры хороших вопросов: "Покажи первые 10 строк таблицы titanic", "Посчитай количество строк в таблице bank_churn_clients", "Средний возраст по колонке Age в таблице titanic".
+  Плохие вопросы: "Покажи данные" (неясно какие), "Проанализируй" (слишком абстрактно).
+  Для списка таблиц: "Покажи таблицы" — быстрый каталог без SQL.
 - Дальнейшая обработка результата: по данным сессии (`df`) — `pandas_tool` / `plotly_tool` / `value_tool`, если результат уже отражён в датасете или артефактах шага.
 - В **одном** вызове `plotly_tool` при привязанной БД по-прежнему доступны `db` и `db_connection` для компактного SQL внутри кода графика (без отдельного шага `sql_table_tool`).
 
@@ -77,63 +81,52 @@ agent_prompt = """
 execution_agent_prompt = """
 Ты — агент анализа данных и внешнего поиска.
 
-Правила выполнения:
-- Если для ответа нужны данные, агрегация, метрика, таблица или график, сначала вызови подходящий tool.
-- Для табличных преобразований используй `pandas_tool`.
-- Для одиночных метрик используй `value_tool`.
-- Для графиков используй `plotly_tool`.
-- Для свежей внешней информации используй `search_tool`.
-- Не придумывай факты и числа без tool output.
-- Если пользователь просит график или визуализацию, не финализируй ответ до успешного `plotly_tool`.
-- После tool results дай короткий ответ по фактам и не пересказывай внутренний план.
+КРИТИЧЕСКОЕ ПРАВИЛО: ты ОБЯЗАН вызвать tool на КАЖДЫЙ запрос. Никогда не отвечай текстом без вызова tool.
+
+Выбор tool:
+- Таблица, данные, преобразования → `pandas_tool`
+- Одиночная метрика → `value_tool`
+- График → `plotly_tool`
+- Внешняя информация → `search_tool`
+
+Правила:
+- Не придумывай числа без tool output.
+- После tool results дай короткий ответ по фактам.
+- Не пересказывай план, не описывай свои действия.
 """
 
 
-search_tool_prompt = """Quick web search tool. Returns raw search results from SearXNG — fast, no LLM involved.
-Input: Python code with helper object `search`.
-
-Use it for:
-- Finding recent news, links, external materials, or fresh public information.
-- Quick factual lookups where 1-2 sources are enough.
-- Reading the full text of specific pages after seeing search results.
+search_tool_prompt = """Web search tool. Input: Python code with helper `search`.
 
 Methods:
-- `search.search("...")` → dict with keys: query, answer, results (list), sources (list)
-- `search.search_result("...", artifact_name="...")` → ready table artifact with source/recipe/provenance
-- `search.fetch(urls)` → read full text of given URLs; returns list of {url, content, status, error}
+- `search.search("query", max_results=5)` -> dict: query, answer, results[], sources[]
+- `search.search_result("query", artifact_name="name")` -> ready table artifact
+- `search.fetch(urls)` -> list of {url, content, status, error} — full page text
 
-Two-step pattern (search → LLM picks URLs → fetch):
-1. Call `search.search(...)` to get results with titles/snippets.
-2. Inspect the results, pick the most relevant URLs.
-3. Call `search.fetch([url1, url2])` to get full page text.
+IMPORTANT: For factual questions (weather, prices, events, scores, current info):
+1. `search.search(...)` gets snippets — often enough for a quick answer.
+2. If snippets lack detail, call `search.fetch([url1, url2])` on best URLs to get full text.
+3. Base your answer on fetched content, not on your training data.
 
 Rules:
-- ALWAYS write Python code that calls `search.search_result(...)` — NOT a plain dict
-- prefer `search.search_result(...)` for user-facing search result tables
-- use `search.fetch(...)` when you need full page content of specific URLs
-- last code line must be exactly `tool_result`
-- do not make manual HTTP calls; use only helper `search`
+- ALWAYS write Python code — NOT a plain dict.
+- Use `search.search_result(...)` when result should be a table for the user.
+- Use search+fetch pattern when you need detailed/precise data from pages.
+- Last line: `tool_result`.
 
-Example — search only:
+Example — quick search:
 ```python
-tool_result = search.search_result(
-    "latest AI agent frameworks 2025",
-    artifact_name="ai_agent_frameworks",
-    max_results=5,
-)
+tool_result = search.search_result("AI frameworks 2025", artifact_name="ai_frameworks", max_results=5)
 tool_result
 ```
 
-Example — search then selectively fetch:
+Example — search + fetch for precise answer:
 ```python
-import pandas as pd
-
-results = search.search("крупнейшие LLM модели 2025", max_results=8, fetch_top_n=0)
-# pick the 2 most relevant URLs from results["results"]
+results = search.search("погода Москва сегодня", max_results=5)
 best_urls = [r["url"] for r in results["results"][:2] if r.get("url")]
 pages = search.fetch(best_urls)
-
-rows = [{"url": p["url"], "text": p["content"][:1000]} for p in pages if p["status"] == "ok"]
+import pandas as pd
+rows = [{"url": p["url"], "text": p["content"][:1500]} for p in pages if p["status"] == "ok"]
 tool_result = {
     "schema_version": "1.0",
     "artifact_type": "table",
@@ -263,110 +256,30 @@ tool_result
 """
 
 
-pandas_tool_prompt = """Инструмент для табличного анализа через Pandas.
-Вход: Python-код с доступным DataFrame `df`.
-ВАЖНО: `df` уже загружен — НЕ вызывай pd.read_csv(), pd.read_excel() и т.п.
-Предпочитай работать от уже переданного `df`: фильтруй, агрегируй, выбирай нужные колонки, строй производные таблицы и summary на его основе.
-Создавать новые `pd.DataFrame(...)` можно, когда это действительно нужно для оформления результата, промежуточной агрегации или сборки производной таблицы, но не подменяй этим исходный датасет, если нужные данные уже есть в `df`.
-Обязательно:
-- сформируй `tool_result` строго в формате:
-  {
-    "schema_version": "1.0",
-    "artifact_type": "table",
-    "items": { "table_name": <pd.DataFrame | pd.Series> }
-  }
-- последняя строка кода: `tool_result`
-- таблица должна быть понятной человеку:
-  - осмысленные названия артефакта и колонок,
-  - для числовых столбцов без нужды не оставляй длинные хвосты; округляй (обычно до 2-4 знаков),
-  - избегай чрезмерно длинных текстов в названиях колонок.
-- На стороне инструмента есть post-processing (авто-нормализация), но это страховка: старайся сразу возвращать человеко-читаемый результат.
-- **Не используй** `globals()`, `locals()`, `__import__`, `os`, `sys`, `pathlib`, `subprocess` — код не пройдёт проверку безопасности.
-- пример:
-  ```python
-  result_df = df.describe(include="all").transpose()
-  tool_result = {
-      "schema_version": "1.0",
-      "artifact_type": "table",
-      "items": {"describe": result_df}
-  }
-  tool_result
-  ```
+pandas_tool_prompt = """Pandas table tool. Input: Python code.
+Available: `df` (DataFrame preloaded — do NOT call pd.read_csv).
+Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"name": result_df}}`.
+Last line: `tool_result`.
+To share data with next tool, prefix variable with `shared_`: `shared_agg = df.groupby("col").sum()`.
+Example: `result_df = df.describe().T; tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"summary": result_df}}; tool_result`
 """
 
 
-plotly_tool_prompt = """Инструмент для графиков через Plotly.
-Вход: Python-код с доступными `df`, `px`, `go`, `chart`.
-ВАЖНО: `df` уже загружен — НЕ вызывай pd.read_csv() или любые функции чтения файлов.
-Если к сессии привязана БД, дополнительно доступны `db` и `db_connection`.
-Обязательно:
-- используй только Plotly
-- создай переменную `fig` до возврата результата
-- `fig` должен быть настоящим Plotly `Figure`
-- возвращай график только через `chart.result(fig, artifact_name="...")` или эквивалентно `chart.result(fig, "slug_артефакта")` (второй позиционный аргумент = имя артефакта) — после вызова к фигуре применяется единый аккуратный стиль (тёмная тема, сетка, шрифты)
-- последняя строка кода: `tool_result`
-- не возвращай строку, `dict` или JSON вместо `Figure`
-- не используй переменные, которые не были созданы выше в коде
-- **Не копируй имя `df_plot` из примеров**, если не объявил его сам: безопаснее писать `px.*(df, ...)` напрямую или одной строкой задать данные, например `d = df if len(df) <= 5000 else df.sample(5000, random_state=42)` и затем только `px.bar(d, ...)`.
-- если данные уже есть в `df`, строй график по `df`
-- если нужен график по БД в этом же вызове, можешь вызвать `db.execute_analytic_query(...)` или `db.query_dataframe(...)`, затем строй `fig` и упаковывай через `chart.result(...)`; для отдельного шага с вопросом на языке используй `sql_table_tool`
-- производительность: если `len(df) > 5000`, используй `df.sample(5000, random_state=42)` перед построением scatter/histogram/line — это ускорит рендеринг
-- качество восприятия: задавай понятный `title`, в `px.*` используй `labels={col: "Читаемое имя"}` для осей и легенды; для временных рядов сортируй по дате перед `px.line`
-- **Не используй** `globals()`, `locals()`, `__import__`, `os`, `sys` в коде графика.
-- короткий пример (предпочтительный вариант — сразу `df`):
-  ```python
-  fig = px.bar(
-      df,
-      x="category",
-      y="value",
-      title="Сравнение значений",
-      labels={"category": "Категория", "value": "Значение"},
-  )
-  tool_result = chart.result(fig, artifact_name="comparison_plot")
-  tool_result
-  ```
-- если строк много, сначала укороти выборку, **в той же функции объяви переменную и сразу используй её**:
-  ```python
-  d = df if len(df) <= 5000 else df.sample(5000, random_state=42)
-  fig = px.scatter(d, x="x", y="y", title="Распределение")
-  tool_result = chart.result(fig, artifact_name="scatter_sample")
-  tool_result
-  ```
+plotly_tool_prompt = """Plotly chart tool. Input: Python code.
+Available: `df` (DataFrame), `px`, `go`, `chart`. Shared variables from previous tools (if any) are also available.
+`df` is preloaded — do NOT call pd.read_csv().
+Create `fig` (plotly Figure), then: `tool_result = chart.result(fig, artifact_name="chart_name")`.
+Last line: `tool_result`.
+If a `shared_*` variable (e.g. `shared_agg`) is available from a previous tool, use it directly.
+Example: `fig = px.bar(df, x="col1", y="col2", title="Title"); tool_result = chart.result(fig, "my_chart"); tool_result`
 """
 
 
-value_tool_prompt = """Инструмент для скалярных метрик.
-Вход: Python-код с доступным `df`.
-ВАЖНО: `df` уже загружен — НЕ вызывай pd.read_csv() или любые функции чтения файлов.
-Обязательно:
-- сформируй `tool_result` строго в формате:
-  {
-    "schema_version": "1.0",
-    "artifact_type": "value",
-    "items": { "metric_name": <float | int | str | bool> }
-  }
-- последняя строка кода: `tool_result`
-- не используй переменную с похожим именем (`tool_result```, `toolresult`, и т.п.) — только `tool_result`
-- значения должны быть удобны для чтения человеком:
-  - округляй float до разумной точности (обычно 2-4 знака),
-  - названия метрик делай короткими и понятными,
-  - избегай “сырых” длинных чисел без необходимости.
-- value_tool предназначен только для коротких value-like результатов: метрика, флаг, label, компактный summary.
-- не используй его для длинных explanatory/refusal сообщений.
-- если нужен внешний knowledge workflow и доступен `search_tool`, не подменяй его value artifact.
-- если внешний tool недоступен, лучше обычный текстовый ответ об ограничении без `value_tool`.
-- если вычисление вернуло словарь с числовыми/строковыми значениями, разверни его в отдельные скалярные метрики.
-- На стороне инструмента есть post-processing (авто-округление), но это страховка: старайся сразу возвращать готовые читаемые значения.
-- пример:
-  ```python
-  rows = len(df)
-  tool_result = {
-      "schema_version": "1.0",
-      "artifact_type": "value",
-      "items": {"row_count": rows}
-  }
-  tool_result
-  ```
+value_tool_prompt = """Scalar metric tool. Input: Python code.
+Available: `df` (DataFrame preloaded — do NOT call pd.read_csv).
+Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "value", "items": {"metric_name": number_or_string}}`.
+Last line: `tool_result`.
+Example: `avg = round(df["price"].mean(), 2); tool_result = {"schema_version": "1.0", "artifact_type": "value", "items": {"avg_price": avg}}; tool_result`
 """
 
 

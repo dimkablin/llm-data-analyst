@@ -21,6 +21,7 @@ from backend.tools.catalog import ALL_TOOL_SPECS
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
     ForecastToolFactory,
+    GetToolInstructionsToolFactory,
     MemoryToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
@@ -36,11 +37,18 @@ if TYPE_CHECKING:
         ForecastIntegrationService,
         SearchIntegrationService,
     )
+    from backend.skills.registry import SkillRegistry
     from backend.tools.context import ToolBuildContext
 
 # Pre-build a lookup from tool_key → short Russian description for planner prompts.
 _TOOL_DESCRIPTIONS_RU: dict[str, str] = {
     spec.tool_key: spec.description_ru for spec in ALL_TOOL_SPECS
+}
+
+from backend.tools.catalog import ToolCatalogSpec
+
+_TOOL_SPECS_BY_KEY: dict[str, ToolCatalogSpec] = {
+    spec.tool_key: spec for spec in ALL_TOOL_SPECS
 }
 
 
@@ -69,7 +77,14 @@ class ToolRegistry:
             if not factory.is_available(ctx):
                 continue
             desc = _TOOL_DESCRIPTIONS_RU.get(factory.key, "")
-            lines.append(f"- `{factory.key}`: {desc}" if desc else f"- `{factory.key}`")
+            spec = _TOOL_SPECS_BY_KEY.get(factory.key)
+            if spec:
+                caps = ", ".join(spec.capabilities)
+                lines.append(f"- `{factory.key}`: {desc} [{caps}]")
+            elif desc:
+                lines.append(f"- `{factory.key}`: {desc}")
+            else:
+                lines.append(f"- `{factory.key}`")
         return "\n".join(lines)
 
     # ── Factory method ────────────────────────────────────────────────────────
@@ -82,6 +97,7 @@ class ToolRegistry:
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
         memory_note_callback: Callable[[str], None] | None = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> ToolRegistry:
         """Assemble a registry from optional integration services plus all built-in tools."""
         factories: list[ToolFactory] = []
@@ -102,6 +118,10 @@ class ToolRegistry:
             PandasToolFactory(),
             ValueToolFactory(),
         ])
+
+        # get_tool_instructions: always available when a skill registry is provided.
+        if skill_registry is not None:
+            factories.append(GetToolInstructionsToolFactory(skill_registry))
 
         # Memory tool is always available (no data or service requirements).
         factories.append(MemoryToolFactory(memory_note_callback or (lambda _: None)))

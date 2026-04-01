@@ -4,6 +4,7 @@ import type {
   DBConnection,
   DBConnectionFormPayload,
   DBConnectionTestResult,
+  ExecutionGraph,
   PhaseEvent,
   PhoenixOverview,
   QueryResponse,
@@ -365,6 +366,7 @@ type StreamHandlers = {
   onPhaseToken?: (token: string) => void;
   onToolStart?: (event: ToolEvent) => void;
   onToolEnd?: (event: ToolEvent) => void;
+  onGraphUpdate?: (graph: ExecutionGraph) => void;
   onError: (error: string) => void;
 };
 
@@ -421,6 +423,10 @@ function consumeSseLine(
   }
   if (currentEvent === "tool_end" && typeof payload === "object" && payload !== null) {
     handlers.onToolEnd?.(payload as ToolEvent);
+    return;
+  }
+  if (currentEvent === "execution_graph" && typeof payload === "object" && payload !== null) {
+    handlers.onGraphUpdate?.(payload as ExecutionGraph);
     return;
   }
   if (currentEvent === "error") {

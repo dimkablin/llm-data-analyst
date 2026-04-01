@@ -26,18 +26,21 @@ _SQL_START = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
 # Questions that only ask for table names from the catalog (no analytic SQL / LLM).
 _CATALOG_TABLE_LIST_RE = re.compile(
     r"(?is)^\s*("
-    r"показать\s+все\s+таблицы(\s+в\s+(базе(\s+данных)?|бд))?|"
-    r"покажи\s+все\s+таблицы(\s+в\s+(базе(\s+данных)?|бд))?|"
-    r"покажи\s+таблицы\s*$|"
-    r"показать\s+таблицы\s*$|"
-    r"список\s+таблиц(\s+в\s+(базе(\s+данных)?|бд))?|"
+    r"показать\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"покажи\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"покажи\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
+    r"показать\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
+    r"покажи\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"показать\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"получи(ть)?\s+список\s+(всех\s+)?таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
     r"перечень\s+таблиц|"
     r"перечисли\s+таблицы|"
     r"какие\s+таблицы\s+(есть|в\s+(базе|бд|базе\s+данных))|"
     r"какие\s+есть\s+таблицы|"
     r"выведи\s+список\s+таблиц|"
     r"назови\s+таблицы|"
-    r"(show|list)\s+tables(\s+in\s+[\w\s]+)?|"
+    r"(show|list)\s+tables(\s+(in|from)\s+[\w\s]+)?|"
     r"(what|which)\s+tables\s+(are\s+there|exist|do\s+i\s+have|in\s+the\s+database)"
     r"|таблицы\.?\s*$|"
     r"tables\.?\s*$"
@@ -504,6 +507,20 @@ CANDIDATES:
         )
         return clean_sql(_message_text(resp.content))
 
+    @staticmethod
+    def _is_trivial_sql(sql: str) -> bool:
+        """Detect trivial queries that don't need LLM judge validation."""
+        s = re.sub(r"\s+", " ", sql.strip().upper())
+        # SELECT * / SELECT col, col ... FROM ... (no subqueries, no joins)
+        if re.match(r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET)\s+.*)?\s*;?\s*$", s):
+            # No subquery, no JOIN
+            if "JOIN" not in s and s.count("SELECT") == 1:
+                return True
+        # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...)
+        if re.match(r"^SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(", s) and s.count("SELECT") == 1:
+            return True
+        return False
+
     def _judge_sql(
         self,
         *,
@@ -548,7 +565,7 @@ SAMPLE_RESULT:
         *,
         question: str,
         candidate: TableCandidate,
-        max_attempts: int = 6,
+        max_attempts: int = 3,
         sample_rows: int = 5,
     ) -> dict[str, Any]:
         previous_sql: str | None = None
@@ -583,6 +600,15 @@ SAMPLE_RESULT:
             if err:
                 feedback = f"DB runtime error: {err}"
                 continue
+
+            # Skip judge for trivial queries that compiled and returned data.
+            if sample_res and self._is_trivial_sql(sql):
+                return {
+                    "ok": True,
+                    "sql": sql,
+                    "attempts": attempt,
+                    "judge_reason": "trivial_skip",
+                }
 
             ok, reason, fix_hint = self._judge_sql(
                 question=question,

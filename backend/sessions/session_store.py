@@ -10,7 +10,23 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
 
 
 _DF_CACHE_MAX_SIZE = 20
@@ -146,7 +162,7 @@ class SessionStore:
             "selected_skill_ids": list(state.selected_skill_ids or []),
         }
         self._state_path(state.session_id).write_text(
-            json.dumps(payload, ensure_ascii=False)
+            json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
         )
 
     def save_dataframe(self, session_id: str, df: pd.DataFrame) -> None:

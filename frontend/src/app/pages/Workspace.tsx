@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router";
 import { AnimatePresence, motion } from "motion/react";
 import { Navigation } from "../components/Navigation";
@@ -55,6 +55,7 @@ export function Workspace() {
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamGraph,
     error,
     lastQuery,
     hydrate,
@@ -83,11 +84,16 @@ export function Workspace() {
     settings.default_include_reasoning,
   ]);
 
+  const isStreamingRef = useRef(isStreaming);
+  isStreamingRef.current = isStreaming;
+  const streamingSessionIdRef = useRef(streamingSessionId);
+  streamingSessionIdRef.current = streamingSessionId;
+
   const applySessionState = useCallback(
     (session: SessionState, nextSessionId: string) => {
       hydrate(session, {
         preserveStreamingForSessionId:
-          isStreaming && streamingSessionId === nextSessionId ? nextSessionId : null,
+          isStreamingRef.current && streamingSessionIdRef.current === nextSessionId ? nextSessionId : null,
       });
       setSessionId(nextSessionId);
       setSessionTitle(session.title || "Новый чат");
@@ -116,7 +122,7 @@ export function Workspace() {
         setPinnedArtifactIds([]);
       }
     },
-    [hydrate, isStreaming, streamingSessionId, user?.id],
+    [hydrate, user?.id],
   );
 
   const loadSession = useCallback(
@@ -227,7 +233,7 @@ export function Workspace() {
     <div className="relative h-screen overflow-hidden bg-background font-sans text-foreground">
       <Navigation />
 
-      <div className="absolute inset-x-0 bottom-0 top-16 flex min-h-0 overflow-hidden px-6 pb-6 pt-5">
+      <div className="absolute inset-x-0 bottom-0 top-14 flex min-h-0 overflow-hidden px-2 pb-2 pt-2 sm:top-16 lg:px-6 lg:pb-6 lg:pt-5">
         <ResizablePanelGroup
           direction="horizontal"
           autoSaveId="workspace-layout-v2"
@@ -237,7 +243,7 @@ export function Workspace() {
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="h-full min-h-0 overflow-hidden rounded-[28px] border border-border/40 bg-card/70 p-8 pt-10 shadow-none dark:bg-card/10 dark:shadow-[0_16px_48px_rgba(0,0,0,0.14)]"
+              className="h-full min-h-0 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-3 pt-4 shadow-none lg:rounded-[28px] lg:p-8 lg:pt-10 dark:bg-card/10 dark:shadow-[0_16px_48px_rgba(0,0,0,0.14)]"
             >
               <DashboardPanel
                 sessionId={sessionId}
@@ -260,14 +266,14 @@ export function Workspace() {
 
           <ResizableHandle
             withHandle
-            className="mx-3 my-2 w-2 bg-transparent after:w-2 after:rounded-full after:bg-border/50 transition-colors hover:after:bg-primary/40 data-[resize-handle-state=drag]:after:bg-primary/70"
+            className="mx-1 my-2 w-2 bg-transparent after:w-2 after:rounded-full after:bg-border/50 transition-colors hover:after:bg-primary/40 data-[resize-handle-state=drag]:after:bg-primary/70 lg:mx-3"
           />
 
           <ResizablePanel defaultSize={38} minSize={26} maxSize={60}>
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden rounded-[28px] border border-border/40 bg-card/75 shadow-none backdrop-blur-3xl dark:bg-card/20 dark:shadow-2xl"
+              className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border/40 bg-card/75 shadow-none backdrop-blur-3xl lg:rounded-[28px] dark:bg-card/20 dark:shadow-2xl"
             >
               <ChatPanel
                 title={user.username}
@@ -276,6 +282,7 @@ export function Workspace() {
                 streamDraft={streamDraft}
                 streamReasoning={streamReasoning}
                 streamPhases={streamPhases}
+                streamGraph={streamGraph}
                 isStreaming={isStreaming}
                 error={error}
                 canRetry={Boolean(lastQuery)}

@@ -16,7 +16,8 @@ class PlotlyToolContractTests(unittest.TestCase):
                 "value": [10, 20, 15],
             }
         )
-        self.tool = PlotlyTool(self.df, execution_timeout_sec=5.0, tool_cache_size=0)
+        # 20s: Windows uses spawn (no fork), subprocess start takes ~3-4s per call.
+        self.tool = PlotlyTool(self.df, execution_timeout_sec=20.0, tool_cache_size=0)
 
     def test_invalid_string_result_is_rejected(self) -> None:
         code = """

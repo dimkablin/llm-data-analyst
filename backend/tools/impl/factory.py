@@ -10,12 +10,13 @@ a common base class — duck typing is enough.
 """
 from __future__ import annotations
 
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool
 
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
 from backend.tools.impl.forecast_tool import ForecastTool
+from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
@@ -148,6 +149,7 @@ class PlotlyToolFactory:
             execution_timeout_sec=plotly_timeout,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            shared_context=ctx.shared_context,
         )
 
 
@@ -163,6 +165,7 @@ class PandasToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            shared_context=ctx.shared_context,
         )
 
 
@@ -178,7 +181,23 @@ class ValueToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            shared_context=ctx.shared_context,
         )
+
+
+class GetToolInstructionsToolFactory:
+    """Always available; returns full skill markdown on demand."""
+
+    key = "get_tool_instructions"
+
+    def __init__(self, skill_registry: Any) -> None:
+        self._skill_registry = skill_registry
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+        return True
+
+    def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:  # noqa: ARG002
+        return GetToolInstructionsTool(self._skill_registry)
 
 
 class MemoryToolFactory:

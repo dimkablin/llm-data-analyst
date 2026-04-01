@@ -3,6 +3,7 @@ import builtins
 import copy
 import hashlib
 import multiprocessing
+import pickle
 import queue
 import re
 import traceback
@@ -81,6 +82,21 @@ def _normalize_tool_code(code: str) -> str:
     return text.strip()
 
 
+def _capture_shared_vars(local_scope: dict[str, Any]) -> dict[str, bytes]:
+    """Pickle variables with ``shared_`` prefix from exec scope."""
+    captured: dict[str, bytes] = {}
+    for key, value in local_scope.items():
+        if not key.startswith("shared_") or callable(value):
+            continue
+        try:
+            data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            if len(data) <= 50_000_000:
+                captured[key] = data
+        except Exception:
+            pass
+    return captured
+
+
 def _execute_tool_code(
     code: str,
     df: pd.DataFrame,
@@ -88,6 +104,8 @@ def _execute_tool_code(
     allowed_libs: tuple[str, ...],
     db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
     extra_scope: dict[str, Any] | None = None,
+    shared_vars: dict[str, Any] | None = None,
+    _shared_out: dict[str, bytes] | None = None,
 ) -> object:
     code = _normalize_tool_code(code)
     allowed = set(allowed_libs)
@@ -106,6 +124,8 @@ def _execute_tool_code(
         "db_connection": db_runtime_config,
         "db_runtime": db_runtime_config,
     }
+    if shared_vars:
+        local_scope.update(shared_vars)
     if extra_scope:
         local_scope.update(extra_scope)
     import pandas as _pd
@@ -128,6 +148,11 @@ def _execute_tool_code(
 
     compiled = compile(tree, filename="<tool_code>", mode="exec")
     exec(compiled, {"__builtins__": safe_builtins}, local_scope)
+
+    # Capture shared_* variables for cross-tool context.
+    if _shared_out is not None:
+        _shared_out.update(_capture_shared_vars(local_scope))
+
     if "tool_result" in local_scope:
         return local_scope.get("tool_result")
 
@@ -165,8 +190,10 @@ def _tool_worker(
     allowed_libs: tuple[str, ...],
     db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
     extra_scope: dict[str, Any] | None = None,
+    shared_vars_in: dict[str, Any] | None = None,
 ) -> None:
     try:
+        shared_out: dict[str, bytes] = {}
         result = _execute_tool_code(
             code,
             df,
@@ -174,8 +201,10 @@ def _tool_worker(
             allowed_libs,
             db_runtime_config,
             extra_scope,
+            shared_vars=shared_vars_in,
+            _shared_out=shared_out,
         )
-        result_queue.put({"ok": True, "result": result})
+        result_queue.put({"ok": True, "result": result, "shared_vars": shared_out})
     except Exception:
         result_queue.put(
             {"ok": False, "error": sanitize_error_text(traceback.format_exc())}
@@ -234,6 +263,8 @@ class BaseExecTool(BaseTool):
     )
     _dataset_signature: str = PrivateAttr(default="")
     _db_runtime_config: "RuntimeDBConnectionConfig | None" = PrivateAttr(default=None)
+    _shared_context: Any = PrivateAttr(default=None)
+    _last_shared_vars_out: list[str] = PrivateAttr(default_factory=list)
 
     def __init__(
         self,
@@ -242,6 +273,7 @@ class BaseExecTool(BaseTool):
         include_plotly: bool = False,
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
+        shared_context: Any | None = None,
     ) -> None:
         super().__init__()
         self._df = df
@@ -250,6 +282,7 @@ class BaseExecTool(BaseTool):
         self.tool_cache_size = max(0, int(tool_cache_size))
         self._dataset_signature = self._build_dataset_signature(df)
         self._db_runtime_config = db_runtime_config
+        self._shared_context = shared_context
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
@@ -516,6 +549,12 @@ class BaseExecTool(BaseTool):
         ctx = multiprocessing.get_context(self._pick_start_method())
         result_queue = ctx.Queue(maxsize=1)
         extra_scope = self.get_execution_scope()
+
+        # Inject shared variables from previous tool calls.
+        shared_vars_in: dict[str, Any] | None = None
+        if self._shared_context is not None and len(self._shared_context) > 0:
+            shared_vars_in = self._shared_context.inject_all()
+
         process = ctx.Process(
             target=_tool_worker,
             args=(
@@ -526,26 +565,35 @@ class BaseExecTool(BaseTool):
                 tuple(sorted(self.allowed_libs)),
                 self._db_runtime_config,
                 extra_scope,
+                shared_vars_in,
             ),
             daemon=True,
         )
         process.start()
-        process.join(timeout=self.execution_timeout_sec)
-
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1)
+        # Read from queue first — do NOT join before get().
+        # On Windows (spawn), put() on a large payload blocks when the pipe buffer fills,
+        # causing a deadlock if the main process is join()-ing instead of consuming.
+        try:
+            payload = result_queue.get(timeout=self.execution_timeout_sec)
+        except queue.Empty:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2)
             raise TimeoutError(
                 f"Превышен лимит выполнения инструмента ({self.execution_timeout_sec} сек)"
             )
-
-        try:
-            payload = result_queue.get_nowait()
-        except queue.Empty:
-            raise RuntimeError("Инструмент завершился без результата")
+        process.join(timeout=2)
 
         if not payload.get("ok", False):
             raise RuntimeError(payload.get("error", "Неизвестная ошибка выполнения"))
+
+        # Capture shared variables produced by this tool.
+        self._last_shared_vars_out = []
+        if self._shared_context is not None:
+            shared_out = payload.get("shared_vars") or {}
+            if shared_out:
+                captured = self._shared_context.capture_from_result(shared_out, self.name)
+                self._last_shared_vars_out = captured
 
         return payload.get("result")
 
@@ -618,6 +666,8 @@ class BaseExecTool(BaseTool):
             if artifact_hints:
                 payload.update(artifact_hints)
             payload[self.artifact_name] = normalized_result
+            if self._last_shared_vars_out:
+                payload["shared_vars_out"] = list(self._last_shared_vars_out)
             result = (text, payload)
             self._cache_set(cache_key, result)
             return result

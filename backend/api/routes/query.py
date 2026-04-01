@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+
+import numpy as np
+
+from backend.agent.graph_tracker import ExecutionGraphTracker
 import re
 import time
 from dataclasses import replace
@@ -215,6 +219,10 @@ def _build_stream_callbacks(
     tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop)
     progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
+    graph_tracker = ExecutionGraphTracker()
+    phase_collector.graph_tracker = graph_tracker
+    tool_collector.graph_tracker = graph_tracker
+    tool_collector._phase_collector_ref = phase_collector
     token_collector = _TokenStreamCallbackHandler(queue, loop)
     callbacks: list[Any] = [
         token_collector,
@@ -228,8 +236,23 @@ def _build_stream_callbacks(
     return callbacks, token_collector, tool_collector, progress_collector, phase_collector
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types."""
+
+    def default(self, obj: Any) -> Any:
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
+
+
 def _sse_event(event: str, data: Any) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
+    payload = json.dumps(data, ensure_ascii=False, cls=_NumpyEncoder)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -379,7 +402,7 @@ def _build_reasoning_trace(
             f"- Dataset attached: `{'yes' if has_dataset else 'no'}`",
             f"- Use history: `{'yes' if use_history else 'no'}`",
             f"- Tool calls: `{tool_collector.tool_calls}`",
-            f"- Duration: `{duration_ms} ms`",
+            f"- Duration: `{duration_ms / 1000:.1f}с`",
         ]
     )
     if unique_tools:
@@ -727,6 +750,10 @@ async def query_stream(
     tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop, execution_store=exec_store)
     progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
+    graph_tracker = ExecutionGraphTracker()
+    phase_collector.graph_tracker = graph_tracker
+    tool_collector.graph_tracker = graph_tracker
+    tool_collector._phase_collector_ref = phase_collector
     token_collector = _TokenStreamCallbackHandler(queue, loop)
     phase_token_handler = _PhaseTokenStreamHandler(queue, loop)
     callbacks = [token_collector, text_collector, tool_collector, progress_collector, phase_collector, phase_token_handler]
@@ -847,6 +874,10 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 force_reasoning=True,
             ).model_dump()
+            # Attach execution graph to final payload.
+            gt = phase_collector.graph_tracker
+            if gt is not None and gt:
+                final_payload["execution_graph"] = gt.snapshot()
             await queue.put(("final", final_payload))
         except SkillSelectionError as exc:
             await queue.put(_sse_event("error", {"detail": str(exc)}))
@@ -900,7 +931,10 @@ async def query_stream(
         emitted_progress_events = 0
         emitted_tool_events = 0
         emitted_phase_events = 0
+        emitted_graph_version = 0
+        _loop_count = 0
         while True:
+            _loop_count += 1
             emitted_any = False
 
             while emitted_phase_events < len(phase_collector.events):
@@ -908,6 +942,15 @@ async def query_stream(
                 emitted_phase_events += 1
                 await queue.put(("phase", current))
                 emitted_any = True
+
+            # Emit execution graph updates.
+            gt = phase_collector.graph_tracker
+            if gt is not None:
+                gv = phase_collector._graph_version
+                if gv > emitted_graph_version:
+                    emitted_graph_version = gv
+                    await queue.put(("execution_graph", gt.snapshot()))
+                    emitted_any = True
 
             if emit_progress:
                 while emitted_progress_events < len(progress_collector.events):
@@ -927,11 +970,14 @@ async def query_stream(
                         emitted_any = True
 
             if agent_finished.is_set():
-                if (
-                    emitted_tool_events >= len(tool_collector.events)
-                    and emitted_progress_events >= len(progress_collector.events)
-                    and emitted_phase_events >= len(phase_collector.events)
-                ):
+                all_drained = emitted_phase_events >= len(phase_collector.events)
+                if emit_progress:
+                    all_drained = all_drained and (
+                        emitted_tool_events >= len(tool_collector.events)
+                        and emitted_progress_events >= len(progress_collector.events)
+                    )
+                if all_drained:
+                    logger.warning("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
                     break
 
             if not emitted_any:

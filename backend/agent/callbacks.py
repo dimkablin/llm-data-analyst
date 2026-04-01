@@ -81,6 +81,9 @@ class ToolCollector(BaseCallbackHandler):
         self._queue = queue
         self._loop = loop
         self.execution_store: ExecutionStore = execution_store or ExecutionStore(session_id="")
+        self.graph_tracker: Any | None = None  # Set externally for graph visualization
+        self._step_index: int = 0
+        self._phase_collector_ref: Any | None = None  # For graph version bumps
 
     def _push_event(self, event_type: str, data: Any) -> None:
         """Push event directly to SSE queue if available."""
@@ -140,6 +143,10 @@ class ToolCollector(BaseCallbackHandler):
             "tool_name": event["tool_name"],
             "input_preview": event["input_preview"],
         })
+        if self.graph_tracker is not None:
+            self.graph_tracker.tool_start(event["tool_name"], self._step_index)
+            if self._phase_collector_ref is not None:
+                self._phase_collector_ref._graph_version += 1
 
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
@@ -239,6 +246,16 @@ class ToolCollector(BaseCallbackHandler):
             "status": event_payload["status"],
             "artifact_keys": event_payload.get("artifact_keys", []),
         })
+        if self.graph_tracker is not None:
+            self.graph_tracker.tool_end(
+                event_payload["tool_name"],
+                self._step_index,
+                status="done" if event_payload["status"] == "ok" else "error",
+                artifact_keys=event_payload.get("artifact_keys"),
+                shared_vars_out=payload.get("shared_vars_out"),
+            )
+            if self._phase_collector_ref is not None:
+                self._phase_collector_ref._graph_version += 1
 
     @staticmethod
     def _normalize_output(output: object) -> object:
@@ -307,6 +324,8 @@ class PhaseCollector(BaseCallbackHandler):
     def __init__(self) -> None:
         super().__init__()
         self.events: list[dict[str, Any]] = []
+        self.graph_tracker: Any | None = None
+        self._graph_version: int = 0
 
     def add_phase(
         self,

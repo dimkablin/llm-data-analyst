@@ -33,6 +33,8 @@ class Skill:
     triggers: tuple[str, ...] = ()
     python_examples: tuple[SkillExample, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    kind: str = "analytical"
+    tool_key: str | None = None
 
     @property
     def source_name(self) -> str:

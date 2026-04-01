@@ -186,6 +186,30 @@ export type PhaseEvent = {
   status?: string;
 };
 
+export type GraphNode = {
+  id: string;
+  type: "phase" | "tool";
+  label: string;
+  status: "pending" | "running" | "done" | "error";
+  duration_ms?: number;
+  tool_name?: string;
+  artifact_keys?: string[];
+  shared_vars_in?: string[];
+  shared_vars_out?: string[];
+  parent_id?: string;
+};
+
+export type GraphEdge = {
+  from: string;
+  to: string;
+  label?: string;
+};
+
+export type ExecutionGraph = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
+
 export type ChatMessage = {
   id: string;
   timestamp: string;
@@ -197,6 +221,7 @@ export type ChatMessage = {
   livePhases?: PhaseEvent[];
   metrics?: QueryMetrics;
   artifacts?: ArtifactPayload[];
+  executionGraph?: ExecutionGraph;
 };
 
 export type PhoenixOverviewStats = {

@@ -69,13 +69,14 @@ class SkillRegistry:
         if not self.skills_dir.is_dir():
             raise SkillValidationError(f"Skills path is not a directory: {self.skills_dir}")
 
-        for md_file in sorted(self.skills_dir.glob("*.md")):
-            skill = self._parse_skill_file(md_file)
-            if skill.skill_id in self._skills_by_id:
-                raise SkillValidationError(
-                    f"Duplicate skill id '{skill.skill_id}' in {md_file.name}."
-                )
-            self._skills_by_id[skill.skill_id] = skill
+        for pattern in ("*.md", "*/*.md"):
+            for md_file in sorted(self.skills_dir.glob(pattern)):
+                skill = self._parse_skill_file(md_file)
+                if skill.skill_id in self._skills_by_id:
+                    raise SkillValidationError(
+                        f"Duplicate skill id '{skill.skill_id}' in {md_file.name}."
+                    )
+                self._skills_by_id[skill.skill_id] = skill
         return self
 
     def list_skills(self) -> tuple[Skill, ...]:
@@ -151,6 +152,60 @@ class SkillRegistry:
             lines.append("")
         return "\n".join(lines).strip()
 
+    def resolve_tool_skills(
+        self,
+        available_tool_keys: set[str] | frozenset[str],
+    ) -> tuple[Skill, ...]:
+        """Return tool skills whose tool_key is in *available_tool_keys*."""
+        self.load()
+        return tuple(
+            skill
+            for skill in self._skills_by_id.values()
+            if skill.kind == "tool" and skill.tool_key in available_tool_keys
+        )
+
+    def build_tool_skills_prompt_block(
+        self,
+        available_tool_keys: set[str] | frozenset[str],
+    ) -> str:
+        """Build a prompt block with detailed instructions for available tools."""
+        tool_skills = self.resolve_tool_skills(available_tool_keys)
+        if not tool_skills:
+            return ""
+        lines = [
+            "## Инструкции к инструментам",
+            "",
+        ]
+        for skill in tool_skills:
+            lines.append(f"### {skill.name}")
+            lines.append(skill.instructions_markdown.strip())
+            lines.append("")
+        return "\n".join(lines).strip()
+
+    def build_tool_skills_brief_block(
+        self,
+        available_tool_keys: set[str] | frozenset[str],
+    ) -> str:
+        """One-liner per tool + hint to call get_tool_instructions (deferred style).
+
+        Keeps the base prompt compact.  The LLM fetches full instructions
+        on demand via get_tool_instructions(tool_name) before first use.
+        """
+        tool_skills = self.resolve_tool_skills(available_tool_keys)
+        if not tool_skills:
+            return ""
+        lines = [
+            "## Инструменты (краткое описание)",
+            "",
+            "IMPORTANT: перед первым использованием инструмента вызови "
+            "`get_tool_instructions(tool_name)` чтобы получить полные инструкции, "
+            "примеры кода и обязательные правила.",
+            "",
+        ]
+        for skill in tool_skills:
+            lines.append(f"- `{skill.tool_key}`: {skill.description}")
+        return "\n".join(lines).strip()
+
     def _parse_skill_file(self, path: Path) -> Skill:
         try:
             stat = path.stat()
@@ -197,10 +252,22 @@ class SkillRegistry:
             )
 
         triggers = _normalize_triggers(raw_frontmatter.get("triggers"))
+        kind = str(raw_frontmatter.get("kind", "analytical")).strip().lower()
+        if kind not in ("analytical", "tool"):
+            raise SkillValidationError(
+                f"Skill kind must be 'analytical' or 'tool', got '{kind}' in {path.name}."
+            )
+        tool_key = raw_frontmatter.get("tool_key")
+        if tool_key is not None:
+            tool_key = str(tool_key).strip()
+        if kind == "tool" and not tool_key:
+            raise SkillValidationError(
+                f"Skill with kind='tool' must have a non-empty 'tool_key' in {path.name}."
+            )
         metadata = {
             key: value
             for key, value in raw_frontmatter.items()
-            if key not in {"id", "name", "description", "triggers"}
+            if key not in {"id", "name", "description", "triggers", "kind", "tool_key"}
         }
         return Skill(
             skill_id=skill_id,
@@ -211,6 +278,8 @@ class SkillRegistry:
             triggers=triggers,
             python_examples=_extract_python_examples(body),
             metadata=metadata,
+            kind=kind,
+            tool_key=tool_key,
         )
 
 

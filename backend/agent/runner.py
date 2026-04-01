@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from datetime import date
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
@@ -44,7 +45,9 @@ from backend.integrations.forecast import ForecastIntegrationService
 from backend.observability.phoenix import record_llm_usage_on_active_span
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
+from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.tools.context import ToolBuildContext
+from backend.tools.shared_context import SharedContext
 from backend.tools.policy import (
     detect_data_access_mode,
     has_enabled_data_tools,
@@ -257,11 +260,13 @@ _LLM_UNAVAILABLE_USER_TEXT = (
 DEPTH_PROFILES: dict[str, dict[str, Any]] = {
     "light": {
         # Верхний лимит внешних итераций ReAct (модель останавливается раньше при успехе / оценке).
-        "max_steps_cap": 20,
-        "evaluate_enabled": True,
+        "max_steps_cap": 3,
+        "evaluate_enabled": False,
+        "inner_recursion_limit": 4,
+        "step_timeout_sec": 30,
         "think_instruction": (
-            "Стиль: лёгкий и быстрый.\n"
-            "Составь план из столько шагов, сколько реально нужно — без раздувания.\n"
+            "Стиль: лёгкий и быстрый. Максимум 1-2 шага.\n"
+            "Один tool call = один шаг. Для простых запросов — 1 шаг.\n"
             "Остановись мысленно на минимально достаточной цепочке инструментов.\n"
             "Предпочитай value_tool для коротких метрик, pandas_tool для компактных таблиц.\n"
             "Не подменяй внешние search-задачи value-артефактом, если search_tool доступен.\n"
@@ -331,6 +336,8 @@ class AgentGraphState(TypedDict, total=False):
     tools: list
     capability_context: dict[str, Any]
     llm_unreachable: bool
+    shared_context: Any
+    graph_tracker: Any
 
     response: AgentResponse
 
@@ -358,16 +365,17 @@ class AgentRunner:
         self.user_memory: UserMemory = user_memory or UserMemory(profile="", notes="")
         # Buffer for notes appended by the memory tool during this request cycle.
         self._session_memory_buffer: list[str] = []
+        self.skill_registry = skill_registry or SkillRegistry.from_path(self.settings.skills_dir)
+        self.skill_registry.load()
         self._tool_registry = ToolRegistry.from_services(
             search_service=search_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
             memory_note_callback=self._session_memory_buffer.append,
+            skill_registry=self.skill_registry,
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
-        self.skill_registry = skill_registry or SkillRegistry.from_path(self.settings.skills_dir)
-        self.skill_registry.load()
         self._graph = self._build_query_graph()
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
@@ -388,7 +396,25 @@ class AgentRunner:
         max_steps = min(user_cap, depth_cap)
         if self._is_insight_request(prompt):
             max_steps = min(depth_cap, max_steps + 2)
+        # Visualization requests may need extra steps (data + chart).
+        if any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
+            max_steps = max(max_steps, min(user_cap, 5))
         return max_steps
+
+    def _try_fast_plan(self, prompt: str, tool_keys: list[str]) -> str | None:
+        """Return a hardcoded plan for trivial queries, skipping the LLM think call."""
+        if self.settings.agent_analysis_depth != "light":
+            return None
+        lower = prompt.strip().lower()
+        # "Show data/table" patterns → single pandas_tool step
+        _show_data_tokens = (
+            "покажи таблиц", "покажи данн", "показать таблиц", "показать данн",
+            "выведи таблиц", "выведи данн", "таблица из датасет", "данные из датасет",
+            "что в датасет", "структура датасет", "head", "первые строки",
+        )
+        if "pandas_tool" in tool_keys and any(t in lower for t in _show_data_tokens):
+            return "1. `pandas_tool` → показать таблицу из датасета."
+        return None
 
     @staticmethod
     def _has_confirmed_analysis_output(response: AgentResponse | None) -> bool:
@@ -443,10 +469,8 @@ class AgentRunner:
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
     ) -> ChatOpenAI:
-        enable_thinking = self.settings.llm_enable_thinking and (
-            include_reasoning or role == "plan"
-        )
-        if role == "evaluate":
+        enable_thinking = self.settings.llm_enable_thinking and include_reasoning
+        if role in ("evaluate", "plan", "tool"):
             enable_thinking = False
 
         # Qwen3.5: thinking -> temp=1.0, top_p=0.95; non-thinking -> configured, top_p=0.8
@@ -464,7 +488,9 @@ class AgentRunner:
             )
             top_p = 0.8
 
-        presence_penalty = 0.0 if role == "evaluate" else self.settings.llm_presence_penalty
+        # Disable presence_penalty for tool and evaluate roles: high values
+        # can suppress tool-calling tokens on some models (e.g. Qwen3).
+        presence_penalty = 0.0 if role in ("evaluate", "tool") else self.settings.llm_presence_penalty
 
         max_tokens = max_tokens_override or self.settings.llm_max_tokens_default
         if max_tokens_override is None and include_reasoning:
@@ -473,7 +499,9 @@ class AgentRunner:
             max_tokens = self.settings.agent_evaluate_max_tokens
 
         extra_body: dict[str, Any] = {}
-        if self.settings.llm_chat_template_kwargs_enabled:
+        # Skip chat_template_kwargs for tool role: it can interfere with
+        # tool-calling reliability on some models (e.g. Qwen3 via Ollama).
+        if self.settings.llm_chat_template_kwargs_enabled and role != "tool":
             extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if self.settings.llm_top_k > 0:
             extra_body["top_k"] = self.settings.llm_top_k
@@ -1110,18 +1138,16 @@ class AgentRunner:
         )
 
     _THINK_SYSTEM_PROMPT_BASE = (
-        "Ты — аналитический агент. Перед выполнением задачи составь краткий план.\n\n"
-        "Ответь на следующие вопросы:\n"
-        "1) Что хочет пользователь? (тип задачи: метрика / таблица / график / поиск / комплекс)\n"
-        "2) Какие инструменты использовать и в каком порядке? (выбирай ТОЛЬКО из доступных ниже)\n"
-        "3) Конкретные параметры: столбцы, фильтры, агрегации, временной диапазон.\n"
-        "4) Как будет выглядеть финальный ответ (что покажем, что скажем)?\n\n"
-        "Правила:\n"
-        "- Используй только реально доступные в runtime tools (см. секцию ДОСТУПНЫЕ ИНСТРУМЕНТЫ).\n"
-        "- Если нужный инструмент недоступен, не обещай его использование — честно опиши ограничение.\n"
-        "- Не путай `value_tool` (Python-вычисление по данным) с поиском в интернете.\n"
-        "- Для свежей информации / новостей → search_tool (при доступности).\n"
-        "- Если пользователь просит график / диаграмму — в плане ОБЯЗАТЕЛЬНО включи `plotly_tool`.\n"
+        "Ты — планировщик аналитического агента. Составь КРАТКИЙ план действий.\n\n"
+        "## Формат плана\n"
+        "Для каждого шага укажи: номер, tool, что получить.\n"
+        "Пример: 1. `pandas_tool` → показать первые строки таблицы.\n\n"
+        "## Правила\n"
+        "- Используй ТОЛЬКО инструменты из [ДОСТУПНЫЕ ИНСТРУМЕНТЫ].\n"
+        "- Минимум шагов: не добавляй лишние.\n"
+        "- Для простых запросов (показать данные, структура) → 1 шаг.\n"
+        "- Для графиков → обязательно `plotly_tool`.\n"
+        "- Не путай `value_tool` (метрики из df) с `search_tool` (веб-поиск).\n"
     )
 
     def _think_system_prompt(
@@ -1129,15 +1155,25 @@ class AgentRunner:
         capability_context: dict[str, Any] | None = None,
         selected_skill_ids: list[str] | None = None,
         tool_descriptions: str = "",
+        available_tool_keys: set[str] | None = None,
     ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
+        today = date.today().strftime("%Y-%m-%d")
         prompt = (
             self._THINK_SYSTEM_PROMPT_BASE
-            + f"\n[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
+            + f"\n[СЕГОДНЯ: {today}]\n"
+            + f"[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
         )
         if tool_descriptions:
             prompt += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{tool_descriptions}\n"
+        # Auto-selected tool skill instructions
+        if available_tool_keys:
+            tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
+                available_tool_keys
+            )
+            if tool_skills_block:
+                prompt += f"\n{tool_skills_block}\n"
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
         if capability_block:
             prompt += f"\n{capability_block}\n"
@@ -1157,14 +1193,14 @@ class AgentRunner:
         "Текст ответа: {response_text}\n\n"
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
-        "Критерии оценки (PASS если выполнено хотя бы одно):\n"
+        "Критерии оценки (pass=true если выполнено хотя бы одно:\n"
         "1. Ответ прямо и по существу отвечает на вопрос пользователя.\n"
         "2. Для простых вопросов (метаданные, структура, количество строк/столбцов) "
         "достаточно корректного текстового ответа без артефактов.\n"
         "3. Для аналитических вопросов ответ подкреплён артефактами (table/plot/value) "
         "или содержит конкретные числа/факты из данных.\n"
         "4. Если capability недоступен или вернул ошибку — честное объяснение ограничения допустимо.\n"
-        "FAIL только если: ответ пустой, полностью нерелевантен вопросу, "
+        "pass=false только если: ответ пустой, полностью нерелевантен вопросу, "
         "содержит только технические ошибки, или LLM придумала данные не вызвав инструмент.\n"
         "Только JSON, без пояснений."
     )
@@ -1267,6 +1303,7 @@ class AgentRunner:
         step_index: int,
         max_steps: int,
         capability_context: dict[str, Any] | None = None,
+        shared_context: SharedContext | None = None,
     ) -> str:
         source_mode = str((capability_context or {}).get("source_mode", "")).strip() or "dataset"
         tool_descriptions = str((capability_context or {}).get("tool_descriptions", "")).strip()
@@ -1277,8 +1314,10 @@ class AgentRunner:
         ]
         tool_list = ", ".join(f"`{item}`" for item in available_tools) if available_tools else "нет"
 
+        today = date.today().strftime("%Y-%m-%d")
         blocks = [
             execution_agent_prompt.strip(),
+            f"Сегодня: {today}.",
             f"Режим данных: `{source_mode}`.",
             f"Доступные tools в этом запуске: {tool_list}.",
         ]
@@ -1300,6 +1339,19 @@ class AgentRunner:
                 "Запрошена визуализация: сначала построй хотя бы один график через `plotly_tool`, "
                 "потом формируй итоговый ответ."
             )
+
+        # Shared variables from previous tool calls.
+        if shared_context and shared_context:
+            shared_block = shared_context.describe_for_prompt()
+            if shared_block:
+                blocks.append(shared_block)
+
+        # Auto-selected tool skill instructions
+        tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
+            set(available_tools)
+        )
+        if tool_skills_block:
+            blocks.append(tool_skills_block)
 
         return "\n".join(blocks).strip()
 
@@ -1803,6 +1855,15 @@ class AgentRunner:
                 max_steps=max_steps,
                 status=status,
             )
+            # Update graph tracker.
+            gt = getattr(collector, "graph_tracker", None)
+            if gt is not None:
+                si = step_index if isinstance(step_index, int) else 0
+                if status == "streaming":
+                    gt.phase_start(phase, si)
+                elif status in ("done", "pass", "fail", "error"):
+                    gt.phase_end(phase, si, status="done" if status in ("done", "pass") else "error")
+                collector._graph_version += 1
 
     @staticmethod
     def _silent_callbacks(callbacks: list) -> list:
@@ -1928,25 +1989,39 @@ class AgentRunner:
         if skills_block:
             act_prefix = f"{act_prefix}\n\n{skills_block}"
 
+        depth_inner_limit = self._depth_profile.get("inner_recursion_limit")
+        effective_inner_limit = (
+            depth_inner_limit
+            if isinstance(depth_inner_limit, int)
+            else self.settings.agent_inner_recursion_limit
+        )
         agent = create_pandas_dataframe_agent(
             llm=llm,
             df=df.copy(),
             tools=tools,
             verbose=False,
             return_intermediate_steps=True,
-            max_iterations=max(1, self.settings.agent_inner_recursion_limit),
-            max_execution_time=float(self.settings.agent_step_timeout_sec),
+            max_iterations=max(1, effective_inner_limit),
+            max_execution_time=float(
+                self._depth_profile.get("step_timeout_sec", self.settings.agent_step_timeout_sec)
+            ),
             prefix=act_prefix,
             suffix=db_suffix or None,
             include_df_in_prompt=True,
-            number_of_head_rows=max(1, self.settings.agent_prompt_head_rows),
-            data_info_max_columns=max(6, self.settings.agent_prompt_max_columns),
+            number_of_head_rows=min(2, max(1, self.settings.agent_prompt_head_rows)),
+            data_info_max_columns=min(10, max(6, self.settings.agent_prompt_max_columns)),
         )
 
         prompt_messages = self._build_messages(prompt, history, use_history)
+        # Use depth-profile override if available, else global setting.
+        # Minimum 4 to allow at least: LLM call → tool → LLM response.
+        recursion_limit = max(
+            4,
+            min(24, effective_inner_limit * 2 + 2),
+        )
         runtime_config: dict[str, Any] = {
             "callbacks": callbacks,
-            "recursion_limit": max(8, min(24, self.settings.agent_inner_recursion_limit)),
+            "recursion_limit": recursion_limit,
         }
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -2254,6 +2329,7 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
+        shared_ctx = state.get("shared_context") or SharedContext()
         _ctx = ToolBuildContext(
             settings=self.settings,
             allowed_tool_keys=self.allowed_tool_keys,
@@ -2261,6 +2337,7 @@ class AgentRunner:
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
+            shared_context=shared_ctx,
         )
         tools: list = self._tool_registry.build_tools(_ctx)
         tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
@@ -2270,8 +2347,12 @@ class AgentRunner:
         data_context = ""
         if df is not None:
             try:
-                data_context = _get_data_info(
-                    df, max_columns=max(6, self.settings.agent_prompt_max_columns)
+                # Compact data info for planning — full stats go to act phase
+                cols = list(df.columns)
+                dtypes = {c: str(df[c].dtype) for c in cols[:20]}
+                data_context = (
+                    f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов.\n"
+                    f"Столбцы и типы: {dtypes}"
                 )
             except Exception:
                 data_context = f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
@@ -2304,6 +2385,9 @@ class AgentRunner:
                 "Скорректируй план с учётом этой обратной связи."
             )
 
+        available_tool_keys = {t.name for t in tools} if tools else set()
+        # NOTE: tool skills are NOT injected into think phase to keep prompt small.
+        # They are injected into execution phase (_build_execution_system_prompt).
         think_messages = [
             SystemMessage(content=self._think_system_prompt(
                 capability_context,
@@ -2315,11 +2399,12 @@ class AgentRunner:
 
         llm = self._build_llm(
             role="plan",
-            include_reasoning=True,
+            include_reasoning=False,
             timeout_sec=min(
                 self.settings.agent_step_timeout_sec,
                 self.settings.backend_query_timeout_sec,
             ),
+            max_tokens_override=256,
         )
 
         current_step = int(state.get("step_index", 0))
@@ -2333,30 +2418,34 @@ class AgentRunner:
             status="streaming",
         )
 
-        silent_cbs = self._silent_callbacks(callbacks)
-        runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
-        metadata = self._build_runtime_metadata(state.get("trace_context"))
-        if metadata:
-            runtime_config["metadata"] = metadata
-
+        # Fast-path: skip LLM plan for trivial queries in light depth.
+        fast_plan = self._try_fast_plan(prompt, tool_keys)
         plan = ""
         think_llm_failed = False
-        try:
-            response = llm.invoke(think_messages, config=runtime_config)
-            record_llm_usage_on_active_span(
-                response,
-                fallback_model=self.settings.llm_model,
-                fallback_provider=self.settings.llm_provider,
-            )
-            raw_content = self._content_to_text(getattr(response, "content", ""))
-            plan = strip_thinking(raw_content).strip()
-            reasoning = extract_thinking(raw_content)
-            if not plan:
-                plan = reasoning or "Анализировать данные по запросу пользователя."
-        except Exception as exc:
-            _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
-            plan = "Ошибка при планировании. Выполнить прямой анализ данных."
-            think_llm_failed = True
+        if fast_plan:
+            plan = fast_plan
+        else:
+            silent_cbs = self._silent_callbacks(callbacks)
+            runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
+            metadata = self._build_runtime_metadata(state.get("trace_context"))
+            if metadata:
+                runtime_config["metadata"] = metadata
+            try:
+                response = llm.invoke(think_messages, config=runtime_config)
+                record_llm_usage_on_active_span(
+                    response,
+                    fallback_model=self.settings.llm_model,
+                    fallback_provider=self.settings.llm_provider,
+                )
+                raw_content = self._content_to_text(getattr(response, "content", ""))
+                plan = strip_thinking(raw_content).strip()
+                reasoning = extract_thinking(raw_content)
+                if not plan:
+                    plan = reasoning or "Анализировать данные по запросу пользователя."
+            except Exception as exc:
+                _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
+                plan = "Ошибка при планировании. Выполнить прямой анализ данных."
+                think_llm_failed = True
 
         self._emit_phase_event(
             callbacks,
@@ -2389,6 +2478,7 @@ class AgentRunner:
         if first_run:
             result["tools"] = tools
             result["step_index"] = 0
+            result["shared_context"] = shared_ctx
         result["capability_context"] = capability_context
         return result
 
@@ -2409,6 +2499,7 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
+        shared_ctx = state.get("shared_context")
         execution_system_prompt = self._build_execution_system_prompt(
             user_prompt=state.get("prompt", ""),
             plan=plan,
@@ -2416,6 +2507,7 @@ class AgentRunner:
             step_index=step_index,
             max_steps=max_steps,
             capability_context=state.get("capability_context"),
+            shared_context=shared_ctx,
         )
 
         self._emit_phase_event(
@@ -2537,12 +2629,18 @@ class AgentRunner:
                 response.final_text = grounded_summary
 
         if not response.final_text.strip():
-            reason = "Пустой финальный ответ"
-            self._emit_phase_event(
-                callbacks, phase="evaluate", title="Оценка результата",
-                content=reason, step_index=step_index, max_steps=max_steps, status="fail",
-            )
-            return {"eval_passed": False, "eval_reason": reason}
+            # If confirmed artifacts exist, treat empty text as acceptable — finalize will generate summary.
+            if has_confirmed_output:
+                response.final_text = self._artifact_grounded_summary(
+                    prompt, response.artifacts, base_text=response.final_text,
+                ) or "Результат получен."
+            else:
+                reason = "Пустой финальный ответ"
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
 
         requires_plot = (
             any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS)
@@ -2558,7 +2656,18 @@ class AgentRunner:
                     content=reason, step_index=step_index, max_steps=max_steps, status="done",
                 )
             else:
-                reason = "Запрошена визуализация, но plot-артефакт не построен"
+                reason = "Запрошена визуализация, но plot-артефакт не построен. ОБЯЗАТЕЛЬНО вызови `plotly_tool` с Python-кодом для построения графика."
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
+
+        # If no tools were called at all and plan expected tool usage, retry.
+        if response.tool_calls == 0 and not has_confirmed_output:
+            plan = state.get("plan", "")
+            if plan and any(t in plan for t in ("_tool", "tool_")):
+                reason = "План предполагал вызов инструмента, но ни один не был вызван. ОБЯЗАТЕЛЬНО вызови инструмент из плана."
                 self._emit_phase_event(
                     callbacks, phase="evaluate", title="Оценка результата",
                     content=reason, step_index=step_index, max_steps=max_steps, status="fail",
@@ -2604,7 +2713,7 @@ class AgentRunner:
                 runtime_config["metadata"] = metadata
 
             llm_response = llm.invoke(
-                [SystemMessage(content="Ты оцениваешь качество аналитических ответов. Отвечай только JSON."),
+                [SystemMessage(content="Ты оцениваешь, насколько ответ агента соответствует запросу пользователя. Отвечай только JSON."),
                  HumanMessage(content=evaluate_prompt)],
                 config=runtime_config,
             )
@@ -2641,11 +2750,21 @@ class AgentRunner:
         return {"eval_passed": passed, "eval_reason": reason}
 
     def _decide_node(self, state: AgentGraphState) -> dict[str, Any]:
+        import logging
+        _log = logging.getLogger("agent.decide")
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
         response = state.get("response")
         eval_passed = bool(state.get("eval_passed", False))
         eval_reason = state.get("eval_reason", "")
+        _log.warning(
+            "DECIDE step=%d max=%d eval_passed=%s has_response=%s final_text=%s artifacts=%s tool_names=%s",
+            step_index, max_steps, eval_passed,
+            response is not None,
+            bool(response and response.final_text.strip()) if response else False,
+            len(response.artifacts) if response and response.artifacts else 0,
+            response.tool_names if response else [],
+        )
         callbacks = state.get("callbacks", [])
 
         if response is None:
@@ -2655,6 +2774,17 @@ class AgentRunner:
             return {"done": True, "stop_reason": "llm_unreachable"}
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
+
+        # Fast exit: if we have confirmed artifacts, stop even without text
+        # (finalize_node will generate summary text from artifacts).
+        if has_confirmed_output and eval_passed:
+            self._emit_progress_event(
+                callbacks, phase="decide",
+                title="Завершаю цикл ReAct",
+                details="Артефакты получены, перехожу к финализации.",
+                step_index=step_index, max_steps=max_steps,
+            )
+            return {"done": True, "stop_reason": "ready"}
 
         if eval_passed and response.final_text.strip():
             self._emit_progress_event(
@@ -2687,8 +2817,8 @@ class AgentRunner:
             )
             return {"done": True, "stop_reason": "act_recursion_limit"}
 
-        # If no tools were called on a retry step, LLM is stuck — stop looping.
-        if step_index > 1 and response.tool_calls == 0:
+        # If no tools were called for 2+ consecutive retry steps, LLM is stuck — stop looping.
+        if step_index > 2 and response.tool_calls == 0:
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Остановка: инструменты не вызваны",
@@ -2978,6 +3108,7 @@ class AgentRunner:
                 }
             )
         except Exception:
+            logger.exception("graph.invoke failed for prompt=%r", prompt[:60])
             fallback = AgentResponse(
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,
