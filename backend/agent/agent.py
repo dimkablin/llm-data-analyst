@@ -7,7 +7,7 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from backend.agent.agent_callback import ReasoningCallbackHandler, ToolCallbackHandler
-from backend.agent.artifact import Artifact, artifact_factory
+from backend.artifacts.artifact import Artifact, artifact_factory
 from backend.agent.pandas_agent import (
     create_pandas_dataframe_agent,
     extract_agent_output_text,

@@ -10,23 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
-
-class _NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy types."""
-
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
+from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
 
 
 _DF_CACHE_MAX_SIZE = 20

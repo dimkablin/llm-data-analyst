@@ -120,6 +120,7 @@ class SessionSandbox:
         self._storage_dir: Path | None = None
         self._bound_df: pd.DataFrame | None = None
         self._bound_db_config: Any = None
+        self._persisted_entry_count: int = 0
         self._init_scope()
 
     # ------ bootstrap ------------------------------------------------
@@ -190,6 +191,24 @@ class SessionSandbox:
                     ),
                 ))
 
+        self._persist_notebook()
+
+    def log_code_entry(
+        self,
+        *,
+        tool_name: str,
+        code: str,
+        result_summary: str,
+    ) -> None:
+        """Append a code entry to the notebook from an external tool (e.g. SQLTableTool)."""
+        with self._lock:
+            self._notebook.append(NotebookEntry(
+                timestamp=_now_iso(),
+                entry_type="code",
+                tool_name=tool_name,
+                code=code[:500],
+                result_summary=result_summary[:200],
+            ))
         self._persist_notebook()
 
     # ------ execution ------------------------------------------------
@@ -305,20 +324,23 @@ class SessionSandbox:
         Injected into the LLM system prompt so it knows what's available.
         """
         with self._lock:
-            scope_snapshot = dict(self._scope)
+            # Build descriptions under lock without copying full scope dict.
+            var_descriptions: list[tuple[str, str]] = sorted(
+                (name, _describe_value(val))
+                for name, val in self._scope.items()
+                if name not in _INFRA_KEYS
+                and not name.startswith("_")
+                and not callable(val)
+                and not isinstance(val, type)
+            )
             recent = list(self._notebook[-8:])
 
         parts: list[str] = []
 
         # ── Variables ──
         var_lines: list[str] = []
-        for name in sorted(scope_snapshot):
-            if name in _INFRA_KEYS or name.startswith("_"):
-                continue
-            val = scope_snapshot[name]
-            if callable(val) or isinstance(val, type):
-                continue
-            var_lines.append(f"  - `{name}`: {_describe_value(val)}")
+        for name, description in var_descriptions:
+            var_lines.append(f"  - `{name}`: {description}")
 
         if var_lines:
             parts.append(
@@ -376,13 +398,17 @@ class SessionSandbox:
         return "\n".join(lines)
 
     def _persist_notebook(self) -> None:
-        """Save notebook.md to storage directory if configured."""
+        """Save notebook.md to storage directory if configured. No-op if nothing changed."""
         if self._storage_dir is None:
+            return
+        current_count = len(self._notebook)
+        if current_count <= self._persisted_entry_count:
             return
         try:
             self._storage_dir.mkdir(parents=True, exist_ok=True)
             md = self.render_notebook_md()
             (self._storage_dir / "notebook.md").write_text(md, encoding="utf-8")
+            self._persisted_entry_count = current_count
         except Exception:
             logger.warning("Failed to persist notebook.md", exc_info=True)
 
@@ -394,6 +420,7 @@ class SessionSandbox:
             self._scope.clear()
             self._notebook.clear()
             self._total_executions = 0
+            self._persisted_entry_count = 0
             self._init_scope()
 
     @property

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import unittest
 
-import numpy as np
 import pandas as pd
 
 from backend.tools.sandbox import SessionSandbox

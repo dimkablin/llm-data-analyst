@@ -9,7 +9,7 @@ from backend.artifacts.artifact import (
     UserArtifact,
     artifact_factory,
 )
-from backend.artifacts.artifact_meta import *
+from backend.artifacts.artifact_meta import *  # noqa: F403
 from backend.artifacts.execution import (
     ExecArtifactType,
     ExecArtifactSchema,

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from typing import Callable
 
-from backend.tools.catalog import ALL_TOOL_SPECS
+from backend.tools.catalog import ALL_TOOL_SPECS, ToolCatalogSpec
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
     ForecastToolFactory,
@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 _TOOL_DESCRIPTIONS_RU: dict[str, str] = {
     spec.tool_key: spec.description_ru for spec in ALL_TOOL_SPECS
 }
-
-from backend.tools.catalog import ToolCatalogSpec
 
 _TOOL_SPECS_BY_KEY: dict[str, ToolCatalogSpec] = {
     spec.tool_key: spec for spec in ALL_TOOL_SPECS

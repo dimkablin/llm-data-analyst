@@ -30,6 +30,13 @@ class ExecArtifactType(str, Enum):
     FORECAST = "forecast"
 
 
+def artifact_type_label(artifact_type_val: Any) -> str:
+    """Return the string label for an artifact_type field (enum value or raw string)."""
+    return str(
+        artifact_type_val.value if isinstance(artifact_type_val, ExecArtifactType) else artifact_type_val
+    ).strip().lower()
+
+
 @dataclass(frozen=False)
 class ExecArtifactSchema:
     """Lightweight schema descriptor for tabular artifacts."""
@@ -91,8 +98,10 @@ class ExecutionArtifact:
             return json.dumps(self.data, sort_keys=True, default=str)
         if self.artifact_type == ExecArtifactType.PLOT:
             fig = self.data
-            if hasattr(fig, "to_json"):
-                return fig.to_json()
+            # Avoid expensive full serialization; use structural fingerprint instead.
+            traces = len(getattr(fig, "data", ())) if hasattr(fig, "data") else 0
+            layout_title = str(getattr(getattr(fig, "layout", None), "title", ""))
+            return f"plot:{type(fig).__name__}:{traces}:{layout_title}"
         return str(self.data)
 
     def build_schema(self) -> ExecArtifactSchema | None:

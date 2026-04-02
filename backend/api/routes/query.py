@@ -4,9 +4,9 @@ import asyncio
 import json
 import logging
 
-import numpy as np
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
+from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
 import re
 import time
 from dataclasses import replace
@@ -213,10 +213,18 @@ def _build_stream_callbacks(
     queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
     session_source: dict[str, Any],
-    include_reasoning: bool,
-) -> tuple[list[Any], Any, Any, Any, Any]:
+    exec_store: Any = None,
+    include_reasoning: bool = True,
+) -> tuple[list[Any], Any, Any, Any, Any, Any]:
+    """Build the full callback stack for a streaming request.
+
+    Returns: (callbacks, token_collector, tool_collector, progress_collector,
+               phase_collector, graph_tracker)
+    """
     text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop)
+    tool_collector = _ToolCollector(
+        source_context=session_source, queue=queue, loop=loop, execution_store=exec_store
+    )
     progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
     graph_tracker = ExecutionGraphTracker()
@@ -233,22 +241,7 @@ def _build_stream_callbacks(
     ]
     if include_reasoning:
         callbacks.append(_PhaseTokenStreamHandler(queue, loop))
-    return callbacks, token_collector, tool_collector, progress_collector, phase_collector
-
-
-class _NumpyEncoder(json.JSONEncoder):
-    """JSON encoder that handles numpy types."""
-
-    def default(self, obj: Any) -> Any:
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
+    return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
 
 
 def _sse_event(event: str, data: Any) -> str:
@@ -746,17 +739,14 @@ async def query_stream(
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
-    text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source, queue=queue, loop=loop, execution_store=exec_store)
-    progress_collector = _AgentProgressCollector()
-    phase_collector = _PhaseCollector()
-    graph_tracker = ExecutionGraphTracker()
-    phase_collector.graph_tracker = graph_tracker
-    tool_collector.graph_tracker = graph_tracker
-    tool_collector._phase_collector_ref = phase_collector
-    token_collector = _TokenStreamCallbackHandler(queue, loop)
-    phase_token_handler = _PhaseTokenStreamHandler(queue, loop)
-    callbacks = [token_collector, text_collector, tool_collector, progress_collector, phase_collector, phase_token_handler]
+    callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker = (
+        _build_stream_callbacks(
+            queue=queue,
+            loop=loop,
+            session_source=session_source,
+            exec_store=exec_store,
+        )
+    )
     started_at = time.perf_counter()
     _auth_db.touch_session(session_id)
     trace_context = _build_trace_context_fn(

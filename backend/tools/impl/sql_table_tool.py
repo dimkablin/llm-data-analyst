@@ -87,7 +87,6 @@ class SQLTableTool(BaseTool):
             return
         try:
             import pandas as pd
-            from backend.tools.sandbox import NotebookEntry, _now_iso
 
             items = payload.get("items", {})
             parts = []
@@ -96,19 +95,16 @@ class SQLTableTool(BaseTool):
                     parts.append(f"{name}: {data.shape[0]}x{data.shape[1]}")
                 else:
                     parts.append(str(name))
-            result_summary = (", ".join(parts) or "—")[:200]
+            result_summary = ", ".join(parts) or "—"
 
             recipe = payload.get("recipe")
             sql = recipe.get("sql", "") if isinstance(recipe, dict) else ""
-            code = (f"-- {question}\n{sql}" if sql else f"-- {question}")[:500]
+            code = f"-- {question}\n{sql}" if sql else f"-- {question}"
 
-            self._sandbox._notebook.append(NotebookEntry(
-                timestamp=_now_iso(),
-                entry_type="code",
+            self._sandbox.log_code_entry(
                 tool_name="sql_table_tool",
                 code=code,
                 result_summary=result_summary,
-            ))
-            self._sandbox._persist_notebook()
+            )
         except Exception:
             pass

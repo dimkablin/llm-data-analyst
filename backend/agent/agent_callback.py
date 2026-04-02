@@ -4,7 +4,7 @@ from typing import Callable
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 
-from backend.agent.artifact import Artifact, artifact_factory
+from backend.artifacts.artifact import Artifact, artifact_factory
 
 
 class ReasoningCallbackHandler(BaseCallbackHandler):

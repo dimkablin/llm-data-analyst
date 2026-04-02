@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException

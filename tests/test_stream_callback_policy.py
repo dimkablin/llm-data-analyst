@@ -70,7 +70,7 @@ class StreamCallbackPolicyTests(unittest.TestCase):
         self.loop.close()
 
     def test_build_stream_callbacks_excludes_phase_token_handler_without_reasoning(self) -> None:
-        callbacks, token_collector, tool_collector, progress_collector, phase_collector = (
+        callbacks, token_collector, tool_collector, progress_collector, phase_collector, _ = (
             query._build_stream_callbacks(
                 queue=asyncio.Queue(),
                 loop=self.loop,

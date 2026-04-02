@@ -25,7 +25,6 @@ from backend.agent.pandas_agent import (
 )
 from backend.agent.prompts import (
     execution_agent_prompt,
-    get_detailed_data_info as _get_data_info,
 )
 from backend.skills import SkillRegistry
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
@@ -46,7 +45,6 @@ from backend.integrations.forecast import ForecastIntegrationService
 from backend.observability.phoenix import record_llm_usage_on_active_span
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
-from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.tools.context import ToolBuildContext
 from backend.tools.sandbox_manager import SandboxManager
 from backend.tools.policy import (
@@ -57,6 +55,7 @@ from backend.tools.policy import (
     supports_artifact_optional_output,
 )
 from backend.tools.registry import ToolRegistry
+from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
 
 logger = logging.getLogger(__name__)
@@ -1405,8 +1404,7 @@ class AgentRunner:
     def _extract_value_payload(artifacts: list) -> dict[str, Any]:
         merged: dict[str, Any] = {}
         for artifact in artifacts:
-            raw_type = getattr(artifact, "artifact_type", "")
-            type_str = str(raw_type.value if hasattr(raw_type, "value") else raw_type).strip()
+            type_str = artifact_type_label(getattr(artifact, "artifact_type", ""))
             if type_str not in ("value", "scalar"):
                 continue
             data = getattr(artifact, "data", None)
@@ -1516,8 +1514,7 @@ class AgentRunner:
     def _artifact_method_lines(self, artifacts: list, max_items: int = 8) -> list[str]:
         lines: list[str] = []
         for artifact in artifacts[:max_items]:
-            raw_type = getattr(artifact, "artifact_type", "")
-            artifact_type = str(raw_type.value if hasattr(raw_type, "value") else raw_type).strip() or "artifact"
+            artifact_type = artifact_type_label(getattr(artifact, "artifact_type", "")) or "artifact"
             name = str(getattr(artifact, "name", "") or getattr(artifact, "text", "")).strip() or artifact_type
             data = getattr(artifact, "data", None)
 
@@ -1617,17 +1614,17 @@ class AgentRunner:
         table_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "table"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "table"
         )
         plot_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "plot"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "plot"
         )
         value_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "value"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "value"
         )
 
         direct_answer = self._table_extreme_summary(prompt, artifacts)
@@ -1799,8 +1796,7 @@ class AgentRunner:
         _LEGACY_ALIASES = {"table": "dataframe", "value": "scalar"}
         expected_exec = _LEGACY_ALIASES.get(expected, expected)
         for artifact in response.artifacts:
-            raw = getattr(artifact, "artifact_type", "")
-            current = str(raw.value if hasattr(raw, "value") else raw).strip().lower()
+            current = artifact_type_label(getattr(artifact, "artifact_type", ""))
             if current == expected or current == expected_exec:
                 return True
         return False
@@ -2394,7 +2390,6 @@ class AgentRunner:
                 "Скорректируй план с учётом этой обратной связи."
             )
 
-        available_tool_keys = {t.name for t in tools} if tools else set()
         # NOTE: tool skills are NOT injected into think phase to keep prompt small.
         # They are injected into execution phase (_build_execution_system_prompt).
         think_messages = [
@@ -2564,10 +2559,6 @@ class AgentRunner:
                 tool_names=tool_names,
             )
 
-        requires_plot = (
-            any(tok in str(state.get("prompt", "")).lower() for tok in _VISUALIZATION_HINT_TOKENS)
-            and any(str(getattr(tool, "name", "")).strip() == "plotly_tool" for tool in tools)
-        )
         elapsed_sec = time.perf_counter() - started_at
         if elapsed_sec > max(1, self.settings.agent_step_timeout_sec):
             response.reasoning = (
@@ -2582,8 +2573,7 @@ class AgentRunner:
         if response.artifacts:
             types = []
             for a in response.artifacts:
-                raw = getattr(a, "artifact_type", "")
-                types.append(str(raw.value if hasattr(raw, "value") else raw).strip())
+                types.append(artifact_type_label(getattr(a, "artifact_type", "")))
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
         self._emit_phase_event(
@@ -2759,21 +2749,11 @@ class AgentRunner:
         return {"eval_passed": passed, "eval_reason": reason}
 
     def _decide_node(self, state: AgentGraphState) -> dict[str, Any]:
-        import logging
-        _log = logging.getLogger("agent.decide")
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
         response = state.get("response")
         eval_passed = bool(state.get("eval_passed", False))
         eval_reason = state.get("eval_reason", "")
-        _log.warning(
-            "DECIDE step=%d max=%d eval_passed=%s has_response=%s final_text=%s artifacts=%s tool_names=%s",
-            step_index, max_steps, eval_passed,
-            response is not None,
-            bool(response and response.final_text.strip()) if response else False,
-            len(response.artifacts) if response and response.artifacts else 0,
-            response.tool_names if response else [],
-        )
         callbacks = state.get("callbacks", [])
 
         if response is None:

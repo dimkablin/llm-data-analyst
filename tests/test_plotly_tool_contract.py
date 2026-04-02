@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 from backend.tools.impl.plotly_tool import PlotlyTool
+from backend.tools.sandbox import SessionSandbox
 
 
 class PlotlyToolContractTests(unittest.TestCase):
@@ -16,8 +17,10 @@ class PlotlyToolContractTests(unittest.TestCase):
                 "value": [10, 20, 15],
             }
         )
+        sandbox = SessionSandbox()
+        sandbox.bind_dataframe(self.df)
         # 20s: Windows uses spawn (no fork), subprocess start takes ~3-4s per call.
-        self.tool = PlotlyTool(self.df, execution_timeout_sec=20.0, tool_cache_size=0)
+        self.tool = PlotlyTool(self.df, execution_timeout_sec=20.0, tool_cache_size=0, sandbox=sandbox)
 
     def test_invalid_string_result_is_rejected(self) -> None:
         code = """
