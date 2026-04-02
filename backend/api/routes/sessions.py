@@ -236,3 +236,18 @@ def get_session_notebook(
     content = notebook_path.read_text(encoding="utf-8")
     return PlainTextResponse(content, media_type="text/markdown")
 
+
+@router.get("/sessions/{session_id}/notebook/cells")
+def get_session_notebook_cells(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[dict]:
+    """Return the session notebook as a structured list of cells (JSON)."""
+    from backend.tools.sandbox_manager import SandboxManager
+    if not _auth_db.is_session_owner(session_id, current_user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    sandbox = SandboxManager.get_instance().get(session_id)
+    if sandbox is None:
+        return []
+    return sandbox.get_notebook_cells()
+

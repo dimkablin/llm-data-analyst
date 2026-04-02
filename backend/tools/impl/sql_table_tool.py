@@ -60,9 +60,29 @@ class SQLTableTool(BaseTool):
         self._sandbox = sandbox
 
     def _run(self, question: str) -> tuple[str, dict[str, object]]:
+        import pandas as pd
+
         payload = self._service.build_table_artifact(question)
         item_names = ", ".join(payload["items"].keys())
-        text = f"✅ Выполнен sql_table_tool: {item_names}"
+
+        # Inject result DataFrames into sandbox scope so subsequent tools
+        # (plotly_tool, pandas_tool) can reference them by variable name.
+        injected: list[str] = []
+        if self._sandbox is not None:
+            for name, data in payload["items"].items():
+                if isinstance(data, pd.DataFrame):
+                    self._sandbox.put(name, data)
+                    injected.append(name)
+
+        if injected:
+            vars_hint = ", ".join(f"`{v}`" for v in injected)
+            text = (
+                f"✅ Выполнен sql_table_tool: {item_names}. "
+                f"Результаты сохранены в переменных sandbox: {vars_hint}. "
+                f"Используй эти имена напрямую в plotly_tool/pandas_tool."
+            )
+        else:
+            text = f"✅ Выполнен sql_table_tool: {item_names}"
 
         result: dict[str, object] = {
             "text": text,
@@ -99,11 +119,12 @@ class SQLTableTool(BaseTool):
 
             recipe = payload.get("recipe")
             sql = recipe.get("sql", "") if isinstance(recipe, dict) else ""
-            code = f"-- {question}\n{sql}" if sql else f"-- {question}"
 
             self._sandbox.log_code_entry(
                 tool_name="sql_table_tool",
-                code=code,
+                language="sql",
+                question=question,
+                code=sql,
                 result_summary=result_summary,
             )
         except Exception:

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { getSessionNotebook, getUserMemory, updateUserMemory } from "../../lib/backend-api";
+import { getSessionNotebookCells, getUserMemory, updateUserMemory, type NotebookCell } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -266,17 +266,72 @@ function SessionMemoryBlock() {
   );
 }
 
+function NotebookCellView({ cell }: { cell: NotebookCell }) {
+  const isDataSource = cell.entry_type === "data_source_change";
+
+  if (isDataSource) {
+    return (
+      <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20">
+          <span className="text-[11px] font-medium text-blue-400/80">📂 Источник данных</span>
+          <span className="text-[10px] text-muted-foreground/60">{cell.timestamp}</span>
+        </div>
+        <div className="px-3 py-2 text-[12px] text-muted-foreground">{cell.result_summary}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border/40 bg-background/20 overflow-hidden">
+      {/* Cell header */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-muted/30 border-b border-border/30">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-muted-foreground/50">In [{cell.index}]</span>
+          <span className="text-[11px] font-medium text-foreground/70">{cell.tool_name || "code"}</span>
+          {cell.language === "sql" && (
+            <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400/80 font-medium">SQL</span>
+          )}
+        </div>
+        <span className="text-[10px] text-muted-foreground/50">{cell.timestamp}</span>
+      </div>
+
+      {/* Question (only for sql_table_tool) */}
+      {cell.question && (
+        <div className="px-3 pt-2 pb-1 text-[11px] italic text-muted-foreground/70 border-b border-border/20">
+          Q: {cell.question}
+        </div>
+      )}
+
+      {/* Code block */}
+      {cell.code && (
+        <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed bg-transparent m-0">
+          <code>{cell.code}</code>
+        </pre>
+      )}
+
+      {/* Output */}
+      {cell.result_summary && (
+        <div className="flex items-start gap-2 px-3 py-1.5 border-t border-border/30 bg-emerald-500/5">
+          <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">Out[{cell.index}]</span>
+          <span className="text-[11px] text-emerald-400/80">{cell.result_summary}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; isStreaming?: boolean }) {
-  const [content, setContent] = useState<string | null>(null);
+  const [cells, setCells] = useState<NotebookCell[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const prevStreamingRef = useRef(isStreaming);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void load();
   }, []);
 
-  // Reload notebook when agent finishes streaming
+  // Reload when agent finishes streaming
   useEffect(() => {
     if (prevStreamingRef.current === true && isStreaming === false) {
       void load();
@@ -288,8 +343,9 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
     setIsLoading(true);
     setError(null);
     try {
-      const md = await getSessionNotebook(sessionId);
-      setContent(md);
+      const data = await getSessionNotebookCells(sessionId);
+      setCells(data);
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch {
       setError("Не удалось загрузить notebook сессии");
     } finally {
@@ -306,8 +362,6 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
     );
   }
 
-  const isEmpty = !content?.trim();
-
   return (
     <div className="space-y-3">
       <p className="text-[12px] text-muted-foreground leading-relaxed">
@@ -318,15 +372,13 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
         <p className="rounded-lg bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>
       )}
 
-      <div className={`relative min-h-[80px] max-h-[400px] overflow-y-auto rounded-xl border border-border/40 px-4 py-3 ${isEmpty ? "bg-muted/20" : "bg-background/30"}`}>
-        {isEmpty ? (
-          <p className="text-[13px] italic text-muted-foreground">Notebook пуст — записи появятся после первого запроса с данными.</p>
+      <div className="relative min-h-[80px] max-h-[480px] overflow-y-auto space-y-2 pr-0.5">
+        {cells.length === 0 ? (
+          <p className="text-[13px] italic text-muted-foreground py-2">Notebook пуст — записи появятся после первого запроса с данными.</p>
         ) : (
-          <MarkdownBlock
-            content={content ?? ""}
-            className="text-[13px] [&_p]:mb-1 [&_ul]:mb-1 [&_li]:my-0 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_pre]:text-[11px] [&_code]:text-[11px]"
-          />
+          cells.map((cell) => <NotebookCellView key={cell.index} cell={cell} />)
         )}
+        <div ref={bottomRef} />
       </div>
 
       <div className="flex items-center">

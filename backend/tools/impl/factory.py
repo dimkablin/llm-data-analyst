@@ -59,6 +59,7 @@ class SearchToolFactory:
             search_service=self._service,
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=max(8, ctx.settings.tool_cache_size // 2),
+            sandbox=ctx.sandbox,
         )
 
 
@@ -82,6 +83,7 @@ class ForecastToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -105,6 +107,7 @@ class AnomalyPlanfactToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 

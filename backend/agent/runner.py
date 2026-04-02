@@ -277,7 +277,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
         "max_steps_cap": 3,
         "evaluate_enabled": False,
         "inner_recursion_limit": 4,
-        "step_timeout_sec": 30,
+        "step_timeout_sec": 90,
         "think_instruction": (
             "Стиль: лёгкий и быстрый. Максимум 1-2 шага.\n"
             "Один tool call = один шаг. Для простых запросов — 1 шаг.\n"
@@ -1615,6 +1615,12 @@ class AgentRunner:
             f"Режим данных: `{source_mode}`.",
             f"Доступные tools в этом запуске: {tool_list}.",
         ]
+        if source_mode == "db":
+            blocks.append(
+                "ВАЖНО (режим БД): переменная `df` пустая — НЕ используй `df` для получения данных. "
+                "Для любых запросов к таблицам используй `sql_table_tool`. "
+                "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри."
+            )
         if tool_descriptions:
             blocks.extend(["Описание доступных tools:", tool_descriptions])
 
@@ -1640,8 +1646,8 @@ class AgentRunner:
             if sandbox_block:
                 blocks.append(sandbox_block)
 
-        # Auto-selected tool skill instructions
-        tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
+        # Full tool skill instructions injected inline — no get_tool_instructions call needed.
+        tool_skills_block = self.skill_registry.build_tool_skills_prompt_block(
             set(available_tools)
         )
         if tool_skills_block:
@@ -3435,6 +3441,11 @@ class AgentRunner:
                 self._cache_set(cache_key, data_tools_disabled)
             return data_tools_disabled
 
+        # Set recursion_limit well above the max supersteps the outer graph can produce.
+        # Each outer cycle = 4 supersteps (think+act+evaluate+decide) + 2 bookends (route, finalize).
+        # Worst case: visualization boost gives max_steps=5 → 5*4+2 = 22 supersteps.
+        # Use depth_max_steps_cap * 6 + 20 to handle all depth profiles safely.
+        _outer_recursion_limit = max(50, self._depth_max_steps_cap() * 6 + 20)
         try:
             result = self._graph.invoke(
                 {
@@ -3447,7 +3458,8 @@ class AgentRunner:
                     "trace_context": trace_context or {},
                     "session_source": session_source or {},
                     "selected_skill_ids": resolved_skill_ids,
-                }
+                },
+                config={"recursion_limit": _outer_recursion_limit},
             )
         except Exception:
             logger.exception("graph.invoke failed for prompt=%r", prompt[:60])

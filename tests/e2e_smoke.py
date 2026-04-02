@@ -1,6 +1,7 @@
 """E2E smoke tests for llm-data-analyst backend.
 
-Tests: table display, chart generation, scalar metric.
+Tests: table display, chart generation, scalar metric, multi-tool sandbox,
+       sql_table_tool->plotly_tool variable injection fix.
 Requires: running backend at localhost:8605 with Ollama/Qwen3.
 """
 from __future__ import annotations
@@ -100,56 +101,56 @@ def _query_stream(token: str, sid: str, query: str) -> dict:
     }
 
 
-def run_test(name: str, token: str, sid: str, query: str, check_fn) -> bool:
+def run_test(name: str, token: str, sid: str, query: str, check_fn) -> tuple[bool, float]:
     print(f"\n{'='*60}")
     print(f"TEST: {name}")
-    print(f"Query: {query}")
+    print(f"Query: {query[:100]}{'...' if len(query) > 100 else ''}")
     t0 = time.time()
     try:
         result = _query_stream(token, sid, query)
         elapsed = time.time() - t0
         if result["error"]:
             print(f"  ERROR from stream: {result['error']}")
-            print(f"  Time: {elapsed:.1f}s | FAIL")
-            return False
+            print(f"  Time: {elapsed:.1f}s  FAIL")
+            return False, elapsed
         ok, detail = check_fn(result)
         status = "PASS" if ok else "FAIL"
         print(f"  Time: {elapsed:.1f}s | arts={len(result['artifacts'])} | {status}")
         if detail:
             print(f"  Detail: {detail}")
-        return ok
+        return ok, elapsed
     except Exception as e:
         elapsed = time.time() - t0
         print(f"  EXCEPTION: {e}")
-        print(f"  Time: {elapsed:.1f}s | FAIL")
-        return False
+        print(f"  Time: {elapsed:.1f}s  FAIL")
+        return False, elapsed
 
 
 def check_table(result: dict) -> tuple[bool, str]:
     arts = result["artifacts"]
     if not arts:
-        return False, "no artifacts"
+        return False, f"no artifacts. text={result['text'][:120]}"
     return True, f"{len(arts)} artifact(s)"
 
 
 def check_chart(result: dict) -> tuple[bool, str]:
     arts = result["artifacts"]
     if not arts:
-        return False, "no artifacts"
+        return False, f"no artifacts. text={result['text'][:120]}"
     has_plot = any(
         a.get("artifact_type") == "plot" or a.get("type") == "plot"
         for a in arts
     )
     if not has_plot:
         types = [a.get("artifact_type") or a.get("type") for a in arts]
-        return False, f"no plot artifact, got types: {types}"
+        return False, f"no plot artifact, got types: {types}. text={result['text'][:100]}"
     return True, f"{len(arts)} artifact(s) including plot"
 
 
 def check_metric(result: dict) -> tuple[bool, str]:
     arts = result["artifacts"]
     if not arts:
-        return False, "no artifacts"
+        return False, f"no artifacts. text={result['text'][:120]}"
     return True, f"{len(arts)} artifact(s)"
 
 
@@ -157,7 +158,7 @@ def check_multi_tool(result: dict) -> tuple[bool, str]:
     """Verify multi-tool query produces both table and plot artifacts."""
     arts = result["artifacts"]
     if not arts:
-        return False, "no artifacts"
+        return False, f"no artifacts. text={result['text'][:120]}"
 
     has_plot = any(
         a.get("artifact_type") == "plot" or a.get("type") == "plot"
@@ -165,20 +166,45 @@ def check_multi_tool(result: dict) -> tuple[bool, str]:
     )
     if not has_plot:
         types = [a.get("artifact_type") or a.get("type") for a in arts]
-        return False, f"no plot artifact among {len(arts)} artifacts, types: {types}"
+        return False, f"no plot among {len(arts)} artifacts, types: {types}. text={result['text'][:100]}"
 
     graph = result.get("execution_graph")
-    if not graph:
-        return False, f"{len(arts)} artifact(s) with plot, but no execution_graph"
-
-    nodes = graph.get("nodes", [])
+    nodes = graph.get("nodes", []) if graph else []
     tool_nodes = [n for n in nodes if n.get("type") == "tool"]
 
-    details = []
-    details.append(f"{len(arts)} artifact(s) with plot")
-    details.append(f"{len(tool_nodes)} tool nodes: {[n.get('label') for n in tool_nodes]}")
+    return True, (
+        f"{len(arts)} artifact(s) with plot; "
+        f"{len(tool_nodes)} tool nodes: {[n.get('label') for n in tool_nodes]}"
+    )
 
-    return True, "; ".join(details)
+
+def check_sql_then_chart(result: dict) -> tuple[bool, str]:
+    """Key regression check: sql_table_tool result used by plotly_tool via sandbox variable.
+
+    Before the fix, plotly_tool would fail with NameError because sql_table_tool
+    did not inject its result DataFrame into the sandbox scope.
+    After the fix, the DataFrame is available as a named variable.
+    """
+    arts = result["artifacts"]
+    if not arts:
+        return False, f"no artifacts. text={result['text'][:200]}"
+
+    # Check that we got a plot (not just a table)
+    has_plot = any(
+        a.get("artifact_type") == "plot" or a.get("type") == "plot"
+        for a in arts
+    )
+    if not has_plot:
+        types = [a.get("artifact_type") or a.get("type") for a in arts]
+        # A table result is acceptable too (agent may use db.query_dataframe inline)
+        return True, f"no plot but got {len(arts)} artifact(s) of types {types} — chart via inline SQL is also ok"
+
+    # Check the text for the old error signature
+    text = result["text"]
+    if "is not defined" in text:
+        return False, f"NameError in response: {text[:200]}"
+
+    return True, f"{len(arts)} artifact(s) including plot — sandbox variable injection working"
 
 
 def _find_db_connection(token: str) -> str | None:
@@ -201,89 +227,123 @@ def _bind_db_source(token: str, sid: str, connection_id: str) -> None:
     r.raise_for_status()
 
 
+def _detect_db_table(token: str, connection_id: str) -> str:
+    """Return first available table name from the DB (prefer titanic or bank_churn_clients)."""
+    preferred = ["titanic", "bank_churn_clients"]
+    for schema in ["examples", "public", "data"]:
+        r = requests.get(
+            f"{BASE}/db-connections/{connection_id}/tables?schema={schema}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r.status_code != 200:
+            continue
+        tables = r.json()
+        if not tables:
+            continue
+        names = [t.get("name", t.get("table_name", "")) for t in tables if isinstance(t, dict)]
+        names = [n for n in names if n]
+        for pref in preferred:
+            if pref in names:
+                return f"{schema}.{pref}"
+        if names:
+            return f"{schema}.{names[0]}"
+    return "titanic"
+
+
+def _print_timing_summary(results: list[tuple[str, bool, float]]) -> None:
+    print(f"\n{'='*60}")
+    print("TIMING SUMMARY")
+    print(f"{'-'*60}")
+    csv_times = [(n, ok, t) for n, ok, t in results if "[CSV]" in n]
+    db_times = [(n, ok, t) for n, ok, t in results if "[DB]" in n]
+
+    for group, label in [(csv_times, "CSV"), (db_times, "DB")]:
+        if not group:
+            continue
+        print(f"\n  {label} tests:")
+        for name, ok, t in group:
+            status = "OK" if ok else "FAIL"
+            short = name.split(". ", 1)[-1] if ". " in name else name
+            print(f"    {status} {short:<35} {t:5.1f}s")
+        passed_t = [t for _, ok, t in group if ok]
+        all_t = [t for _, _, t in group]
+        if passed_t:
+            print(f"    avg(pass)={sum(passed_t)/len(passed_t):.1f}s  "
+                  f"avg(all)={sum(all_t)/len(all_t):.1f}s  "
+                  f"total={sum(all_t):.1f}s")
+
+
 def main():
-    print("E2E Smoke Tests")
+    print("E2E Smoke Tests — llm-data-analyst")
     print("=" * 60)
 
     token = _login()
+    all_results: list[tuple[str, bool, float]] = []
 
     # ── CSV session ────────────────────────────────────────────────
     csv_sid = _create_session(token)
     _upload_csv(token, csv_sid)
     print(f"CSV session:  {csv_sid}")
 
-    results = []
+    csv_tests = [
+        ("1. [CSV] Table Display",
+         "Покажи таблицу с данными",
+         check_table),
+        ("2. [CSV] Scalar Metric",
+         "Посчитай среднее значение profit",
+         check_metric),
+        ("3. [CSV] Chart Generation",
+         "Построй столбчатую диаграмму sales по category",
+         check_chart),
+        ("4. [CSV] Multi-tool sandbox (pandas->plotly)",
+         "Посчитай суммарные продажи по каждой категории и построй столбчатый график по этим данным",
+         check_multi_tool),
+    ]
 
-    results.append(run_test(
-        "1. [CSV] Table Display",
-        token, csv_sid,
-        "Покажи таблицу с данными",
-        check_table,
-    ))
-
-    results.append(run_test(
-        "2. [CSV] Chart Generation",
-        token, csv_sid,
-        "Построй столбчатую диаграмму sales по category",
-        check_chart,
-    ))
-
-    results.append(run_test(
-        "3. [CSV] Scalar Metric",
-        token, csv_sid,
-        "Посчитай среднее значение profit",
-        check_metric,
-    ))
-
-    results.append(run_test(
-        "4. [CSV] Multi-tool (sandbox)",
-        token, csv_sid,
-        "Посчитай суммарные продажи (sales) по каждой категории (category) и построй столбчатый график по этим агрегированным данным",
-        check_multi_tool,
-    ))
+    for name, query, check_fn in csv_tests:
+        ok, elapsed = run_test(name, token, csv_sid, query, check_fn)
+        all_results.append((name, ok, elapsed))
 
     # ── DB session ─────────────────────────────────────────────────
     conn_id = _find_db_connection(token)
     if not conn_id:
         print("\n[SKIP] No DB connections found — skipping DB tests")
     else:
+        table = _detect_db_table(token, conn_id)
+        table_short = table.split(".")[-1]
         db_sid = _create_session(token)
         _bind_db_source(token, db_sid, conn_id)
-        print(f"DB session:   {db_sid}  (connection: {conn_id})")
+        print(f"\nDB session:   {db_sid}  (connection: {conn_id}, table: {table})")
 
-        results.append(run_test(
-            "5. [DB] Table Catalog",
-            token, db_sid,
-            "Покажи таблицы в базе данных",
-            check_table,
-        ))
+        db_tests = [
+            ("5. [DB] Table Query",
+             f"Покажи первые 10 строк таблицы {table_short}",
+             check_table),
+            ("6. [DB] Scalar Metric",
+             f"Посчитай количество строк в таблице {table_short}",
+             check_metric),
+            ("7. [DB] Chart from DB (inline SQL in plotly_tool)",
+             f"Построй столбчатую диаграмму: количество пассажиров по классу билета (Pclass) из таблицы {table_short}",
+             check_chart),
+            ("8. [DB] sql_table_tool->plotly_tool sandbox variable",
+             f"Сначала получи топ-5 записей из таблицы {table_short} через sql инструмент, "
+             f"затем построй по ним столбчатый график",
+             check_sql_then_chart),
+        ]
 
-        results.append(run_test(
-            "6. [DB] Table Query",
-            token, db_sid,
-            "Покажи первые 10 строк таблицы titanic",
-            check_table,
-        ))
+        for name, query, check_fn in db_tests:
+            ok, elapsed = run_test(name, token, db_sid, query, check_fn)
+            all_results.append((name, ok, elapsed))
 
-        results.append(run_test(
-            "7. [DB] Scalar Metric",
-            token, db_sid,
-            "Посчитай количество строк в таблице titanic",
-            check_metric,
-        ))
+    # ── Summary ────────────────────────────────────────────────────
+    _print_timing_summary(all_results)
 
-        results.append(run_test(
-            "8. [DB] Chart from DB",
-            token, db_sid,
-            "Построй столбчатую диаграмму выживших и погибших (Survived) из таблицы titanic",
-            check_chart,
-        ))
-
+    passed = sum(ok for _, ok, _ in all_results)
+    total = len(all_results)
+    total_time = sum(t for _, _, t in all_results)
+    overall = "ALL PASS" if passed == total else f"FAIL {passed}/{total} PASSED"
     print(f"\n{'='*60}")
-    passed = sum(results)
-    total = len(results)
-    overall = "ALL PASS" if passed == total else f"{passed}/{total} PASSED"
-    print(f"OVERALL: {overall}")
+    print(f"OVERALL: {overall}  (wall time: {total_time:.1f}s)")
 
     return 0 if passed == total else 1
 

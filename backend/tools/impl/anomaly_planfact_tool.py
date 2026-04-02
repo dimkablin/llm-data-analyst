@@ -113,6 +113,7 @@ class AnomalyPlanfactTool(BaseExecTool):
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
+        sandbox: object | None = None,
     ) -> None:
         self._anomaly_planfact_service = anomaly_planfact_service
         super().__init__(
@@ -121,6 +122,7 @@ class AnomalyPlanfactTool(BaseExecTool):
             include_plotly=False,
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
+            sandbox=sandbox,
         )
 
     def get_execution_scope(self) -> dict[str, Any]:

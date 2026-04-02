@@ -31,6 +31,10 @@ class SandboxManager:
         return cls._instance
 
     # ── public API ───────────────────────────────────────────────────
+    def get(self, session_id: str) -> SessionSandbox | None:
+        with self._lock:
+            return self._sandboxes.get(session_id)
+
     def get_or_create(self, session_id: str) -> SessionSandbox:
         with self._lock:
             sandbox = self._sandboxes.get(session_id)

@@ -254,6 +254,24 @@ export async function getSessionNotebook(sessionId: string): Promise<string> {
   return await response.text();
 }
 
+export interface NotebookCell {
+  index: number;
+  entry_type: "code" | "data_source_change";
+  tool_name: string;
+  language: string;
+  question: string;
+  code: string;
+  result_summary: string;
+  variables_created: string[];
+  timestamp: string;
+}
+
+export async function getSessionNotebookCells(sessionId: string): Promise<NotebookCell[]> {
+  const response = await authFetch(`/sessions/${sessionId}/notebook/cells`);
+  await assertOk(response);
+  return (await response.json()) as NotebookCell[];
+}
+
 export async function getRuntimeModelProfile(): Promise<RuntimeModelProfile> {
   const response = await authFetch("/runtime/model");
   await assertOk(response);

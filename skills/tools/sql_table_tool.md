@@ -42,9 +42,15 @@ IMPORTANT: вопрос должен быть конкретным. Неконк
 
 ### Как использовать результат в plotly_tool
 
-**Путь A (рекомендуется): сделай SQL прямо внутри plotly_tool через `db.query_dataframe()`**
+После выполнения `sql_table_tool` результат автоматически сохраняется в sandbox под именем артефакта.
+Имя переменной указано в тексте ответа: `"Результаты сохранены в переменных sandbox: \`revenue_by_region\`"`.
 
-Не нужен отдельный шаг `sql_table_tool` — делай всё в одном вызове `plotly_tool`:
+**IMPORTANT: используй именно то имя переменной, которое вернул sql_table_tool.**
+Не придумывай новые имена (`sql_dataset`, `data`, `result` и т.п.) — они не существуют в scope.
+
+**Путь A (рекомендуется при наличии `db`): SQL прямо внутри plotly_tool**
+
+Один вызов вместо двух — данные и график в одном шаге:
 
 ```python
 # plotly_tool — получаем данные и сразу строим график
@@ -54,20 +60,24 @@ df_agg = db.query_dataframe("""
     GROUP BY region
     ORDER BY total_revenue DESC
 """)
-fig = px.bar(
-    df_agg,
-    x="region",
-    y="total_revenue",
-    title="Выручка по регионам",
-)
+fig = px.bar(df_agg, x="region", y="total_revenue", title="Выручка по регионам")
 tool_result = chart.result(fig, artifact_name="revenue_by_region")
 tool_result
 ```
 
-**Путь Б: pandas_tool создаёт переменную, затем plotly_tool использует её**
+**Путь Б: sql_table_tool сохраняет переменную, plotly_tool использует её по имени**
 
-Sandbox сессии сохраняет все переменные между вызовами инструментов.
-Сначала `pandas_tool` делает агрегацию:
+После `sql_table_tool` с артефактом `revenue_by_region` переменная уже в scope:
+
+```python
+# plotly_tool — используем переменную по имени из ответа sql_table_tool
+fig = px.bar(revenue_by_region, x="region", y="total_revenue", title="Выручка по регионам")
+tool_result = chart.result(fig, artifact_name="revenue_chart")
+tool_result
+```
+
+**Путь В: pandas_tool создаёт переменную, затем plotly_tool использует её**
+
 ```python
 # pandas_tool
 agg = df.groupby("region")["revenue"].sum().reset_index()
@@ -75,9 +85,8 @@ tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"agg
 tool_result
 ```
 
-Затем `plotly_tool` видит `agg` в scope — переменная доступна автоматически:
 ```python
-# plotly_tool
+# plotly_tool — переменная agg уже в scope
 fig = px.bar(agg, x="region", y="revenue", title="Выручка по регионам")
 tool_result = chart.result(fig, artifact_name="revenue_by_region")
 tool_result

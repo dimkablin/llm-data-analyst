@@ -139,6 +139,7 @@ class SearchTool(BaseExecTool):
         search_service: SearchIntegrationService,
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
+        sandbox: object | None = None,
     ) -> None:
         super().__init__(
             df,
@@ -146,6 +147,7 @@ class SearchTool(BaseExecTool):
             include_plotly=False,
             tool_cache_size=tool_cache_size,
             db_runtime_config=None,
+            sandbox=sandbox,
         )
         object.__setattr__(self, "_search_service", search_service)
 

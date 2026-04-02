@@ -96,9 +96,23 @@ class NotebookEntry:
     timestamp: str
     entry_type: str  # "code" | "data_source_change"
     tool_name: str = ""
+    language: str = "python"  # "python" | "sql"
+    question: str = ""        # natural-language question (sql_table_tool only)
     code: str = ""
     result_summary: str = ""
     variables_created: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "entry_type": self.entry_type,
+            "tool_name": self.tool_name,
+            "language": self.language,
+            "question": self.question,
+            "code": self.code,
+            "result_summary": self.result_summary,
+            "variables_created": self.variables_created,
+            "timestamp": self.timestamp[:19].replace("T", " "),
+        }
 
 
 # ------------------------------------------------------------------
@@ -199,6 +213,8 @@ class SessionSandbox:
         tool_name: str,
         code: str,
         result_summary: str,
+        language: str = "python",
+        question: str = "",
     ) -> None:
         """Append a code entry to the notebook from an external tool (e.g. SQLTableTool)."""
         with self._lock:
@@ -206,6 +222,8 @@ class SessionSandbox:
                 timestamp=_now_iso(),
                 entry_type="code",
                 tool_name=tool_name,
+                language=language,
+                question=question[:300],
                 code=code[:500],
                 result_summary=result_summary[:200],
             ))
@@ -374,6 +392,15 @@ class SessionSandbox:
         if self._storage_dir is None:
             self.set_storage_dir(path)
 
+    def get_notebook_cells(self) -> list[dict]:
+        """Return notebook entries as a list of dicts for the JSON API."""
+        with self._lock:
+            entries = list(self._notebook)
+        return [
+            {"index": i + 1, **entry.to_dict()}
+            for i, entry in enumerate(entries)
+        ]
+
     def render_notebook_md(self) -> str:
         """Render the notebook as a human-readable Markdown string."""
         if not self._notebook:
@@ -386,8 +413,11 @@ class SessionSandbox:
                 lines.append(entry.result_summary)
             else:
                 lines.append(f"### {ts} — {entry.tool_name or 'code'}")
+                if entry.question:
+                    lines.append(f"*Q: {entry.question}*")
                 if entry.code:
-                    lines.append("```python")
+                    lang = entry.language or "python"
+                    lines.append(f"```{lang}")
                     lines.append(entry.code)
                     lines.append("```")
                 if entry.result_summary:
@@ -413,6 +443,15 @@ class SessionSandbox:
             logger.warning("Failed to persist notebook.md", exc_info=True)
 
     # ------ housekeeping ---------------------------------------------
+
+    def put(self, name: str, value: Any) -> None:
+        """Inject a named variable into scope without executing code.
+
+        Used by non-exec tools (e.g. sql_table_tool) to make their results
+        available to subsequent tools (e.g. plotly_tool, pandas_tool).
+        """
+        with self._lock:
+            self._scope[name] = value
 
     def clear(self) -> None:
         """Full reset — wipe scope and notebook."""
