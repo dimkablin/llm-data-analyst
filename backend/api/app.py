@@ -34,6 +34,7 @@ from backend.api.routes import (
 from backend.auth.auth_db import AuthDB
 from backend.auth.user_memory import UserMemoryService
 from backend.core.config import settings
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_runtime_service import DBRuntimeService
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
@@ -99,6 +100,7 @@ auth_db.ensure_default_admin(
 user_memory_service = UserMemoryService(auth_db)
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
+csv_runtime = CSVSessionRuntime(default_ttl_sec=settings.csv_session_ttl_sec)
 search_integration_service = SearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
@@ -153,12 +155,13 @@ def _configure_routes() -> None:
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
     )
-    data.setup(auth_db=auth_db, store=store)
+    data.setup(auth_db=auth_db, store=store, csv_runtime=csv_runtime)
     sources.setup(
         auth_db=auth_db,
         store=store,
         db_connections_service=db_connections_service,
         integration_source_descriptors_fn=_integration_source_descriptors,
+        csv_runtime=csv_runtime,
     )
     db_connections.setup(
         auth_db=auth_db,
@@ -178,6 +181,7 @@ def _configure_routes() -> None:
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
         app_settings=settings,
+        csv_runtime=csv_runtime,
         LLMTextCollector=LLMTextCollector,
         ToolCollector=ToolCollector,
         AgentProgressCollector=AgentProgressCollector,

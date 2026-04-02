@@ -32,6 +32,10 @@ class SessionState:
     source_label: str | None = None
     source_mode: str | None = None
     selected_skill_ids: list[str] | None = None
+    csv_loaded: bool = False
+    csv_session_id: str | None = None
+    csv_table_names: list[str] | None = None
+    csv_expires_at: int | None = None
 
 
 class SessionStore:
@@ -98,6 +102,10 @@ class SessionStore:
             source_label=None,
             source_mode=None,
             selected_skill_ids=[],
+            csv_loaded=False,
+            csv_session_id=None,
+            csv_table_names=[],
+            csv_expires_at=None,
         )
         self._save_state(state)
         return state
@@ -121,6 +129,10 @@ class SessionStore:
             source_label=raw.get("source_label"),
             source_mode=raw.get("source_mode"),
             selected_skill_ids=list(raw.get("selected_skill_ids", []) or []),
+            csv_loaded=bool(raw.get("csv_loaded", False)),
+            csv_session_id=raw.get("csv_session_id"),
+            csv_table_names=list(raw.get("csv_table_names") or []),
+            csv_expires_at=raw.get("csv_expires_at"),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -146,6 +158,10 @@ class SessionStore:
             "source_label": state.source_label,
             "source_mode": state.source_mode,
             "selected_skill_ids": list(state.selected_skill_ids or []),
+            "csv_loaded": bool(state.csv_loaded),
+            "csv_session_id": state.csv_session_id,
+            "csv_table_names": list(state.csv_table_names or []),
+            "csv_expires_at": state.csv_expires_at,
         }
         self._state_path(state.session_id).write_text(
             json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
@@ -297,6 +313,35 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
+
+    def set_csv_runtime_state(
+        self,
+        session_id: str,
+        *,
+        csv_loaded: bool,
+        csv_session_id: str | None,
+        csv_table_names: list[str] | None = None,
+        csv_expires_at: int | None = None,
+    ) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.csv_loaded = bool(csv_loaded)
+            state.csv_session_id = str(csv_session_id or "").strip() or None
+            state.csv_table_names = list(csv_table_names or [])
+            state.csv_expires_at = csv_expires_at
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def clear_csv_runtime_state(self, session_id: str) -> None:
+        self.set_csv_runtime_state(
+            session_id,
+            csv_loaded=False,
+            csv_session_id=None,
+            csv_table_names=[],
+            csv_expires_at=None,
+        )
 
     def delete_session(self, session_id: str) -> None:
         session_dir = self._session_dir(session_id)

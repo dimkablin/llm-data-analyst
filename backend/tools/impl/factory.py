@@ -140,7 +140,13 @@ class PlotlyToolFactory:
     key = "plotly_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.has_data and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> PlotlyTool:
         plotly_timeout = max(ctx.settings.tool_exec_timeout_sec * 2, 60.0)

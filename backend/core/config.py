@@ -195,6 +195,8 @@ class Settings:
     rag_query_mode: str = os.getenv("RAG_QUERY_MODE", "hybrid").strip().lower()
     rag_top_k: int = int(os.getenv("RAG_TOP_K", "5"))
 
+    csv_session_ttl_sec: int = int(os.getenv("CSV_SESSION_TTL_SEC", "7200"))
+
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)
     phoenix_project_name: str = os.getenv("PHOENIX_PROJECT_NAME", "llm-data-analyst")

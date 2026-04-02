@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.core.config import settings
 from backend.api.deps import get_current_user
 from backend.api.models import (
     SessionBindDBConnectionSourceRequest,
@@ -17,6 +19,7 @@ _auth_db: AuthDB = None  # type: ignore
 _store: SessionStore = None  # type: ignore
 _db_connections_service = None  # type: ignore
 _integration_source_descriptors_fn = None  # type: ignore
+_csv_runtime: CSVSessionRuntime = None  # type: ignore
 
 
 def setup(
@@ -24,12 +27,14 @@ def setup(
     store: SessionStore,
     db_connections_service,
     integration_source_descriptors_fn,
+    csv_runtime: CSVSessionRuntime,
 ) -> None:
-    global _auth_db, _store, _db_connections_service, _integration_source_descriptors_fn
+    global _auth_db, _store, _db_connections_service, _integration_source_descriptors_fn, _csv_runtime
     _auth_db = auth_db
     _store = store
     _db_connections_service = db_connections_service
     _integration_source_descriptors_fn = integration_source_descriptors_fn
+    _csv_runtime = csv_runtime
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -39,6 +44,57 @@ def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState
     if state is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return state
+
+
+def _session_source_type(state: SessionState) -> str:
+    return str(state.source_type or "").strip().lower()
+
+
+def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
+    if _session_source_type(state) != "csv":
+        return state
+
+    if state.csv_loaded and state.csv_session_id:
+        return state
+
+    if not state.df_path:
+        raise HTTPException(
+            status_code=400,
+            detail="CSV dataset is not attached to this session",
+        )
+
+    df = _store.get_dataframe(session_id)
+    if df is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to load CSV dataframe for this session",
+        )
+
+    try:
+        csv_info = _csv_runtime.register_dataframe(
+            session_id=session_id,
+            table_name=state.dataset_name or "uploaded.csv",
+            df=df,
+            ttl_seconds=settings.csv_session_ttl_sec,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to initialize CSV runtime: {exc}",
+        ) from exc
+
+    _store.set_csv_runtime_state(
+        session_id,
+        csv_loaded=True,
+        csv_session_id=csv_info.session_id,
+        csv_table_names=list(csv_info.table_names),
+        csv_expires_at=csv_info.expires_at,
+    )
+
+    refreshed = _store.load_session(session_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return refreshed
 
 
 def _to_session_source_response(state: SessionState) -> SessionSourceStateResponse:
@@ -118,6 +174,5 @@ def bind_session_csv_source(
         )
     _store.bind_csv_source(session_id, filename=state.dataset_name)
     refreshed = _load_owned_session(session_id, current_user)
+    refreshed = _ensure_csv_runtime_state(session_id, refreshed)
     return _to_session_source_response(refreshed)
-
-

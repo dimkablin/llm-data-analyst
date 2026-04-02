@@ -18,6 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.core.config import settings
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
@@ -46,6 +48,7 @@ _user_memory_service = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
 _settings = None  # type: ignore
+_csv_runtime: CSVSessionRuntime = None  # type: ignore
 
 # Callback classes set during startup
 _LLMTextCollector = None  # type: ignore
@@ -86,6 +89,7 @@ def setup(
     effective_enabled_tool_keys_fn,
     build_tool_catalog_fn,
     known_tool_keys,
+    csv_runtime: CSVSessionRuntime,
 ) -> None:
     global _auth_db, _store, _runner, _db_runtime_service
     global _search_integration_service, _forecast_integration_service
@@ -95,7 +99,7 @@ def setup(
     global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
     global _PhaseCollector, _TokenStreamCallbackHandler, _PhaseTokenStreamHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
-    global _build_tool_catalog_fn, _known_tool_keys
+    global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
 
     _auth_db = auth_db
     _store = store
@@ -119,6 +123,7 @@ def setup(
     _effective_enabled_tool_keys_fn = effective_enabled_tool_keys_fn
     _build_tool_catalog_fn = build_tool_catalog_fn
     _known_tool_keys = known_tool_keys
+    _csv_runtime = csv_runtime
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
@@ -139,6 +144,54 @@ def _session_source_payload(state: SessionState) -> dict[str, Any]:
         "source_label": state.source_label,
         "source_mode": state.source_mode,
     }
+
+
+def _session_runtime_source_payload(state: SessionState) -> dict[str, Any]:
+    payload = _session_source_payload(state)
+    source_type = _session_source_type(state)
+    if source_type == "csv":
+        payload["csv_loaded"] = bool(state.csv_loaded)
+        payload["csv_session_id"] = state.csv_session_id
+        payload["csv_table_names"] = list(state.csv_table_names or [])
+        payload["csv_expires_at"] = state.csv_expires_at
+    else:
+        payload["csv_loaded"] = False
+        payload["csv_session_id"] = None
+        payload["csv_table_names"] = []
+        payload["csv_expires_at"] = None
+    return payload
+
+
+def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
+    if _session_source_type(state) != "csv":
+        return state
+    if state.csv_loaded and state.csv_session_id:
+        return state
+    if not state.df_path:
+        raise HTTPException(status_code=400, detail="CSV dataset is not attached to this session")
+    df = _store.get_dataframe(session_id)
+    if df is None:
+        raise HTTPException(status_code=400, detail="Failed to load CSV dataframe for this session")
+    try:
+        csv_info = _csv_runtime.register_dataframe(
+            session_id=session_id,
+            table_name=state.dataset_name or "uploaded.csv",
+            df=df,
+            ttl_seconds=settings.csv_session_ttl_sec,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to initialize CSV runtime: {exc}") from exc
+    _store.set_csv_runtime_state(
+        session_id,
+        csv_loaded=True,
+        csv_session_id=csv_info.session_id,
+        csv_table_names=list(csv_info.table_names),
+        csv_expires_at=csv_info.expires_at,
+    )
+    refreshed = _store.load_session(session_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return refreshed
 
 
 def _session_db_connection_id(state: SessionState) -> str | None:
@@ -366,7 +419,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis", "rag"}:
+    if normalized_route not in {"chat", "analysis", "rag", "summary"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []
@@ -540,11 +593,17 @@ async def _execute_query(
     callbacks: list[object] | None = None,
 ) -> QueryResponse:
     state = _load_owned_session(session_id, current_user)
+    if _session_source_type(state) == "csv":
+        state = _ensure_csv_runtime_state(session_id, state)
     selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
-    session_source = _session_source_payload(state)
+    session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
-    has_active_source = df is not None or session_db_connection_id is not None
+    has_active_source = (
+        df is not None
+        or session_db_connection_id is not None
+        or bool(session_source.get("csv_loaded"))
+    )
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
@@ -562,6 +621,8 @@ async def _execute_query(
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
         db_connection_id=session_db_connection_id,
+        csv_session_id=session_source.get("csv_session_id"),
+        csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
@@ -591,6 +652,8 @@ async def _execute_query(
             include_reasoning=payload.include_reasoning,
             query=payload.query,
             db_connection_id=session_db_connection_id,
+            csv_session_id=session_source.get("csv_session_id"),
+            csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
         ):
             with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                 response = await anyio.to_thread.run_sync(
@@ -727,11 +790,17 @@ async def query_stream(
     current_user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
+    if _session_source_type(state) == "csv":
+        state = _ensure_csv_runtime_state(session_id, state)
     selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
-    session_source = _session_source_payload(state)
+    session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
-    has_active_source = df is not None or session_db_connection_id is not None
+    has_active_source = (
+        df is not None
+        or session_db_connection_id is not None
+        or bool(session_source.get("csv_loaded"))
+    )
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -757,6 +826,8 @@ async def query_stream(
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
         db_connection_id=session_db_connection_id,
+        csv_session_id=session_source.get("csv_session_id"),
+        csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
@@ -787,6 +858,8 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 query=payload.query,
                 db_connection_id=session_db_connection_id,
+                csv_session_id=session_source.get("csv_session_id"),
+                csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
             ):
                 with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                     response = await anyio.to_thread.run_sync(
