@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Type
+from typing import TYPE_CHECKING, Type
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.data_access.sql_table_service import SQLTableService
+
+if TYPE_CHECKING:
+    from backend.tools.sandbox import SessionSandbox
 
 
 class SQLTableToolArgs(BaseModel):
@@ -26,6 +29,7 @@ class SQLTableTool(BaseTool):
     response_format: str = "content_and_artifact"
 
     _service: SQLTableService = PrivateAttr()
+    _sandbox: SessionSandbox | None = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -39,6 +43,7 @@ class SQLTableTool(BaseTool):
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
         max_rows: int = 200,
+        sandbox: SessionSandbox | None = None,
     ) -> None:
         super().__init__()
         self._service = SQLTableService(
@@ -52,6 +57,7 @@ class SQLTableTool(BaseTool):
             csv_session_id=csv_session_id,
             max_rows=max_rows,
         )
+        self._sandbox = sandbox
 
     def _run(self, question: str) -> tuple[str, dict[str, object]]:
         payload = self._service.build_table_artifact(question)
@@ -73,6 +79,36 @@ class SQLTableTool(BaseTool):
         if "artifact_type" in payload:
             result["artifact_type"] = payload["artifact_type"]
 
+        self._log_to_notebook(question, payload)
         return text, result
 
+    def _log_to_notebook(self, question: str, payload: dict) -> None:
+        if self._sandbox is None:
+            return
+        try:
+            import pandas as pd
+            from backend.tools.sandbox import NotebookEntry, _now_iso
 
+            items = payload.get("items", {})
+            parts = []
+            for name, data in items.items():
+                if isinstance(data, pd.DataFrame):
+                    parts.append(f"{name}: {data.shape[0]}x{data.shape[1]}")
+                else:
+                    parts.append(str(name))
+            result_summary = (", ".join(parts) or "—")[:200]
+
+            recipe = payload.get("recipe")
+            sql = recipe.get("sql", "") if isinstance(recipe, dict) else ""
+            code = (f"-- {question}\n{sql}" if sql else f"-- {question}")[:500]
+
+            self._sandbox._notebook.append(NotebookEntry(
+                timestamp=_now_iso(),
+                entry_type="code",
+                tool_name="sql_table_tool",
+                code=code,
+                result_summary=result_summary,
+            ))
+            self._sandbox._persist_notebook()
+        except Exception:
+            pass

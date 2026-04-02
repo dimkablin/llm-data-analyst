@@ -132,6 +132,7 @@ class SQLTableToolFactory:
             csv_loaded=ctx.csv_loaded,
             csv_session_id=ctx.csv_session_id,
             max_rows=200,
+            sandbox=ctx.sandbox,
         )
 
 
