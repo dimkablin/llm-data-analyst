@@ -8,7 +8,8 @@ triggers: поиск, найди, новости, search, web, интернет,
 
 ## search_tool — веб-поиск
 
-Вход: Python-код; доступен helper `search`.
+Вход: Python-код. Выполняется в **sandbox сессии** — переменные сохраняются между вызовами.
+Доступен helper `search`, а также `pd`, `np` и все переменные из предыдущих tool-вызовов.
 
 ### Методы
 - `search.search("query")` — dict с keys: query, answer, results, sources

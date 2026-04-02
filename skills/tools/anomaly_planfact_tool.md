@@ -8,7 +8,16 @@ triggers: аномалия, план-факт, отклонение, anomaly, pl
 
 ## anomaly_planfact_tool — план-факт анализ
 
-Вход: Python-код; доступны `anomaly_planfact` и `df`.
+Вход: Python-код. Выполняется в **sandbox сессии** — все переменные сохраняются между вызовами.
+
+### Переменные в scope
+- `df` — DataFrame текущей сессии
+- `anomaly_planfact` — хелпер для план-факт анализа
+- `pd`, `np` — pandas, numpy
+- Все переменные из предыдущих tool-вызовов
+
+Если подключена БД:
+- `db` — хелпер для SQL-запросов (`db.query_dataframe(sql)`)
 
 ### Контракт
 ```python

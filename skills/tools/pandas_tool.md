@@ -8,7 +8,17 @@ triggers: таблица, агрегация, фильтр, группировк
 
 ## pandas_tool — табличный анализ
 
-Вход: Python-код; `df` уже загружен.
+Вход: Python-код. Выполняется в **sandbox сессии** — все переменные сохраняются между вызовами инструментов.
+
+### Переменные в scope
+- `df` — DataFrame текущей сессии (уже загружен, **не вызывай** `pd.read_csv`)
+- `pd` — pandas
+- `np` — numpy
+- Все переменные из предыдущих tool-вызовов (доступны автоматически)
+
+Если подключена БД:
+- `db` — хелпер для SQL-запросов (`db.query_dataframe(sql)`)
+- `db_connection` — объект подключения
 
 ### Контракт результата
 ```python
@@ -24,6 +34,7 @@ tool_result
 - НЕ вызывай `pd.read_csv()` / `pd.read_excel()` — `df` уже есть.
 - Последняя строка: `tool_result`.
 - Округляй числа до 2-4 знаков.
+- Переменные, которые ты создаёшь (например `agg = df.groupby(...).sum()`), будут доступны в следующих tool-вызовах (plotly_tool, value_tool и т.д.).
 - Запрещено: `globals()`, `locals()`, `os`, `sys`, `__import__`, `.plot()`, `matplotlib`.
 
 ### Примеры
@@ -38,11 +49,12 @@ tool_result
 ```
 
 ```python
-top5 = df.head(5)
+# agg будет доступен в следующем plotly_tool для визуализации
+agg = df.groupby("category")["revenue"].sum().reset_index()
 tool_result = {
     "schema_version": "1.0",
     "artifact_type": "table",
-    "items": {"table": top5}
+    "items": {"revenue_by_category": agg}
 }
 tool_result
 ```

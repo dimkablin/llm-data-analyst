@@ -320,6 +320,7 @@ export function Workspace() {
                       settings={settings}
                       modelProfile={modelProfile}
                       onSave={handleSaveSettings}
+                      isStreaming={isStreaming}
                     />
                   </motion.div>
                 ) : null}

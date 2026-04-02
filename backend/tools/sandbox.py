@@ -118,6 +118,8 @@ class SessionSandbox:
         self._lock = threading.Lock()
         self._total_executions: int = 0
         self._storage_dir: Path | None = None
+        self._bound_df: pd.DataFrame | None = None
+        self._bound_db_config: Any = None
         self._init_scope()
 
     # ------ bootstrap ------------------------------------------------
@@ -127,7 +129,11 @@ class SessionSandbox:
         import pandas as _pd
         import numpy as _np
 
-        self._scope.update({"pd": _pd, "np": _np})
+        df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
+        self._scope.update({"pd": _pd, "np": _np, "df": df_entry})
+        if self._bound_db_config is not None:
+            self._scope["db_connection"] = self._bound_db_config
+            self._scope["db_runtime"] = self._bound_db_config
 
         safe = dict(SAFE_BUILTINS)
         safe["__import__"] = self._make_safe_import(_ALL_ALLOWED_LIBS)
@@ -152,16 +158,17 @@ class SessionSandbox:
     ) -> None:
         """Inject / replace ``df`` in scope and log the change."""
         with self._lock:
-            old_shape = None
-            if "df" in self._scope and isinstance(self._scope["df"], pd.DataFrame):
-                old_shape = self._scope["df"].shape
+            is_first_load = self._bound_df is None
+            old_shape = self._bound_df.shape if self._bound_df is not None else None
 
+            self._bound_df = df
+            self._bound_db_config = db_runtime_config
             self._scope["df"] = df
             self._scope["db_connection"] = db_runtime_config
             self._scope["db_runtime"] = db_runtime_config
 
             new_shape = df.shape
-            if old_shape is not None and old_shape != new_shape:
+            if not is_first_load and old_shape != new_shape:
                 self._notebook.append(NotebookEntry(
                     timestamp=_now_iso(),
                     entry_type="data_source_change",
@@ -172,7 +179,7 @@ class SessionSandbox:
                         f"Столбцы: {list(df.columns[:20])}"
                     ),
                 ))
-            elif old_shape is None:
+            elif is_first_load:
                 self._notebook.append(NotebookEntry(
                     timestamp=_now_iso(),
                     entry_type="data_source_change",

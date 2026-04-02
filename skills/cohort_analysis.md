@@ -37,7 +37,7 @@ tool_result
 ### Шаг 2 — визуализируй через plotly_tool
 ```python
 import plotly.express as px
-# retention_pct должен быть уже в df (передай через предыдущий шаг или пересчитай)
+# retention_pct доступен из предыдущего pandas_tool (sandbox сохраняет все переменные)
 fig = px.imshow(
     retention_pct.values,
     labels=dict(x="Период (месяц)", y="Когорта", color="Retention"),

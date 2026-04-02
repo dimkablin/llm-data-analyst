@@ -256,8 +256,9 @@ tool_result
 """
 
 
-pandas_tool_prompt = """Pandas table tool. Input: Python code.
-Available: `df` (DataFrame preloaded — do NOT call pd.read_csv). All variables from previous tool calls persist in sandbox.
+pandas_tool_prompt = """Pandas table tool. Input: Python code executed in session sandbox.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`. If DB connected: `db`, `db_connection`.
+All variables from previous tool calls persist in sandbox — use them directly.
 Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"name": result_df}}`.
 Last line: `tool_result`.
 Variables you create (e.g. `agg = df.groupby("col").sum()`) are automatically available to subsequent tools.
@@ -265,18 +266,18 @@ Example: `result_df = df.describe().T; tool_result = {"schema_version": "1.0", "
 """
 
 
-plotly_tool_prompt = """Plotly chart tool. Input: Python code.
-Available: `df` (DataFrame), `px`, `go`, `chart`. All variables from previous tool calls persist in sandbox.
-`df` is preloaded — do NOT call pd.read_csv().
+plotly_tool_prompt = """Plotly chart tool. Input: Python code executed in session sandbox.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `px`, `go`, `chart`, `pd`, `np`. If DB connected: `db`, `db_connection`.
+All variables from previous tool calls persist in sandbox — use them directly instead of recalculating.
 Create `fig` (plotly Figure), then: `tool_result = chart.result(fig, artifact_name="chart_name")`.
 Last line: `tool_result`.
-If a variable from a previous tool (e.g. `agg`) is available, use it directly instead of recalculating.
 Example: `fig = px.bar(df, x="col1", y="col2", title="Title"); tool_result = chart.result(fig, "my_chart"); tool_result`
 """
 
 
-value_tool_prompt = """Scalar metric tool. Input: Python code.
-Available: `df` (DataFrame preloaded — do NOT call pd.read_csv).
+value_tool_prompt = """Scalar metric tool. Input: Python code executed in session sandbox.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`. If DB connected: `db`, `db_connection`.
+All variables from previous tool calls persist in sandbox — use them directly.
 Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "value", "items": {"metric_name": number_or_string}}`.
 Last line: `tool_result`.
 Example: `avg = round(df["price"].mean(), 2); tool_result = {"schema_version": "1.0", "artifact_type": "value", "items": {"avg_price": avg}}; tool_result`

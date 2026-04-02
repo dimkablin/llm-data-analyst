@@ -19,9 +19,10 @@ type Props = {
   settings: UserSettings;
   modelProfile: RuntimeModelProfile | null;
   onSave: (payload: Partial<UserSettings>) => Promise<void>;
+  isStreaming?: boolean;
 };
 
-export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, settings, modelProfile, onSave }: Props) {
+export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, settings, modelProfile, onSave, isStreaming }: Props) {
   const [draft, setDraft] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -150,7 +151,7 @@ export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, s
         </SectionCard>
 
         <SectionCard title="Notebook сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
-          <SessionNotebookBlock sessionId={sessionId} />
+          <SessionNotebookBlock sessionId={sessionId} isStreaming={isStreaming} />
         </SectionCard>
       </div>
 
@@ -265,17 +266,23 @@ function SessionMemoryBlock() {
   );
 }
 
-function SessionNotebookBlock({ sessionId }: { sessionId: string }) {
+function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; isStreaming?: boolean }) {
   const [content, setContent] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const loadedRef = useRef(false);
+  const prevStreamingRef = useRef(isStreaming);
 
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
     void load();
   }, []);
+
+  // Reload notebook when agent finishes streaming
+  useEffect(() => {
+    if (prevStreamingRef.current === true && isStreaming === false) {
+      void load();
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming]);
 
   async function load() {
     setIsLoading(true);
@@ -325,7 +332,7 @@ function SessionNotebookBlock({ sessionId }: { sessionId: string }) {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() => { loadedRef.current = false; void load(); }}
+          onClick={() => { void load(); }}
           className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
         >
           <RefreshCw className="h-3 w-3" />
