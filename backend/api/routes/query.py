@@ -629,6 +629,8 @@ async def _execute_query(
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
+    from backend.sessions.session_memory import SessionMemory as _SessionMemory
+    session_memory = _SessionMemory(notes=state.session_memory or "")
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -638,6 +640,7 @@ async def _execute_query(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        session_memory=session_memory,
         skill_registry=_runner.skill_registry,
     )
 
@@ -706,13 +709,20 @@ async def _execute_query(
         return fallback
 
     try:
-        if runtime_runner._session_memory_buffer:  # noqa: SLF001
+        if runtime_runner._user_memory_buffer:  # noqa: SLF001
             _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
             _user_memory_service.schedule_consolidation(
                 current_user.id,
-                list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                 _mem_llm.invoke,
             )
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        if runtime_runner._session_memory_buffer:  # noqa: SLF001
+            for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
+                _store.append_session_memory(session_id, note)
     except Exception:  # noqa: BLE001
         pass
 
@@ -834,6 +844,8 @@ async def query_stream(
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
+    from backend.sessions.session_memory import SessionMemory as _SessionMemory
+    session_memory = _SessionMemory(notes=state.session_memory or "")
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -843,6 +855,7 @@ async def query_stream(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        session_memory=session_memory,
         skill_registry=_runner.skill_registry,
     )
 
@@ -875,13 +888,20 @@ async def query_stream(
                         selected_skill_ids,
                     )
             try:
-                if runtime_runner._session_memory_buffer:  # noqa: SLF001
+                if runtime_runner._user_memory_buffer:  # noqa: SLF001
                     _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
                     _user_memory_service.schedule_consolidation(
                         current_user.id,
-                        list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                        list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                         _mem_llm.invoke,
                     )
+            except Exception:  # noqa: BLE001
+                pass
+
+            try:
+                if runtime_runner._session_memory_buffer:  # noqa: SLF001
+                    for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
+                        _store.append_session_memory(session_id, note)
             except Exception:  # noqa: BLE001
                 pass
 

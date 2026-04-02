@@ -14,7 +14,7 @@ export function Navigation() {
     { path: "/technical", label: "Архитектура" },
     { path: "/workspace", label: "Рабочая область" },
     { path: "/sessions", label: "Сессии" },
-    { path: "/phoenix", label: "Phoenix" },
+    { path: "/tracing", label: "Phoenix" },
   ];
 
   const accountLabel = useMemo(() => {

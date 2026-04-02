@@ -288,6 +288,7 @@ class SessionStateResponse(BaseModel):
     source_mode: str | None = None
     selected_skill_ids: list[str] = Field(default_factory=list)
     sources: list[SessionSourceResponse] = Field(default_factory=list)
+    session_memory: str = ""
 
 
 class SkillResponse(BaseModel):

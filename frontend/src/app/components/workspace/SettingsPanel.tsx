@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { getSessionNotebookCells, getUserMemory, updateUserMemory, type NotebookCell } from "../../lib/backend-api";
+import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -147,7 +147,7 @@ return (
         </SectionCard>
 
         <SectionCard title="Память сессии" icon={<Brain className="h-3.5 w-3.5" />}>
-          <SessionMemoryBlock />
+          <SessionMemoryBlock sessionId={sessionId} />
         </SectionCard>
 
         <SectionCard title="Notebook сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
@@ -170,10 +170,9 @@ return (
   );
 }
 
-function SessionMemoryBlock() {
+function SessionMemoryBlock({ sessionId }: { sessionId: string }) {
   const [notes, setNotes] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isClearing, setIsClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadedRef = useRef(false);
 
@@ -187,25 +186,12 @@ function SessionMemoryBlock() {
     setIsLoading(true);
     setError(null);
     try {
-      const mem = await getUserMemory();
-      setNotes(mem.notes ?? "");
+      const session = await getSession(sessionId);
+      setNotes(session.session_memory ?? "");
     } catch {
       setError("Не удалось загрузить память сессии");
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function handleClear() {
-    setIsClearing(true);
-    setError(null);
-    try {
-      const updated = await updateUserMemory({ notes: "" });
-      setNotes(updated.notes ?? "");
-    } catch {
-      setError("Ошибка при очистке памяти");
-    } finally {
-      setIsClearing(false);
     }
   }
 
@@ -223,7 +209,7 @@ function SessionMemoryBlock() {
   return (
     <div className="space-y-3">
       <p className="text-[12px] text-muted-foreground leading-relaxed">
-        Заметки, которые агент накапливает в процессе диалога — предпочтения, паттерны, наблюдения. Обновляются автоматически после каждого запроса.
+        Контекст текущей сессии: описания данных, ключевые находки, промежуточные выводы. Агент заполняет автоматически в ходе анализа.
       </p>
 
       {error && (
@@ -232,7 +218,7 @@ function SessionMemoryBlock() {
 
       <div className={`relative min-h-[80px] rounded-xl border border-border/40 px-4 py-3 ${isEmpty ? "bg-muted/20" : "bg-background/30"}`}>
         {isEmpty ? (
-          <p className="text-[13px] italic text-muted-foreground">Заметок пока нет — агент заполнит их в ходе диалога.</p>
+          <p className="text-[13px] italic text-muted-foreground">Заметок пока нет — агент заполнит их в ходе анализа.</p>
         ) : (
           <MarkdownBlock
             content={notes ?? ""}
@@ -250,17 +236,6 @@ function SessionMemoryBlock() {
           <RefreshCw className="h-3 w-3" />
           Обновить
         </button>
-        {!isEmpty && (
-          <button
-            type="button"
-            onClick={() => void handleClear()}
-            disabled={isClearing}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-          >
-            <Trash2 className="h-3 w-3" />
-            {isClearing ? "Очистка…" : "Очистить"}
-          </button>
-        )}
       </div>
     </div>
   );

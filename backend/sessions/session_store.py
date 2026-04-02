@@ -37,6 +37,7 @@ class SessionState:
     csv_session_id: str | None = None
     csv_table_names: list[str] | None = None
     csv_expires_at: int | None = None
+    session_memory: str = ""
 
 
 class SessionStore:
@@ -107,6 +108,7 @@ class SessionStore:
             csv_session_id=None,
             csv_table_names=[],
             csv_expires_at=None,
+            session_memory="",
         )
         self._save_state(state)
         return state
@@ -134,6 +136,7 @@ class SessionStore:
             csv_session_id=raw.get("csv_session_id"),
             csv_table_names=list(raw.get("csv_table_names") or []),
             csv_expires_at=raw.get("csv_expires_at"),
+            session_memory=str(raw.get("session_memory", "")),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -163,6 +166,7 @@ class SessionStore:
             "csv_session_id": state.csv_session_id,
             "csv_table_names": list(state.csv_table_names or []),
             "csv_expires_at": state.csv_expires_at,
+            "session_memory": state.session_memory or "",
         }
         self._state_path(state.session_id).write_text(
             json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
@@ -333,6 +337,25 @@ class SessionStore:
             state.csv_session_id = str(csv_session_id or "").strip() or None
             state.csv_table_names = list(csv_table_names or [])
             state.csv_expires_at = csv_expires_at
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def set_session_memory(self, session_id: str, content: str) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.session_memory = content.strip()
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def append_session_memory(self, session_id: str, note: str) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            existing = state.session_memory or ""
+            state.session_memory = (existing + "\n- " + note.strip()).lstrip()
             state.last_access = self._now_iso()
             self._save_state(state)
 

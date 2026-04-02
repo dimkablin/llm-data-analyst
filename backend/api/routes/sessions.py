@@ -255,6 +255,7 @@ def get_session(
         source_mode=state.source_mode,
         selected_skill_ids=list(state.selected_skill_ids or []),
         sources=sources,
+        session_memory=state.session_memory or "",
     )
 
 

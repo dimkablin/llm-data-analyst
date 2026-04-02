@@ -23,6 +23,7 @@ from backend.tools.impl.factory import (
     ForecastToolFactory,
     GetToolInstructionsToolFactory,
     MemoryToolFactory,
+    SessionNoteToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
     SearchToolFactory,
@@ -95,6 +96,7 @@ class ToolRegistry:
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
         memory_note_callback: Callable[[str], None] | None = None,
+        session_note_callback: Callable[[str], None] | None = None,
         skill_registry: SkillRegistry | None = None,
     ) -> ToolRegistry:
         """Assemble a registry from optional integration services plus all built-in tools."""
@@ -121,8 +123,9 @@ class ToolRegistry:
         if skill_registry is not None:
             factories.append(GetToolInstructionsToolFactory(skill_registry))
 
-        # Memory tool is always available (no data or service requirements).
+        # Memory tools are always available (no data or service requirements).
         factories.append(MemoryToolFactory(memory_note_callback or (lambda _: None)))
+        factories.append(SessionNoteToolFactory(session_note_callback or (lambda _: None)))
 
         return cls(factories)
 

@@ -17,7 +17,7 @@ from langchain_core.tools import BaseTool
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
 from backend.tools.impl.forecast_tool import ForecastTool
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
-from backend.tools.impl.memory_tool import MemoryTool
+from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.search_tool import SearchTool
@@ -210,7 +210,7 @@ class GetToolInstructionsToolFactory:
 
 
 class MemoryToolFactory:
-    """Always available; needs only an `on_note` callback from the runner."""
+    """Always available; saves long-term facts about the user."""
 
     key = "memory_tool"
 
@@ -222,5 +222,20 @@ class MemoryToolFactory:
 
     def build(self, ctx: ToolBuildContext) -> MemoryTool:  # noqa: ARG002
         return MemoryTool(on_note=self._on_note)
+
+
+class SessionNoteToolFactory:
+    """Always available; saves session-level analysis context."""
+
+    key = "session_note_tool"
+
+    def __init__(self, on_note: Callable[[str], None]) -> None:
+        self._on_note = on_note
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+        return True
+
+    def build(self, ctx: ToolBuildContext) -> SessionNoteTool:  # noqa: ARG002
+        return SessionNoteTool(on_note=self._on_note)
 
 

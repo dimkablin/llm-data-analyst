@@ -60,6 +60,7 @@ export type SessionState = {
   source_label?: string | null;
   source_mode?: string | null;
   sources?: SessionSource[];
+  session_memory?: string;
 };
 
 export type SessionSourceState = {
