@@ -59,6 +59,7 @@ export function Workspace() {
     error,
     lastQuery,
     hydrate,
+    reset,
     sendQuery,
     retryLast,
     stopStreaming,
@@ -127,10 +128,11 @@ export function Workspace() {
 
   const loadSession = useCallback(
     async (nextSessionId: string) => {
+      reset();
       const session = await getSession(nextSessionId);
       applySessionState(session, nextSessionId);
     },
-    [applySessionState],
+    [applySessionState, reset],
   );
 
   useEffect(() => {
@@ -229,11 +231,11 @@ export function Workspace() {
     exportChatHistory(sessionId, sessionTitle, datasetName, messages);
   }
 
-  return (
-    <div className="relative h-screen overflow-hidden bg-background font-sans text-foreground">
+return (
+    <div className="relative overflow-hidden bg-background font-sans text-foreground" style={{ height: "calc(100vh / var(--ui-zoom, 1))" }}>
       <Navigation />
 
-      <div className="absolute inset-x-0 bottom-0 top-14 flex min-h-0 overflow-hidden px-2 pb-2 pt-2 sm:top-16 lg:px-6 lg:pb-6 lg:pt-5">
+      <div className="absolute inset-x-0 bottom-0 top-14 flex min-h-0 overflow-hidden px-2 pb-2 pt-2 sm:top-16 lg:px-3 lg:pb-3 lg:pt-3 xl:px-6 xl:pb-6 xl:pt-5">
         <ResizablePanelGroup
           direction="horizontal"
           autoSaveId="workspace-layout-v2"
@@ -243,7 +245,7 @@ export function Workspace() {
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="h-full min-h-0 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-3 pt-4 shadow-none lg:rounded-[28px] lg:p-8 lg:pt-10 dark:bg-card/10 dark:shadow-[0_16px_48px_rgba(0,0,0,0.14)]"
+              className="h-full min-h-0 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-3 pt-4 shadow-none lg:rounded-[28px] lg:p-5 lg:pt-6 xl:p-8 xl:pt-10 dark:bg-card/10 dark:shadow-[0_16px_48px_rgba(0,0,0,0.14)]"
             >
               <DashboardPanel
                 sessionId={sessionId}

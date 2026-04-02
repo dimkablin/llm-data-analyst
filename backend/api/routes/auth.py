@@ -68,6 +68,7 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         agent_max_steps=settings_row.agent_max_steps,
         agent_step_timeout_sec=settings_row.agent_step_timeout_sec,
         agent_inner_recursion_limit=settings_row.agent_inner_recursion_limit,
+        ui_scale=settings_row.ui_scale,
     )
 
 
@@ -141,6 +142,7 @@ def auth_update_settings(
             agent_max_steps=payload.agent_max_steps,
             agent_step_timeout_sec=payload.agent_step_timeout_sec,
             agent_inner_recursion_limit=payload.agent_inner_recursion_limit,
+            ui_scale=payload.ui_scale,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -157,6 +159,7 @@ def auth_update_settings(
         agent_max_steps=updated.agent_max_steps,
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
+        ui_scale=updated.ui_scale,
     )
 
 

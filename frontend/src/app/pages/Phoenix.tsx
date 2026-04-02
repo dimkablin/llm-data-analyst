@@ -100,9 +100,19 @@ function buildTokenUsageByDay(rows: PhoenixTokenUsageRow[]) {
     buckets.set(key, current);
   }
 
-  return Array.from(buckets.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, value]) => value);
+  const result: { label: string; input: number; output: number }[] = [];
+  const now = new Date();
+  for (let offset = 6; offset >= 0; offset--) {
+    const day = new Date(now);
+    day.setDate(day.getDate() - offset);
+    const key = day.toISOString().slice(0, 10);
+    const label = new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "short",
+    }).format(day);
+    result.push(buckets.get(key) ?? { label, input: 0, output: 0 });
+  }
+  return result;
 }
 
 export function Phoenix() {
@@ -157,21 +167,21 @@ export function Phoenix() {
     <div className="min-h-screen bg-background text-foreground">
       <Navigation />
 
-      <main className="mx-auto max-w-[1460px] px-8 py-16">
-        <div className="mb-10 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+      <main className="mx-auto max-w-[1460px] px-4 py-5 sm:px-6 lg:px-8 lg:py-6 xl:py-16">
+        <div className="mb-4 flex flex-col gap-4 lg:mb-5 lg:flex-row lg:items-end lg:justify-between xl:mb-10">
           <div>
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mb-5 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-emerald-400"
+              className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-emerald-400 lg:mb-2 xl:mb-5"
             >
               <Activity className="h-3.5 w-3.5" />
               <span className="text-[11px] font-bold uppercase tracking-[0.24em]">
                 Phoenix Live
               </span>
             </motion.div>
-            <h1 className="mb-3 text-4xl font-bold tracking-tight">Наблюдаемость и трассировка</h1>
-            <p className="max-w-3xl text-lg text-muted-foreground">
+            <h1 className="mb-1 text-2xl font-bold tracking-tight lg:mb-2 lg:text-3xl xl:mb-3 xl:text-4xl">Наблюдаемость и трассировка</h1>
+            <p className="max-w-3xl text-sm text-muted-foreground lg:text-base xl:text-lg">
               Сквозная трассировка вызовов, мониторинг инструментов и анализ стоимости токенов в реальном времени.
             </p>
           </div>
@@ -182,7 +192,7 @@ export function Phoenix() {
                 href={phoenixUiUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-12 items-center gap-2 rounded-2xl border border-border/50 bg-secondary px-5 text-sm font-bold transition-all hover:bg-muted"
+                className="inline-flex h-10 items-center gap-2 rounded-2xl border border-border/50 bg-secondary px-4 text-sm font-bold transition-all hover:bg-muted xl:h-12 xl:px-5"
               >
                 <ExternalLink className="h-4 w-4" />
                 Открыть Phoenix
@@ -191,7 +201,7 @@ export function Phoenix() {
             <button
               type="button"
               onClick={() => void load()}
-              className="inline-flex h-12 items-center gap-2 rounded-2xl border border-border/50 bg-primary px-5 text-sm font-bold text-primary-foreground transition-all hover:opacity-95 active:scale-[0.99]"
+              className="inline-flex h-10 items-center gap-2 rounded-2xl border border-border/50 bg-primary px-4 text-sm font-bold text-primary-foreground transition-all hover:opacity-95 active:scale-[0.99] xl:h-12 xl:px-5"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               Обновить данные
@@ -221,7 +231,7 @@ export function Phoenix() {
           </div>
         ) : null}
 
-        <div className="mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 lg:mt-5 lg:gap-4 xl:mt-10 xl:gap-6 xl:grid-cols-4">
           {[
             {
               label: "Трассы запросов",
@@ -257,33 +267,38 @@ export function Phoenix() {
               initial={{ opacity: 0, scale: 0.97 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: index * 0.05 }}
-              className="rounded-[28px] border border-border/50 bg-card p-6 shadow-sm"
+              className="rounded-2xl border border-border/50 bg-card p-3.5 shadow-sm lg:rounded-3xl lg:p-4 xl:rounded-[28px] xl:p-6"
             >
-              <div className="mb-5 flex items-center justify-between">
-                <div className={`rounded-2xl bg-white/5 p-3 ${card.accent}`}>
-                  <card.icon className="h-5 w-5" />
+              <div className="mb-3 flex items-center justify-between xl:mb-5">
+                <div className={`rounded-xl bg-white/5 p-2.5 xl:rounded-2xl xl:p-3 ${card.accent}`}>
+                  <card.icon className="h-4 w-4 xl:h-5 xl:w-5" />
                 </div>
                 {loading ? <div className="h-2 w-20 rounded-full bg-muted/70" /> : null}
               </div>
-              <div className="mb-1 text-3xl font-bold tracking-tight">{card.value}</div>
+              <div className="mb-1 text-2xl font-bold tracking-tight xl:text-3xl">{card.value}</div>
               <div className="text-sm font-medium text-foreground">{card.label}</div>
               <div className="mt-1 text-xs text-muted-foreground">{card.hint}</div>
             </motion.div>
           ))}
         </div>
 
-        <div className="mt-10 grid grid-cols-1 gap-8 xl:grid-cols-[1.25fr_0.95fr]">
-          <section className="rounded-[32px] border border-border/50 bg-card p-8 shadow-sm">
-            <div className="mb-6 flex items-start justify-between gap-4">
+        <div className="mt-4 grid grid-cols-1 gap-3 lg:mt-5 lg:gap-4 xl:mt-10 xl:gap-8 xl:grid-cols-[1.25fr_0.95fr]">
+          <section className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm lg:rounded-3xl lg:p-5 xl:rounded-[32px] xl:p-8">
+            <div className="mb-3 flex items-start justify-between gap-4 xl:mb-6">
               <div>
-                <h2 className="text-xl font-bold">Latency по запросам</h2>
+                <h2 className="text-lg font-bold xl:text-xl">Latency по запросам</h2>
               </div>
-              <div className="rounded-full border border-border/50 bg-secondary px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                p50 / p95 / p99
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-border/50 bg-secondary px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                  7 дней
+                </div>
+                <div className="rounded-full border border-border/50 bg-secondary px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                  p50 / p95 / p99
+                </div>
               </div>
             </div>
 
-            <div className="h-[320px] w-full">
+            <div className="h-[200px] w-full lg:h-[220px] xl:h-[320px]">
               {overview && overview.latency.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={overview.latency}>
@@ -328,15 +343,17 @@ export function Phoenix() {
             </div>
           </section>
 
-          <section className="rounded-[32px] border border-border/50 bg-card p-8 shadow-sm">
-            <div className="mb-6 flex items-start justify-between gap-4">
+          <section className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm lg:rounded-3xl lg:p-5 xl:rounded-[32px] xl:p-8">
+            <div className="mb-3 flex items-start justify-between gap-4 xl:mb-6">
               <div>
-                <h2 className="text-xl font-bold">Использование токенов</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Дневной профиль input/output токенов по реальным model runs из Phoenix.
-                </p>
+                <h2 className="text-lg font-bold xl:text-xl">Использование токенов</h2>
               </div>
-              <Zap className="mt-1 h-5 w-5 text-primary" />
+              <div className="flex items-center gap-2">
+                <div className="rounded-full border border-border/50 bg-secondary px-3 py-1 text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
+                  7 дней
+                </div>
+                <Zap className="h-5 w-5 text-primary" />
+              </div>
             </div>
 
             {overview && overview.warnings.length > 0 ? (
@@ -345,7 +362,7 @@ export function Phoenix() {
               </div>
             ) : null}
 
-            <div className="h-[320px] w-full">
+            <div className="h-[200px] w-full lg:h-[220px] xl:h-[320px]">
               {tokenTelemetryAvailable && tokenUsageByDay.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={tokenUsageByDay} barGap={12}>
@@ -393,8 +410,8 @@ export function Phoenix() {
           </section>
         </div>
 
-        <section className="mt-10 overflow-hidden rounded-[32px] border border-border/50 bg-card shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-border/40 px-8 py-6 lg:flex-row lg:items-center lg:justify-between">
+        <section className="mt-6 overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm lg:rounded-3xl xl:mt-10 xl:rounded-[32px]">
+          <div className="flex flex-col gap-4 border-b border-border/40 px-5 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-6 lg:py-5 xl:px-8 xl:py-6">
             <div className="flex items-center gap-3">
               <Activity className="h-4 w-4 text-amber-400" />
               <h2 className="text-xl font-bold">Phoenix UI · Встроенный дашборд</h2>
@@ -413,7 +430,7 @@ export function Phoenix() {
           </div>
 
           {overview ? (
-            <div className="relative h-[720px] w-full">
+            <div className="relative h-[480px] w-full lg:h-[600px] xl:h-[720px]">
               {!iframeLoaded ? (
                 <div
                   className="absolute inset-0 flex items-center justify-center text-center"
@@ -438,7 +455,7 @@ export function Phoenix() {
                 ref={iframeRef}
                 src={phoenixUiUrl}
                 title="Phoenix Dashboard"
-                className={`h-[720px] w-full bg-background transition-opacity duration-300 ${
+                className={`h-full w-full bg-background transition-opacity duration-300 ${
                   iframeLoaded ? "opacity-100" : "opacity-0"
                 }`}
                 onLoad={() => {
@@ -456,8 +473,8 @@ export function Phoenix() {
           )}
         </section>
 
-        <section className="mt-10 overflow-hidden rounded-[32px] border border-border/50 bg-card shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-border/40 px-8 py-6 lg:flex-row lg:items-center lg:justify-between">
+        <section className="mt-6 overflow-hidden rounded-2xl border border-border/50 bg-card shadow-sm lg:rounded-3xl xl:mt-10 xl:rounded-[32px]">
+          <div className="flex flex-col gap-4 border-b border-border/40 px-5 py-4 lg:flex-row lg:items-center lg:justify-between lg:px-6 lg:py-5 xl:px-8 xl:py-6">
             <div>
               <h2 className="text-xl font-bold">Последние request traces</h2>
               <p className="mt-1 text-sm text-muted-foreground">

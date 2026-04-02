@@ -242,6 +242,19 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await assertOk(response);
 }
 
+export async function deleteAllSessions(): Promise<void> {
+  const response = await authFetch("/sessions", { method: "DELETE" });
+  await assertOk(response);
+}
+
+export async function deleteLastMessages(sessionId: string, messageId: string): Promise<void> {
+  const params = new URLSearchParams({ message_id: messageId });
+  const response = await authFetch(`/sessions/${sessionId}/messages/last?${params.toString()}`, {
+    method: "DELETE",
+  });
+  await assertOk(response);
+}
+
 export async function getSession(sessionId: string): Promise<SessionState> {
   const response = await authFetch(`/sessions/${sessionId}`);
   await assertOk(response);

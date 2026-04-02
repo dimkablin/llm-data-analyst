@@ -43,6 +43,7 @@ class UserSettings:
     agent_max_steps: int
     agent_step_timeout_sec: int
     agent_inner_recursion_limit: int
+    ui_scale: int = 100
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,13 @@ class AuthDB:
                 ADD COLUMN analysis_depth TEXT NOT NULL DEFAULT 'light'
                 """
             )
+        if "ui_scale" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN ui_scale INTEGER NOT NULL DEFAULT 100
+                """
+            )
 
     @staticmethod
     def _ensure_user_db_connections_columns(conn: sqlite3.Connection) -> None:
@@ -656,6 +664,7 @@ class AuthDB:
             ),
             agent_step_timeout_sec=int(row["agent_step_timeout_sec"] or 45),
             agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 14),
+            ui_scale=int(row["ui_scale"] if "ui_scale" in row.keys() else 100),
         )
 
     def get_user_settings(self, user_id: int) -> UserSettings:
@@ -669,6 +678,7 @@ class AuthDB:
                     , llm_max_tokens_default, llm_max_tokens_reasoning
                     , backend_query_timeout_sec, agent_max_steps
                     , agent_step_timeout_sec, agent_inner_recursion_limit
+                    , ui_scale
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -688,6 +698,7 @@ class AuthDB:
                 agent_max_steps=20,
                 agent_step_timeout_sec=45,
                 agent_inner_recursion_limit=6,
+                ui_scale=100,
             )
         return self._parse_user_settings(row)
 
@@ -707,6 +718,7 @@ class AuthDB:
         agent_max_steps: int | None = None,
         agent_step_timeout_sec: int | None = None,
         agent_inner_recursion_limit: int | None = None,
+        ui_scale: int | None = None,
     ) -> UserSettings:
         with self._connect() as conn:
             self._ensure_user_settings_row(conn, user_id)
@@ -718,6 +730,7 @@ class AuthDB:
                     , llm_max_tokens_default, llm_max_tokens_reasoning
                     , backend_query_timeout_sec, agent_max_steps
                     , agent_step_timeout_sec, agent_inner_recursion_limit
+                    , ui_scale
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -786,6 +799,11 @@ class AuthDB:
                 if agent_inner_recursion_limit is not None
                 else current.agent_inner_recursion_limit
             )
+            next_ui_scale = (
+                min(max(70, int(ui_scale)), 150)
+                if ui_scale is not None
+                else current.ui_scale
+            )
             conn.execute(
                 """
                 UPDATE user_settings
@@ -795,6 +813,7 @@ class AuthDB:
                     llm_max_tokens_default = ?, llm_max_tokens_reasoning = ?,
                     backend_query_timeout_sec = ?, agent_max_steps = ?,
                     agent_step_timeout_sec = ?, agent_inner_recursion_limit = ?,
+                    ui_scale = ?,
                     updated_at = ?
                 WHERE user_id = ?
                 """,
@@ -811,6 +830,7 @@ class AuthDB:
                     next_agent_max_steps,
                     next_agent_step_timeout_sec,
                     next_agent_inner_recursion_limit,
+                    next_ui_scale,
                     self._now_iso(),
                     user_id,
                 ),
@@ -828,6 +848,7 @@ class AuthDB:
             agent_max_steps=next_agent_max_steps,
             agent_step_timeout_sec=next_agent_step_timeout_sec,
             agent_inner_recursion_limit=next_agent_inner_recursion_limit,
+            ui_scale=next_ui_scale,
         )
 
     def list_user_tool_settings(self, user_id: int) -> dict[str, bool]:
@@ -1007,6 +1028,25 @@ class AuthDB:
                 (session_id, user_id),
             )
             return cursor.rowcount > 0
+
+    def delete_all_sessions(self, user_id: int) -> list[str]:
+        """Delete all sessions owned by *user_id*.
+
+        Returns a list of deleted session_ids so the caller can also clean up
+        any associated file-system state.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT session_id FROM chat_sessions WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+            session_ids = [str(row["session_id"]) for row in rows]
+            if session_ids:
+                conn.execute(
+                    "DELETE FROM chat_sessions WHERE user_id = ?",
+                    (user_id,),
+                )
+        return session_ids
 
     def list_sessions(self, user_id: int) -> list[dict[str, object]]:
         with self._connect() as conn:

@@ -3,13 +3,15 @@ import {
   BookOpen,
   Bot,
   Brain,
+  Check,
+  Copy,
   Download,
   FileSpreadsheet,
   Globe,
   Loader2,
   Pin,
   Plus,
-  RotateCcw,
+  RefreshCw,
   Send,
   Settings2,
   Square,
@@ -168,16 +170,6 @@ export function ChatPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {canRetry ? (
-            <button
-              type="button"
-              onClick={() => void onRetry()}
-              className="rounded-lg border border-border/50 bg-secondary/80 px-3 py-1.5 text-[12px] font-bold hover:bg-muted"
-            >
-              <RotateCcw className="mr-1 inline h-3.5 w-3.5" />
-              Повторить
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={onExportChat}
@@ -199,24 +191,27 @@ export function ChatPanel({
 
       <div
         ref={scrollContainerRef}
-        className="custom-scrollbar flex-1 overflow-y-auto p-3 lg:p-6"
+        className="custom-scrollbar flex-1 overflow-y-auto p-3 lg:p-4 xl:p-6"
       >
-        <div className="space-y-4 lg:space-y-6">
+        <div className="space-y-4 xl:space-y-6">
           {messages.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-border/40 bg-secondary/20 p-6 text-sm text-muted-foreground">
               Начните диалог с аналитиком. Новый frontend остается основным, а live backend-сценарий уже подключен.
             </div>
           ) : null}
 
-          {messages.map((message) => (
+          {messages.map((message, index) => (
             <MessageBubble
               key={message.id}
               message={message}
               isReasoningOpen={expandedReasoning === message.id}
+              isLast={index === messages.length - 1}
+              isStreaming={isStreaming}
               onToggleReasoning={() =>
                 setExpandedReasoning((current) => (current === message.id ? null : message.id))
               }
               onPinArtifact={onPinArtifact}
+              onRegenerate={onRetry}
             />
           ))}
 
@@ -226,7 +221,7 @@ export function ChatPanel({
                 <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/20 text-primary">
                   <Loader2 className="h-4 w-4 animate-spin" />
                 </div>
-                <div className="flex min-w-0 max-w-[85%] flex-col gap-2">
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
                   {(streamReasoning || streamPhases.length > 0) ? (
                     <button
                       type="button"
@@ -256,7 +251,7 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className="border-t border-border/50 bg-background/40 p-3 backdrop-blur-xl lg:p-6">
+      <div className="border-t border-border/50 bg-background/40 p-3 backdrop-blur-xl lg:p-4 xl:p-6">
         {error ? (
           <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div>
         ) : null}
@@ -286,7 +281,7 @@ export function ChatPanel({
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
-            className="min-h-[72px] w-full resize-none bg-transparent p-3 pl-12 pr-14 text-[13px] outline-none lg:min-h-[100px] lg:p-4 lg:pl-14 lg:pr-16 lg:text-[15px]"
+            className="min-h-[72px] w-full resize-none bg-transparent p-3 pl-12 pr-14 text-[13px] outline-none lg:p-4 lg:pl-14 lg:pr-16 lg:text-[15px] xl:min-h-[100px]"
           />
 
           {/* "+" action menu — bottom left */}
@@ -476,16 +471,30 @@ function ReasoningPanel({
 function MessageBubble({
   message,
   isReasoningOpen,
+  isLast,
+  isStreaming,
   onToggleReasoning,
   onPinArtifact,
+  onRegenerate,
 }: {
   message: ChatMessage;
   isReasoningOpen: boolean;
+  isLast: boolean;
+  isStreaming: boolean;
   onToggleReasoning: () => void;
   onPinArtifact: (artifact: ArtifactPayload) => void;
+  onRegenerate: () => Promise<void>;
 }) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
   const [isFullReasoningOpen, setIsFullReasoningOpen] = useState(true);
+
+  function handleCopy(): void {
+    void navigator.clipboard.writeText(message.content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
   const hasFullTrace =
     Boolean(message.liveReasoningTrace?.trim()) ||
     Boolean(message.livePhases?.length);
@@ -499,7 +508,7 @@ function MessageBubble({
       : message.livePhases;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`flex gap-2 lg:gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className={`group flex gap-2 lg:gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
       <div className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg ${isUser ? "bg-secondary" : "bg-primary/20 text-primary"}`}>
         {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
@@ -535,7 +544,7 @@ function MessageBubble({
           </div>
         ) : null}
 
-        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-5 lg:py-4 lg:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
+        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -561,8 +570,30 @@ function MessageBubble({
           ) : null}
         </div>
 
-        <div className="px-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">
-          {formatTime(message.timestamp)}
+        <div className={`flex items-center gap-2 ${isUser ? "flex-row-reverse" : ""}`}>
+          <div className="px-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/70">
+            {formatTime(message.timestamp)}
+          </div>
+          <div className={`flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 ${isUser ? "flex-row-reverse" : ""}`}>
+            <button
+              type="button"
+              onClick={handleCopy}
+              title={copied ? "Скопировано" : "Копировать"}
+              className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+            {isLast && !isUser && !isStreaming ? (
+              <button
+                type="button"
+                onClick={() => void onRegenerate()}
+                title="Повторить генерацию"
+                className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     </motion.div>

@@ -24,6 +24,7 @@ from backend.agent.pandas_agent import (
     normalize_agent_messages,
 )
 from backend.agent.prompts import (
+    agent_prompt,
     execution_agent_prompt,
 )
 from backend.skills import SkillRegistry
@@ -890,9 +891,16 @@ class AgentRunner:
             )
 
     def _build_messages(
-        self, prompt: str, history: list[dict[str, Any]], use_history: bool
+        self,
+        prompt: str,
+        history: list[dict[str, Any]],
+        use_history: bool,
+        system_prompt: str | None = None,
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
+
+        if system_prompt:
+            messages.append(SystemMessage(content=system_prompt))
 
         memory_block = self.user_memory.build_block()
         if memory_block:
@@ -3314,18 +3322,37 @@ class AgentRunner:
                         response.final_text = grounded_summary
 
             if not has_confirmed_output:
-                fallback_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
-                reasoning = (response.reasoning or "").strip()
-                reason_suffix = f"Tool-required policy enforced: {stop_reason or 'missing artifacts'}."
-                reasoning = f"{reasoning}\n\n{reason_suffix}".strip()
-                response = AgentResponse(
-                    final_text=fallback_text,
-                    reasoning=reasoning,
-                    artifacts=[],
-                    route="analysis",
-                    tool_calls=response.tool_calls,
-                    tool_names=response.tool_names,
-                )
+                prior_reasoning = (response.reasoning or "").strip()
+                prior_tool_calls = response.tool_calls
+                prior_tool_names = response.tool_names
+                try:
+                    response = self.chat(
+                        prompt=prompt,
+                        history=state.get("history", []),
+                        use_history=state.get("use_history", True),
+                        include_reasoning=state.get("include_reasoning", False),
+                        callbacks=callbacks,
+                        trace_context=state.get("trace_context"),
+                    )
+                    response.route = "analysis"
+                    response.tool_calls = prior_tool_calls
+                    response.tool_names = prior_tool_names
+                    if prior_reasoning:
+                        response.reasoning = (
+                            f"{prior_reasoning}\n\nFallback: no confirmed artifacts, answered via chat."
+                        )
+                except Exception:
+                    fallback_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
+                    reason_suffix = f"Tool-required policy enforced: {stop_reason or 'missing artifacts'}."
+                    reasoning = f"{prior_reasoning}\n\n{reason_suffix}".strip()
+                    response = AgentResponse(
+                        final_text=fallback_text,
+                        reasoning=reasoning,
+                        artifacts=[],
+                        route="analysis",
+                        tool_calls=prior_tool_calls,
+                        tool_names=prior_tool_names,
+                    )
             elif not bool(state.get("eval_passed", False)):
                 reasoning = (response.reasoning or "").strip()
                 eval_reason = state.get("eval_reason", "")
@@ -3359,7 +3386,7 @@ class AgentRunner:
         trace_context: dict[str, Any] | None = None,
     ) -> AgentResponse:
         llm = self._build_llm(role="chat", include_reasoning=include_reasoning)
-        prompt_messages = self._build_messages(prompt, history, use_history)
+        prompt_messages = self._build_messages(prompt, history, use_history, system_prompt=agent_prompt)
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:

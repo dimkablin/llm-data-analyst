@@ -297,17 +297,24 @@ class PhoenixObservabilityService:
         return None
 
     def _fetch_spans(self, project_id: str) -> list[PhoenixSpanSnapshot]:
-        start_time = (datetime.now(UTC) - timedelta(days=7)).isoformat()
-        payload = self._api_get_json(
-            f"/v1/projects/{project_id}/spans",
-            {"limit": 400, "start_time": start_time},
-        )
-        data = payload.get("data")
-        if not isinstance(data, list):
-            return []
+        today = datetime.now(UTC)
+        all_items: list[Any] = []
+        for day_offset in range(7):
+            day_start = (today - timedelta(days=day_offset + 1)).isoformat()
+            day_end = (today - timedelta(days=day_offset)).isoformat()
+            try:
+                payload = self._api_get_json(
+                    f"/v1/projects/{project_id}/spans",
+                    {"limit": 500, "start_time": day_start, "end_time": day_end},
+                )
+                data = payload.get("data")
+                if isinstance(data, list):
+                    all_items.extend(data)
+            except Exception:
+                pass
 
         spans: list[PhoenixSpanSnapshot] = []
-        for item in data:
+        for item in all_items:
             if not isinstance(item, dict):
                 continue
             context = item.get("context") if isinstance(item.get("context"), dict) else {}
@@ -521,30 +528,33 @@ class PhoenixObservabilityService:
         )
 
     def _build_latency(self, runs: list[PhoenixRunSnapshot]) -> list[PhoenixLatencyPoint]:
-        buckets: dict[datetime, list[int]] = {}
+        buckets: dict[str, list[int]] = {}
         for run in runs:
-            local_time = run.started_at.astimezone()
-            bucket = local_time.replace(minute=0, second=0, microsecond=0)
-            buckets.setdefault(bucket, []).append(run.duration_ms)
+            key = run.started_at.astimezone().strftime("%Y-%m-%d")
+            buckets.setdefault(key, []).append(run.duration_ms)
 
+        today = datetime.now(UTC).astimezone()
         points: list[PhoenixLatencyPoint] = []
-        for bucket in sorted(buckets.keys()):
-            values = sorted(buckets[bucket])
+        for day_offset in range(6, -1, -1):
+            day = today - timedelta(days=day_offset)
+            key = day.strftime("%Y-%m-%d")
+            label = day.strftime("%d %b")
+            values = sorted(buckets.get(key, []))
             points.append(
                 PhoenixLatencyPoint(
-                    label=bucket.strftime("%d %b, %H:00"),
+                    label=label,
                     p50_ms=self._percentile(values, 0.50),
                     p95_ms=self._percentile(values, 0.95),
                     p99_ms=self._percentile(values, 0.99),
                     trace_count=len(values),
                 )
             )
-        return points[-12:]
+        return points
 
     @staticmethod
     def _build_token_rows(runs: list[PhoenixRunSnapshot]) -> list[PhoenixTokenUsageRow]:
         rows: list[PhoenixTokenUsageRow] = []
-        for run in runs[:12]:
+        for run in runs:
             rows.append(
                 PhoenixTokenUsageRow(
                     trace_id=run.trace_id,

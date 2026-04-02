@@ -44,7 +44,7 @@ export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, s
     }
   }
 
-  return (
+return (
     <div className="flex h-full flex-col bg-card/85 backdrop-blur-xl">
       <div className="flex items-center justify-between border-b border-border/40 px-6 py-5">
         <div>

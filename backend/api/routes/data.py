@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import io
-
-import pandas as pd
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import NotebookOrchestrator
 from backend.api.deps import get_current_user
 from backend.api.models import UploadResponse
 from backend.core.config import settings
@@ -17,13 +16,23 @@ router = APIRouter(tags=["Данные"])
 _auth_db: AuthDB = None  # type: ignore
 _store: SessionStore = None  # type: ignore
 _csv_runtime: CSVSessionRuntime = None  # type: ignore
+_manifest_store: ManifestStore = None  # type: ignore
+_orchestrator: NotebookOrchestrator = None  # type: ignore
 
 
-def setup(auth_db: AuthDB, store: SessionStore, csv_runtime: CSVSessionRuntime) -> None:
-    global _auth_db, _store, _csv_runtime
+def setup(
+    auth_db: AuthDB,
+    store: SessionStore,
+    csv_runtime: CSVSessionRuntime,
+    manifest_store: ManifestStore,
+    notebook_orchestrator: NotebookOrchestrator,
+) -> None:
+    global _auth_db, _store, _csv_runtime, _manifest_store, _orchestrator
     _auth_db = auth_db
     _store = store
     _csv_runtime = csv_runtime
+    _manifest_store = manifest_store
+    _orchestrator = notebook_orchestrator
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -58,6 +67,7 @@ async def upload_data(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}")
 
+    # Legacy single-source persistence.
     _store.save_dataframe(session_id, df)
     _store.set_dataset_name(session_id, file.filename)
     _store.bind_csv_source(session_id, filename=file.filename)
@@ -69,6 +79,23 @@ async def upload_data(
         csv_expires_at=csv_info.expires_at,
     )
     _auth_db.mark_session_has_dataset(session_id, True)
+
+    # Multi-source: register in manifest + create notebook cell.
+    from backend.api.routes.sources import _add_source_to_manifest
+
+    parquet_rel = f"sources/{file.filename or 'data'}.parquet"
+    _add_source_to_manifest(
+        session_id,
+        source_type="csv",
+        display_name=file.filename or "uploaded.csv",
+        file_name=file.filename,
+        parquet_path=parquet_rel,
+        csv_session_id=csv_info.session_id,
+        csv_table_names=list(csv_info.table_names),
+        csv_expires_at=csv_info.expires_at,
+        schema_hint={str(c): str(df[c].dtype) for c in list(df.columns)[:30]},
+    )
+
     return UploadResponse(
         session_id=session_id,
         rows=len(df),

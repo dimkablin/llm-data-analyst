@@ -37,6 +37,10 @@ from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_runtime_service import DBRuntimeService
+from backend.notebook.kernel_manager import KernelManager
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import NotebookOrchestrator
+from backend.notebook.store import NotebookStore
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
@@ -101,6 +105,14 @@ user_memory_service = UserMemoryService(auth_db)
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
 csv_runtime = CSVSessionRuntime(default_ttl_sec=settings.csv_session_ttl_sec)
+notebook_store = NotebookStore(settings.storage_dir)
+manifest_store = ManifestStore(settings.storage_dir)
+notebook_orchestrator = NotebookOrchestrator(notebook_store)
+kernel_manager = KernelManager(
+    notebook_store=notebook_store,
+    manifest_store=manifest_store,
+    storage_dir=settings.storage_dir,
+)
 search_integration_service = SearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
@@ -154,14 +166,23 @@ def _configure_routes() -> None:
         runner=runner,
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
+        manifest_store=manifest_store,
     )
-    data.setup(auth_db=auth_db, store=store, csv_runtime=csv_runtime)
+    data.setup(
+        auth_db=auth_db,
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=notebook_orchestrator,
+    )
     sources.setup(
         auth_db=auth_db,
         store=store,
         db_connections_service=db_connections_service,
         integration_source_descriptors_fn=_integration_source_descriptors,
         csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=notebook_orchestrator,
     )
     db_connections.setup(
         auth_db=auth_db,

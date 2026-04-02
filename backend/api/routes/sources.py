@@ -4,10 +4,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import NotebookOrchestrator, NotebookEdit, CellOp
+from backend.notebook.session_source import (
+    SessionManifest,
+    SessionSource,
+    alias_to_variable_name,
+    make_source_alias,
+)
+from backend.notebook.cell_builder import build_source_binding_cell
 from backend.core.config import settings
 from backend.api.deps import get_current_user
 from backend.api.models import (
     SessionBindDBConnectionSourceRequest,
+    SessionSourceResponse,
     SessionSourceStateResponse,
     SourceDescriptorResponse,
 )
@@ -20,6 +30,8 @@ _store: SessionStore = None  # type: ignore
 _db_connections_service = None  # type: ignore
 _integration_source_descriptors_fn = None  # type: ignore
 _csv_runtime: CSVSessionRuntime = None  # type: ignore
+_manifest_store: ManifestStore = None  # type: ignore
+_orchestrator: NotebookOrchestrator = None  # type: ignore
 
 
 def setup(
@@ -28,13 +40,19 @@ def setup(
     db_connections_service,
     integration_source_descriptors_fn,
     csv_runtime: CSVSessionRuntime,
+    manifest_store: ManifestStore,
+    notebook_orchestrator: NotebookOrchestrator,
 ) -> None:
-    global _auth_db, _store, _db_connections_service, _integration_source_descriptors_fn, _csv_runtime
+    global _auth_db, _store, _db_connections_service
+    global _integration_source_descriptors_fn, _csv_runtime
+    global _manifest_store, _orchestrator
     _auth_db = auth_db
     _store = store
     _db_connections_service = db_connections_service
     _integration_source_descriptors_fn = integration_source_descriptors_fn
     _csv_runtime = csv_runtime
+    _manifest_store = manifest_store
+    _orchestrator = notebook_orchestrator
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -106,6 +124,9 @@ def _to_session_source_response(state: SessionState) -> SessionSourceStateRespon
     )
 
 
+# ── Legacy single-source endpoints (backward compat) ────────────────────────
+
+
 @router.get("/sources", response_model=list[SourceDescriptorResponse])
 def list_available_sources(
     current_user: AuthUser = Depends(get_current_user),
@@ -134,6 +155,16 @@ def bind_session_db_connection_source(
         label=connection.name,
         source_mode=payload.source_mode,
     )
+
+    # Also register in manifest.
+    _add_source_to_manifest(
+        session_id,
+        source_type="db_connection",
+        display_name=connection.name,
+        connection_id=connection.id,
+        connection_name=connection.name,
+    )
+
     refreshed = _load_owned_session(session_id, current_user)
     return _to_session_source_response(refreshed)
 
@@ -176,3 +207,114 @@ def bind_session_csv_source(
     refreshed = _load_owned_session(session_id, current_user)
     refreshed = _ensure_csv_runtime_state(session_id, refreshed)
     return _to_session_source_response(refreshed)
+
+
+# ── Multi-source endpoints ──────────────────────────────────────────────────
+
+
+@router.get(
+    "/sessions/{session_id}/sources",
+    response_model=list[SessionSourceResponse],
+)
+def list_session_sources(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[SessionSourceResponse]:
+    """List all sources bound to a session."""
+    _load_owned_session(session_id, current_user)
+    manifest = _manifest_store.load(session_id)
+    return [
+        SessionSourceResponse(
+            alias=s.alias,
+            source_type=s.source_type,
+            display_name=s.display_name,
+            variable_name=s.variable_name,
+            file_name=s.file_name,
+            connection_id=s.connection_id,
+            connection_name=s.connection_name,
+            bound_at=s.bound_at,
+            schema_hint=s.schema_hint,
+        )
+        for s in manifest.sources
+    ]
+
+
+@router.delete(
+    "/sessions/{session_id}/sources/{alias}",
+    response_model=list[SessionSourceResponse],
+)
+def remove_session_source(
+    session_id: str,
+    alias: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> list[SessionSourceResponse]:
+    """Remove a specific source from a session by alias."""
+    _load_owned_session(session_id, current_user)
+    manifest = _manifest_store.load(session_id)
+
+    removed = manifest.remove_source(alias)
+    if removed is None:
+        raise HTTPException(status_code=404, detail=f"Source '{alias}' not found")
+
+    _manifest_store.save(session_id, manifest)
+
+    return list_session_sources(session_id, current_user)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _add_source_to_manifest(
+    session_id: str,
+    *,
+    source_type: str,
+    display_name: str,
+    file_name: str | None = None,
+    parquet_path: str | None = None,
+    connection_id: str | None = None,
+    connection_name: str | None = None,
+    csv_session_id: str | None = None,
+    csv_table_names: list[str] | None = None,
+    csv_expires_at: int | None = None,
+    schema_hint: dict[str, str] | None = None,
+) -> SessionSource:
+    """Add a source to the manifest and create a source_binding cell."""
+    manifest = _manifest_store.load(session_id)
+
+    existing_aliases = [s.alias for s in manifest.sources]
+    alias = make_source_alias(display_name, source_type, existing_aliases)
+    var_name = alias_to_variable_name(alias)
+
+    source = SessionSource(
+        alias=alias,
+        source_type=source_type,
+        display_name=display_name,
+        variable_name=var_name,
+        file_name=file_name,
+        parquet_path=parquet_path,
+        connection_id=connection_id,
+        connection_name=connection_name,
+        csv_session_id=csv_session_id,
+        csv_table_names=csv_table_names or [],
+        csv_expires_at=csv_expires_at,
+        schema_hint=schema_hint or {},
+    )
+    manifest.add_source(source)
+    _manifest_store.save(session_id, manifest)
+
+    # Create source_binding notebook cell.
+    if source_type == "csv":
+        load_code = f'{var_name} = pd.read_parquet("{parquet_path or "data.parquet"}")'
+    else:
+        load_code = f'{var_name} = _restore_db_connection("{alias}")'
+
+    cell = build_source_binding_cell(
+        alias=alias,
+        variable_name=var_name,
+        source_type=source_type,
+        display_name=display_name,
+        load_code=load_code,
+    )
+    _orchestrator.apply(session_id, NotebookEdit(op=CellOp.INSERT, cell=cell))
+
+    return source

@@ -11,10 +11,12 @@ from backend.api.deps import get_current_user
 from backend.api.models import (
     CreateSessionResponse,
     MessageResponse,
+    SessionSourceResponse,
     SessionStateResponse,
     SessionSummaryResponse,
     SessionTitleUpdateRequest,
 )
+from backend.notebook.manifest_store import ManifestStore
 
 router = APIRouter(tags=["Сессии"])
 
@@ -24,6 +26,7 @@ _store: SessionStore = None  # type: ignore
 _runner = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
+_manifest_store: ManifestStore = None  # type: ignore
 
 
 def setup(
@@ -32,11 +35,13 @@ def setup(
     runner,
     build_trace_context_fn,
     query_trace_context_fn,
+    manifest_store: ManifestStore | None = None,
 ) -> None:
-    global _auth_db, _store, _runner, _build_trace_context_fn, _query_trace_context_fn
+    global _auth_db, _store, _runner, _build_trace_context_fn, _query_trace_context_fn, _manifest_store
     _auth_db = auth_db
     _store = store
     _runner = runner
+    _manifest_store = manifest_store
     _build_trace_context_fn = build_trace_context_fn
     _query_trace_context_fn = query_trace_context_fn
 
@@ -106,6 +111,17 @@ def create_session(
         allow_auto_title=enable_auto_title,
     )
     return CreateSessionResponse(session_id=state.session_id)
+
+
+@router.delete("/sessions", response_model=MessageResponse)
+def delete_all_sessions(
+    current_user: AuthUser = Depends(get_current_user),
+) -> MessageResponse:
+    """Delete every session that belongs to the current user."""
+    session_ids = _auth_db.delete_all_sessions(current_user.id)
+    for sid in session_ids:
+        _store.delete_session(sid)
+    return MessageResponse(message=f"Deleted {len(session_ids)} session(s)")
 
 
 @router.delete("/sessions/{session_id}", response_model=MessageResponse)
@@ -207,6 +223,25 @@ def get_session(
     title = "Новый чат"
     if meta is not None:
         title = str(meta.get("title") or "Новый чат")
+    # Build multi-source list from manifest (if available).
+    sources: list[SessionSourceResponse] = []
+    if _manifest_store is not None:
+        manifest = _manifest_store.load(state.session_id)
+        sources = [
+            SessionSourceResponse(
+                alias=s.alias,
+                source_type=s.source_type,
+                display_name=s.display_name,
+                variable_name=s.variable_name,
+                file_name=s.file_name,
+                connection_id=s.connection_id,
+                connection_name=s.connection_name,
+                bound_at=s.bound_at,
+                schema_hint=s.schema_hint,
+            )
+            for s in manifest.sources
+        ]
+
     return SessionStateResponse(
         session_id=state.session_id,
         title=title,
@@ -219,7 +254,25 @@ def get_session(
         source_label=state.source_label,
         source_mode=state.source_mode,
         selected_skill_ids=list(state.selected_skill_ids or []),
+        sources=sources,
     )
+
+
+@router.delete("/sessions/{session_id}/messages/last", response_model=MessageResponse)
+def delete_last_session_messages(
+    session_id: str,
+    message_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> MessageResponse:
+    """Delete the message identified by *message_id* and all subsequent messages.
+
+    Used to remove a user+assistant exchange before regeneration so the
+    history stays consistent on both client and server.
+    """
+    if not _auth_db.is_session_owner(session_id, current_user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    removed = _store.delete_messages_from_id(session_id, message_id)
+    return MessageResponse(message=f"Removed {removed} message(s)")
 
 
 @router.get("/sessions/{session_id}/notebook")

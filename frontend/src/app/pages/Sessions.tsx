@@ -231,14 +231,14 @@ export function Sessions() {
     <div className="min-h-screen bg-background text-foreground font-sans">
       <Navigation />
 
-      <main className="mx-auto max-w-[1400px] px-8 py-12">
-        <div className="mb-12 flex items-end justify-between">
+      <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8 xl:py-12">
+        <div className="mb-6 flex items-end justify-between lg:mb-8 xl:mb-12">
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
             <div className="inline-flex items-center gap-2.5 rounded-full border border-primary/20 bg-primary/10 px-3.5 py-1.5 text-primary">
               <MessageSquare className="h-4 w-4" />
               <span className="text-[13px] font-semibold uppercase tracking-wide">Архив аналитики</span>
             </div>
-            <h1 className="text-4xl font-bold tracking-tight">Сессии аналитика</h1>
+            <h1 className="text-2xl font-bold tracking-tight lg:text-3xl xl:text-4xl">Сессии аналитика</h1>
             <p className="max-w-xl text-[17px] leading-relaxed text-muted-foreground">
               Централизованное хранилище ваших диалогов с AI, сгенерированных графиков и аналитических отчетов.
             </p>
@@ -256,14 +256,14 @@ export function Sessions() {
 
         {error ? <div className="mb-6 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div> : null}
 
-        <div className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-4">
+        <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4 lg:gap-5 xl:mb-8">
           <StatCard label="Всего сессий" value={String(sessions.length)} icon={<MessageSquare className="h-5 w-5" />} />
           <StatCard label="С датасетом" value={String(sessions.filter((item) => item.has_dataset).length)} icon={<Table2 className="h-5 w-5" />} />
           <StatCard label="Последний доступ" value={sessions[0] ? formatDateTime(sessions[0].last_access) : "—"} icon={<CalendarDays className="h-5 w-5" />} />
           <StatCard label="Режим" value="Live backend" icon={<Cpu className="h-5 w-5" />} />
         </div>
 
-        <div className="mb-8 flex items-center gap-4">
+        <div className="mb-6 flex items-center gap-4 xl:mb-8">
           <div className="group relative flex-1">
             <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -293,7 +293,7 @@ export function Sessions() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-12 lg:gap-6 xl:gap-8">
           <div className="space-y-4 lg:col-span-7">
             {filtered.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border/40 bg-card/70 px-6 py-10 text-center text-sm text-muted-foreground">
@@ -307,7 +307,7 @@ export function Sessions() {
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 onClick={() => setSelectedId(session.session_id)}
-                className={`group cursor-pointer rounded-2xl border p-6 transition-all ${
+                className={`group cursor-pointer rounded-2xl border p-4 transition-all lg:p-5 xl:p-6 ${
                   selectedId === session.session_id
                     ? "border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20"
                     : "border-border/50 bg-card hover:shadow-md"
@@ -363,7 +363,7 @@ export function Sessions() {
           <div className="sticky top-28 lg:col-span-5">
             {selectedState ? (
               <div className="overflow-hidden rounded-3xl border border-border/60 bg-card shadow-2xl">
-                <div className="border-b border-border/40 p-8">
+                <div className="border-b border-border/40 p-5 lg:p-6 xl:p-8">
                   <div className="mb-6 flex items-center justify-between">
                     <div className="rounded-full bg-secondary px-3 py-1 text-[12px] font-bold uppercase tracking-wider text-muted-foreground">
                       ID: {selectedState.session_id}
@@ -388,7 +388,7 @@ export function Sessions() {
                   </div>
                 </div>
 
-                <div className="space-y-8 p-8">
+                <div className="space-y-6 p-5 lg:p-6 xl:space-y-8 xl:p-8">
                   <div>
                     <h4 className="mb-4 text-[13px] font-bold uppercase tracking-widest text-muted-foreground">Обзор</h4>
                     <div className="rounded-2xl border border-border/30 bg-secondary/50 p-5 text-[15px] italic">
@@ -425,7 +425,7 @@ export function Sessions() {
                 </div>
               </div>
             ) : (
-              <div className="flex h-[600px] flex-col items-center justify-center rounded-3xl border-2 border-dashed border-border/20 p-8 text-center">
+              <div className="flex h-[400px] flex-col items-center justify-center rounded-3xl border-2 border-dashed border-border/20 p-8 text-center xl:h-[600px]">
                 <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-secondary/30">
                   <MessageSquare className="h-10 w-10 text-muted-foreground/50" />
                 </div>
@@ -442,8 +442,8 @@ export function Sessions() {
 
 function StatCard({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-border/50 bg-card p-6 shadow-sm">
-      <div className="mb-4 flex items-center justify-between">
+    <div className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm lg:p-5 xl:p-6">
+      <div className="mb-3 flex items-center justify-between xl:mb-4">
         <div className="rounded-xl bg-white/5 p-2.5 text-primary">{icon}</div>
       </div>
       <div className="mb-1 text-2xl font-bold tracking-tight">{value}</div>

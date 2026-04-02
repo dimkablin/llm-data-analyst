@@ -26,8 +26,8 @@ export function Navigation() {
 
   return (
     <nav className="sticky top-0 z-50 border-b border-border/50 bg-background/60 backdrop-blur-xl">
-      <div className="mx-auto flex h-14 max-w-[1600px] items-center justify-between px-3 sm:h-16 sm:px-4 lg:px-6">
-        <div className="flex min-w-0 items-center gap-3 sm:gap-4 lg:gap-6 xl:gap-10">
+      <div className="mx-auto grid h-14 max-w-[1600px] grid-cols-[1fr_auto_1fr] items-center px-3 sm:h-16 sm:px-4 lg:px-6">
+        <div className="flex min-w-0 items-center gap-3 sm:gap-4">
           <Link to="/" className="group flex shrink-0 items-center gap-2 transition-all">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-transform group-hover:scale-105 sm:text-xl">
               A
@@ -36,28 +36,28 @@ export function Navigation() {
               Генеративная аналитика
             </span>
           </Link>
-
-          <div className="hidden min-w-0 flex-1 items-center overflow-x-auto rounded-xl border border-border/40 bg-secondary/50 p-1 backdrop-blur-md [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden lg:flex">
-            {navItems.map((item) => {
-              const isActive = location.pathname === item.path;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium transition-all duration-200 xl:px-4 xl:text-[14px] 2xl:px-5 ${
-                    isActive
-                      ? "bg-card text-foreground shadow-sm ring-1 ring-border/20"
-                      : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                  }`}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-          </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2 lg:gap-3">
+        <div className="hidden items-center overflow-x-auto rounded-xl border border-border/40 bg-secondary/50 p-1 backdrop-blur-md [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden lg:flex">
+          {navItems.map((item) => {
+            const isActive = location.pathname === item.path;
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                className={`shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium transition-all duration-200 xl:px-4 xl:text-[14px] 2xl:px-5 ${
+                  isActive
+                    ? "bg-card text-foreground shadow-sm ring-1 ring-border/20"
+                    : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                }`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-1.5 sm:gap-2 lg:gap-3">
           <Link
             to="/sessions?focus=search"
             aria-label="Поиск по чатам"

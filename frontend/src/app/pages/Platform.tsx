@@ -154,7 +154,7 @@ export function Platform() {
     <div className="min-h-screen bg-background text-foreground selection:bg-primary/30">
       <Navigation />
 
-      <section className="relative flex min-h-[calc(100vh-72px)] items-center overflow-hidden border-b border-border/40 pt-28 pb-14 xl:pt-32 xl:pb-16">
+      <section className="relative flex items-center overflow-hidden border-b border-border/40 pt-28 pb-14 xl:pt-32 xl:pb-16" style={{ minHeight: "calc((100vh - 72px) / var(--ui-zoom, 1))" }}>
         <div className="absolute left-1/2 top-0 -z-10 h-[680px] w-[1100px] -translate-x-1/2 rounded-full bg-primary/10 blur-[140px] opacity-40" />
         <div className="absolute right-[12%] top-24 -z-10 h-56 w-56 rounded-full bg-blue-400/10 blur-[100px]" />
         <div className="absolute left-[10%] bottom-16 -z-10 h-44 w-44 rounded-full bg-emerald-400/10 blur-[90px]" />
@@ -225,7 +225,7 @@ export function Platform() {
             y: { delay: 0.7, duration: 1.8, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" },
           }}
           aria-hidden={!showScrollCue}
-          className="absolute bottom-8 left-1/2 inline-flex -translate-x-1/2 flex-col items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
+          className="fixed bottom-8 left-1/2 z-40 inline-flex -translate-x-1/2 flex-col items-center gap-2 text-muted-foreground transition-colors hover:text-foreground"
           style={{ pointerEvents: showScrollCue ? "auto" : "none" }}
         >
           <div className="flex items-center gap-2 rounded-full border border-border/50 bg-background/60 px-4 py-2 backdrop-blur-md">

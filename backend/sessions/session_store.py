@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -290,6 +291,7 @@ class SessionStore:
             if state is None:
                 return
             payload: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
                 "role": role,
                 "content": content,
                 "timestamp": self._now_iso(),
@@ -342,6 +344,29 @@ class SessionStore:
             csv_table_names=[],
             csv_expires_at=None,
         )
+
+    def delete_messages_from_id(self, session_id: str, message_id: str) -> int:
+        """Delete the message with *message_id* and all messages after it.
+
+        Returns the number of messages removed. If the ID is not found returns 0.
+        """
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return 0
+            history = state.chat_history
+            cut_index: int | None = None
+            for i, msg in enumerate(history):
+                if msg.get("id") == message_id:
+                    cut_index = i
+                    break
+            if cut_index is None:
+                return 0
+            removed = len(history) - cut_index
+            state.chat_history = history[:cut_index]
+            state.last_access = self._now_iso()
+            self._save_state(state)
+            return removed
 
     def delete_session(self, session_id: str) -> None:
         session_dir = self._session_dir(session_id)
