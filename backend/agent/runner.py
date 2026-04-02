@@ -58,6 +58,7 @@ from backend.tools.policy import (
 from backend.tools.registry import ToolRegistry
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
+from backend.sessions.session_memory import SessionMemory
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,7 @@ class AgentRunner:
         rag_service: RAGService | None = None,
         allowed_tool_keys: set[str] | None = None,
         user_memory: UserMemory | None = None,
+        session_memory: SessionMemory | None = None,
         skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.settings = settings
@@ -378,7 +380,9 @@ class AgentRunner:
         self.rag_service = rag_service
         self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
         self.user_memory: UserMemory = user_memory or UserMemory(profile="", notes="")
-        # Buffer for notes appended by the memory tool during this request cycle.
+        self.session_memory: SessionMemory = session_memory or SessionMemory()
+        # Buffers for notes appended by memory tools during this request cycle.
+        self._user_memory_buffer: list[str] = []
         self._session_memory_buffer: list[str] = []
         self.skill_registry = skill_registry or SkillRegistry.from_path(self.settings.skills_dir)
         self.skill_registry.load()
@@ -386,7 +390,8 @@ class AgentRunner:
             search_service=search_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
-            memory_note_callback=self._session_memory_buffer.append,
+            memory_note_callback=self._user_memory_buffer.append,
+            session_note_callback=self._session_memory_buffer.append,
             skill_registry=self.skill_registry,
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
@@ -905,6 +910,10 @@ class AgentRunner:
         memory_block = self.user_memory.build_block()
         if memory_block:
             messages.append(SystemMessage(content=memory_block))
+
+        session_memory_block = self.session_memory.build_block()
+        if session_memory_block:
+            messages.append(SystemMessage(content=session_memory_block))
 
         if use_history and history:
             max_msgs = max(0, self.settings.agent_history_max_messages)
@@ -1450,6 +1459,9 @@ class AgentRunner:
         "- Для простых запросов (показать данные, структура) → 1 шаг.\n"
         "- Для графиков → обязательно `plotly_tool`.\n"
         "- Не путай `value_tool` (метрики из df) с `search_tool` (веб-поиск).\n"
+        "- Если источники данных НЕ прикреплены (активный режим данных = `none`) "
+        "и запрос требует табличных данных — НЕ планируй tool-вызовы для анализа данных. "
+        "Ответь пользователю, что источники данных не прикреплены и нужно загрузить CSV или подключить БД.\n"
     )
 
     def _think_system_prompt(
@@ -1482,6 +1494,9 @@ class AgentRunner:
         memory_block = self.user_memory.build_block()
         if memory_block:
             prompt += f"\n{memory_block}\n"
+        session_memory_block = self.session_memory.build_block()
+        if session_memory_block:
+            prompt += f"\n{session_memory_block}\n"
         skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
         if skills_block:
             prompt += f"\n{skills_block}\n"
@@ -2735,6 +2750,14 @@ class AgentRunner:
         )
         if db_block:
             data_context = f"{data_context}\n\n{db_block}".strip() if data_context else db_block
+
+        if not data_context.strip():
+            data_context = (
+                "Источники данных: НЕ прикреплены. "
+                "Нет загруженного датафрейма (CSV) и нет подключённой базы данных.\n"
+                "Если запрос пользователя требует работы с данными — НЕ планируй tool-вызовы для анализа данных. "
+                "Сообщи пользователю, что сначала нужно загрузить CSV-файл или подключить базу данных."
+            )
 
         tool_keys = [
             str(getattr(tool, "name", "")).strip()
