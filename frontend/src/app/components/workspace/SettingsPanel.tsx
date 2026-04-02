@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { getUserMemory, updateUserMemory } from "../../lib/backend-api";
+import { getSessionNotebook, getUserMemory, updateUserMemory } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -148,6 +148,10 @@ export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, s
         <SectionCard title="Память сессии" icon={<Brain className="h-3.5 w-3.5" />}>
           <SessionMemoryBlock />
         </SectionCard>
+
+        <SectionCard title="Notebook сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
+          <SessionNotebookBlock sessionId={sessionId} />
+        </SectionCard>
       </div>
 
       <div className="space-y-3 border-t border-border/40 px-6 py-5">
@@ -256,6 +260,77 @@ function SessionMemoryBlock() {
             {isClearing ? "Очистка…" : "Очистить"}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+function SessionNotebookBlock({ sessionId }: { sessionId: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+    void load();
+  }, []);
+
+  async function load() {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const md = await getSessionNotebook(sessionId);
+      setContent(md);
+    } catch {
+      setError("Не удалось загрузить notebook сессии");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-[13px] text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Загрузка…
+      </div>
+    );
+  }
+
+  const isEmpty = !content?.trim();
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground leading-relaxed">
+        Лог выполнений sandbox — код, результаты и смены источников данных за текущую сессию.
+      </p>
+
+      {error && (
+        <p className="rounded-lg bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>
+      )}
+
+      <div className={`relative min-h-[80px] max-h-[400px] overflow-y-auto rounded-xl border border-border/40 px-4 py-3 ${isEmpty ? "bg-muted/20" : "bg-background/30"}`}>
+        {isEmpty ? (
+          <p className="text-[13px] italic text-muted-foreground">Notebook пуст — записи появятся после первого запроса с данными.</p>
+        ) : (
+          <MarkdownBlock
+            content={content ?? ""}
+            className="text-[13px] [&_p]:mb-1 [&_ul]:mb-1 [&_li]:my-0 [&_h1]:text-sm [&_h2]:text-sm [&_h3]:text-xs [&_pre]:text-[11px] [&_code]:text-[11px]"
+          />
+        )}
+      </div>
+
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={() => { loadedRef.current = false; void load(); }}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Обновить
+        </button>
       </div>
     </div>
   );

@@ -142,14 +142,13 @@ class PlotlyToolFactory:
         return ctx.has_data and is_tool_allowed(self.key, ctx.allowed_tool_keys)
 
     def build(self, ctx: ToolBuildContext) -> PlotlyTool:
-        # Plotly needs extra time: module reimport in subprocess + chart rendering
         plotly_timeout = max(ctx.settings.tool_exec_timeout_sec * 2, 60.0)
         return PlotlyTool(
             ctx.tool_df,
             execution_timeout_sec=plotly_timeout,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
-            shared_context=ctx.shared_context,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -165,7 +164,7 @@ class PandasToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
-            shared_context=ctx.shared_context,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -181,7 +180,7 @@ class ValueToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
-            shared_context=ctx.shared_context,
+            sandbox=ctx.sandbox,
         )
 
 

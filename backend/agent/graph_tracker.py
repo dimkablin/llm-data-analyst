@@ -19,8 +19,6 @@ class GraphNode:
     duration_ms: int | None = None
     tool_name: str | None = None
     artifact_keys: list[str] = field(default_factory=list)
-    shared_vars_in: list[str] = field(default_factory=list)
-    shared_vars_out: list[str] = field(default_factory=list)
     parent_id: str | None = None  # e.g. tool nodes belong to an act phase
 
     def to_dict(self) -> dict[str, Any]:
@@ -36,10 +34,6 @@ class GraphNode:
             d["tool_name"] = self.tool_name
         if self.artifact_keys:
             d["artifact_keys"] = self.artifact_keys
-        if self.shared_vars_in:
-            d["shared_vars_in"] = self.shared_vars_in
-        if self.shared_vars_out:
-            d["shared_vars_out"] = self.shared_vars_out
         if self.parent_id:
             d["parent_id"] = self.parent_id
         return d
@@ -136,7 +130,6 @@ class ExecutionGraphTracker:
         step_index: int,
         status: str = "done",
         artifact_keys: list[str] | None = None,
-        shared_vars_out: list[str] | None = None,
     ) -> None:
         nid = self._running_by_name.pop(tool_name, None)
         node = self._nodes.get(nid) if nid else None
@@ -145,8 +138,6 @@ class ExecutionGraphTracker:
         node.status = status
         if artifact_keys:
             node.artifact_keys = artifact_keys
-        if shared_vars_out:
-            node.shared_vars_out = shared_vars_out
         start = self._started_at.get(node.id)
         if start:
             node.duration_ms = int((time.perf_counter() - start) * 1000)

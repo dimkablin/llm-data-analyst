@@ -248,6 +248,12 @@ export async function getSession(sessionId: string): Promise<SessionState> {
   return (await response.json()) as SessionState;
 }
 
+export async function getSessionNotebook(sessionId: string): Promise<string> {
+  const response = await authFetch(`/sessions/${sessionId}/notebook`);
+  await assertOk(response);
+  return await response.text();
+}
+
 export async function getRuntimeModelProfile(): Promise<RuntimeModelProfile> {
   const response = await authFetch("/runtime/model");
   await assertOk(response);

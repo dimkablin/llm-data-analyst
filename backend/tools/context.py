@@ -9,7 +9,7 @@ from backend.core.config import Settings
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 
 if TYPE_CHECKING:
-    from backend.tools.shared_context import SharedContext
+    from backend.tools.sandbox import SessionSandbox
 
 
 @dataclass
@@ -22,7 +22,7 @@ class ToolBuildContext:
     tool_db_runtime: RuntimeDBConnectionConfig | None = None
     csv_loaded: bool = False
     csv_session_id: str | None = None
-    shared_context: SharedContext | None = None
+    sandbox: SessionSandbox | None = None
 
     @property
     def has_data(self) -> bool:

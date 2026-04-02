@@ -32,7 +32,7 @@ class PandasTool(BaseExecTool):
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
-        shared_context: object | None = None,
+        sandbox: object | None = None,
     ) -> None:
         super().__init__(
             df,
@@ -40,7 +40,7 @@ class PandasTool(BaseExecTool):
             include_plotly=False,
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
-            shared_context=shared_context,
+            sandbox=sandbox,
         )
 
     @staticmethod

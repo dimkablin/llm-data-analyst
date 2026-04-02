@@ -194,8 +194,6 @@ export type GraphNode = {
   duration_ms?: number;
   tool_name?: string;
   artifact_keys?: string[];
-  shared_vars_in?: string[];
-  shared_vars_out?: string[];
   parent_id?: string;
 };
 

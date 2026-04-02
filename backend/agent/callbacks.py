@@ -252,7 +252,6 @@ class ToolCollector(BaseCallbackHandler):
                 self._step_index,
                 status="done" if event_payload["status"] == "ok" else "error",
                 artifact_keys=event_payload.get("artifact_keys"),
-                shared_vars_out=payload.get("shared_vars_out"),
             )
             if self._phase_collector_ref is not None:
                 self._phase_collector_ref._graph_version += 1

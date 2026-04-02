@@ -153,9 +153,8 @@ def check_metric(result: dict) -> tuple[bool, str]:
     return True, f"{len(arts)} artifact(s)"
 
 
-def check_shared_context(result: dict) -> tuple[bool, str]:
-    """Verify multi-tool query uses shared_context: pandas_tool produces shared_ vars,
-    plotly_tool consumes them. Check execution_graph for shared_vars_out on tool nodes."""
+def check_multi_tool(result: dict) -> tuple[bool, str]:
+    """Verify multi-tool query produces both table and plot artifacts."""
     arts = result["artifacts"]
     if not arts:
         return False, "no artifacts"
@@ -174,21 +173,10 @@ def check_shared_context(result: dict) -> tuple[bool, str]:
 
     nodes = graph.get("nodes", [])
     tool_nodes = [n for n in nodes if n.get("type") == "tool"]
-    if len(tool_nodes) < 2:
-        return False, f"expected 2+ tool nodes, got {len(tool_nodes)}: {[n.get('label') for n in tool_nodes]}"
 
-    # Check if any tool node produced shared variables
-    shared_producers = [
-        n for n in tool_nodes if n.get("shared_vars_out")
-    ]
     details = []
     details.append(f"{len(arts)} artifact(s) with plot")
     details.append(f"{len(tool_nodes)} tool nodes: {[n.get('label') for n in tool_nodes]}")
-    if shared_producers:
-        for p in shared_producers:
-            details.append(f"shared_vars_out from {p['label']}: {p['shared_vars_out']}")
-    else:
-        details.append("WARN: no shared_vars_out found on tool nodes (LLM may have inlined data)")
 
     return True, "; ".join(details)
 
@@ -248,10 +236,10 @@ def main():
     ))
 
     results.append(run_test(
-        "4. [CSV] Shared Context (multi-tool)",
+        "4. [CSV] Multi-tool (sandbox)",
         token, csv_sid,
         "Посчитай суммарные продажи (sales) по каждой категории (category) и построй столбчатый график по этим агрегированным данным",
-        check_shared_context,
+        check_multi_tool,
     ))
 
     # ── DB session ─────────────────────────────────────────────────

@@ -257,20 +257,20 @@ tool_result
 
 
 pandas_tool_prompt = """Pandas table tool. Input: Python code.
-Available: `df` (DataFrame preloaded — do NOT call pd.read_csv).
+Available: `df` (DataFrame preloaded — do NOT call pd.read_csv). All variables from previous tool calls persist in sandbox.
 Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"name": result_df}}`.
 Last line: `tool_result`.
-To share data with next tool, prefix variable with `shared_`: `shared_agg = df.groupby("col").sum()`.
+Variables you create (e.g. `agg = df.groupby("col").sum()`) are automatically available to subsequent tools.
 Example: `result_df = df.describe().T; tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"summary": result_df}}; tool_result`
 """
 
 
 plotly_tool_prompt = """Plotly chart tool. Input: Python code.
-Available: `df` (DataFrame), `px`, `go`, `chart`. Shared variables from previous tools (if any) are also available.
+Available: `df` (DataFrame), `px`, `go`, `chart`. All variables from previous tool calls persist in sandbox.
 `df` is preloaded — do NOT call pd.read_csv().
 Create `fig` (plotly Figure), then: `tool_result = chart.result(fig, artifact_name="chart_name")`.
 Last line: `tool_result`.
-If a `shared_*` variable (e.g. `shared_agg`) is available from a previous tool, use it directly.
+If a variable from a previous tool (e.g. `agg`) is available, use it directly instead of recalculating.
 Example: `fig = px.bar(df, x="col1", y="col2", title="Title"); tool_result = chart.result(fig, "my_chart"); tool_result`
 """
 

@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
 from backend.api.deps import get_current_user
@@ -220,4 +221,19 @@ def get_session(
         source_mode=state.source_mode,
         selected_skill_ids=list(state.selected_skill_ids or []),
     )
+
+
+@router.get("/sessions/{session_id}/notebook")
+def get_session_notebook(
+    session_id: str,
+    current_user: AuthUser = Depends(get_current_user),
+) -> PlainTextResponse:
+    """Return the session notebook markdown (persisted by sandbox)."""
+    if not _auth_db.is_session_owner(session_id, current_user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    notebook_path = _store._session_dir(session_id) / "notebook.md"
+    if not notebook_path.exists():
+        return PlainTextResponse("", media_type="text/markdown")
+    content = notebook_path.read_text(encoding="utf-8")
+    return PlainTextResponse(content, media_type="text/markdown")
 

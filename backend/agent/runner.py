@@ -10,6 +10,7 @@ import time
 from datetime import date
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import pandas as pd
@@ -47,7 +48,7 @@ from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
 from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.tools.context import ToolBuildContext
-from backend.tools.shared_context import SharedContext
+from backend.tools.sandbox_manager import SandboxManager
 from backend.tools.policy import (
     detect_data_access_mode,
     has_enabled_data_tools,
@@ -336,7 +337,7 @@ class AgentGraphState(TypedDict, total=False):
     tools: list
     capability_context: dict[str, Any]
     llm_unreachable: bool
-    shared_context: Any
+    sandbox: Any
     graph_tracker: Any
 
     response: AgentResponse
@@ -1303,7 +1304,7 @@ class AgentRunner:
         step_index: int,
         max_steps: int,
         capability_context: dict[str, Any] | None = None,
-        shared_context: SharedContext | None = None,
+        sandbox: Any | None = None,
     ) -> str:
         source_mode = str((capability_context or {}).get("source_mode", "")).strip() or "dataset"
         tool_descriptions = str((capability_context or {}).get("tool_descriptions", "")).strip()
@@ -1340,11 +1341,11 @@ class AgentRunner:
                 "потом формируй итоговый ответ."
             )
 
-        # Shared variables from previous tool calls.
-        if shared_context and shared_context:
-            shared_block = shared_context.describe_for_prompt()
-            if shared_block:
-                blocks.append(shared_block)
+        # Sandbox context: available variables + session notebook.
+        if sandbox:
+            sandbox_block = sandbox.describe_for_prompt()
+            if sandbox_block:
+                blocks.append(sandbox_block)
 
         # Auto-selected tool skill instructions
         tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
@@ -2329,7 +2330,15 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
-        shared_ctx = state.get("shared_context") or SharedContext()
+        # Get or create a persistent sandbox for this session.
+        trace_ctx = state.get("trace_context") or {}
+        session_id = trace_ctx.get("session_id", "default")
+        sandbox = SandboxManager.get_instance().get_or_create(session_id)
+        sandbox.ensure_storage_dir(Path(self.settings.storage_dir) / session_id)
+        if df is not None:
+            source_label = str(trace_ctx.get("dataset_name", "") or "")
+            sandbox.bind_dataframe(df, source_label=source_label, db_runtime_config=tool_db_runtime)
+
         _ctx = ToolBuildContext(
             settings=self.settings,
             allowed_tool_keys=self.allowed_tool_keys,
@@ -2337,7 +2346,7 @@ class AgentRunner:
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
-            shared_context=shared_ctx,
+            sandbox=sandbox,
         )
         tools: list = self._tool_registry.build_tools(_ctx)
         tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
@@ -2478,7 +2487,7 @@ class AgentRunner:
         if first_run:
             result["tools"] = tools
             result["step_index"] = 0
-            result["shared_context"] = shared_ctx
+            result["sandbox"] = sandbox
         result["capability_context"] = capability_context
         return result
 
@@ -2499,7 +2508,7 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
-        shared_ctx = state.get("shared_context")
+        sandbox = state.get("sandbox")
         execution_system_prompt = self._build_execution_system_prompt(
             user_prompt=state.get("prompt", ""),
             plan=plan,
@@ -2507,7 +2516,7 @@ class AgentRunner:
             step_index=step_index,
             max_steps=max_steps,
             capability_context=state.get("capability_context"),
-            shared_context=shared_ctx,
+            sandbox=sandbox,
         )
 
         self._emit_phase_event(
