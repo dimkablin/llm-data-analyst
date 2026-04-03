@@ -148,7 +148,7 @@ def build_source_binding_cell(
 
 def build_preamble_cell(session_id: str, sources_summary: str = "") -> NotebookCell:
     """Build the markdown preamble cell for a new notebook."""
-    lines = [f"# Analysis Session"]
+    lines = ["# Analysis Session"]
     if sources_summary:
         lines.append(f"\n{sources_summary}")
 

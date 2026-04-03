@@ -7,7 +7,6 @@ from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator, NotebookEdit, CellOp
 from backend.notebook.session_source import (
-    SessionManifest,
     SessionSource,
     alias_to_variable_name,
     make_source_alias,

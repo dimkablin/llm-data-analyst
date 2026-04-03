@@ -16,7 +16,6 @@ import json
 import logging
 import threading
 from pathlib import Path
-from typing import Any
 
 from backend.notebook.models import (
     NotebookCell,

@@ -27,7 +27,7 @@ import pandas as pd
 
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.models import NotebookDocument
-from backend.notebook.session_source import SessionManifest, SessionSource
+from backend.notebook.session_source import SessionManifest
 from backend.notebook.store import NotebookStore
 
 logger = logging.getLogger(__name__)
@@ -132,7 +132,6 @@ class KernelManager:
 
     def _restore(self, session_id: str) -> KernelState:
         """Create a fresh kernel and replay notebook cells."""
-        from backend.tools.sandbox import SessionSandbox
         from backend.tools.sandbox_manager import SandboxManager
 
         logger.info("Restoring kernel for session %s", session_id)

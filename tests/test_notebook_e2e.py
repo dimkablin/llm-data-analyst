@@ -23,7 +23,6 @@ from backend.notebook.models import (
 from backend.notebook.store import NotebookStore
 from backend.notebook.orchestrator import (
     CellOp,
-    EditResult,
     NotebookEdit,
     NotebookOrchestrator,
 )
@@ -752,7 +751,7 @@ class TestKernelManagerRestore(unittest.TestCase):
             source_type="csv",
             display_name="data.csv",
             variable_name="data_df",
-            parquet_path=f"sources/data.csv",
+            parquet_path="sources/data.csv",
         ))
         self.mf_store.save(self.session_id, manifest)
 
