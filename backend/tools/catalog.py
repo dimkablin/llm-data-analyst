@@ -19,12 +19,22 @@ class ToolCatalogSpec:
 
 BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
     ToolCatalogSpec(
-        tool_key="sql_table_tool",
-        tool_label="SQL table tool",
+        tool_key="sql_tool",
+        tool_label="SQL tool",
         display_name_ru="SQL по таблицам",
         description="Natural-language questions over attached DB and/or CSV-in-DuckDB: table pick, safe SELECT, tabular artifact.",
         description_ru="Вопросы на естественном языке по привязанной БД и/или CSV в DuckDB: выбор таблицы, безопасный SELECT, табличный артефакт.",
         capabilities=("read_only_sql", "table_artifact", "nl_to_sql"),
+        requires_session_data=True,
+        kind="builtin",
+    ),
+    ToolCatalogSpec(
+        tool_key="database_tool",
+        tool_label="Database Tool",
+        display_name_ru="Структура БД",
+        description="Lightweight DB catalog queries: list tables, describe columns, preview rows, list schemas. No LLM-generated SQL.",
+        description_ru="Быстрый просмотр структуры БД: список таблиц, колонки, превью строк, схемы. Без генерации SQL.",
+        capabilities=("db_catalog", "table_artifact", "db_preview"),
         requires_session_data=True,
         kind="builtin",
     ),

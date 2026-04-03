@@ -97,7 +97,7 @@ class NotebookEntry:
     entry_type: str  # "code" | "data_source_change"
     tool_name: str = ""
     language: str = "python"  # "python" | "sql"
-    question: str = ""        # natural-language question (sql_table_tool only)
+    question: str = ""        # natural-language question (sql_tool only)
     code: str = ""
     result_summary: str = ""
     variables_created: list[str] = field(default_factory=list)
@@ -216,7 +216,7 @@ class SessionSandbox:
         language: str = "python",
         question: str = "",
     ) -> None:
-        """Append a code entry to the notebook from an external tool (e.g. SQLTableTool)."""
+        """Append a code entry to the notebook from an external tool (e.g. SQLTool)."""
         with self._lock:
             self._notebook.append(NotebookEntry(
                 timestamp=_now_iso(),
@@ -447,7 +447,7 @@ class SessionSandbox:
     def put(self, name: str, value: Any) -> None:
         """Inject a named variable into scope without executing code.
 
-        Used by non-exec tools (e.g. sql_table_tool) to make their results
+        Used by non-exec tools (e.g. sql_tool) to make their results
         available to subsequent tools (e.g. plotly_tool, pandas_tool).
         """
         with self._lock:

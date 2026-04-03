@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -252,7 +252,7 @@ class DBAnalyticsHelper:
             build_db_metadata_recipe_step(
                 action=action,
                 title=action.replace("_", " ").title(),
-                tool_name="sql_table_tool",
+                tool_name="sql_tool",
                 summary="; ".join(summary_parts),
             )
         ]
@@ -272,7 +272,7 @@ class DBAnalyticsHelper:
             build_sql_recipe_step(
                 sql=sql,
                 title="Executed SQL",
-                tool_name="sql_table_tool",
+                tool_name="sql_tool",
                 summary=f"{summary}; max_rows={max_rows}",
             )
         ]

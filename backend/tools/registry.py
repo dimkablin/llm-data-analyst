@@ -20,6 +20,7 @@ from typing import Callable
 from backend.tools.catalog import ALL_TOOL_SPECS, ToolCatalogSpec
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
+    DatabaseToolFactory,
     ForecastToolFactory,
     GetToolInstructionsToolFactory,
     MemoryToolFactory,
@@ -27,7 +28,7 @@ from backend.tools.impl.factory import (
     PandasToolFactory,
     PlotlyToolFactory,
     SearchToolFactory,
-    SQLTableToolFactory,
+    SQLToolFactory,
     ToolFactory,
     ValueToolFactory,
 )
@@ -113,7 +114,8 @@ class ToolRegistry:
         # Built-in tools are always registered; their own is_available guards handle
         # data-context requirements (df / db_runtime_config / allowed_tool_keys).
         factories.extend([
-            SQLTableToolFactory(),
+            SQLToolFactory(),
+            DatabaseToolFactory(),
             PlotlyToolFactory(),
             PandasToolFactory(),
             ValueToolFactory(),

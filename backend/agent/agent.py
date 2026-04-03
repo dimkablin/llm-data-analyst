@@ -14,7 +14,7 @@ from backend.agent.pandas_agent import (
     normalize_agent_messages,
 )
 from backend.agent.prompts import agent_prompt
-from backend.tools.impl import PandasTool, PlotlyTool, SQLTableTool, ValueTool
+from backend.tools.impl import PandasTool, PlotlyTool, SQLTool, ValueTool
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from utils.params_manager import params_manager
 
@@ -123,7 +123,7 @@ class Agent:
         ]
         if self.db_runtime_config is not None:
             tools.append(
-                SQLTableTool(
+                SQLTool(
                     llm_base_url=self._llm_base_url,
                     llm_model=self.llm_model,
                     llm_api_key=self.llm_api_key,

@@ -1,12 +1,14 @@
-﻿from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
+from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
 from backend.tools.impl.base_tool import BaseExecTool
+from backend.tools.impl.database_tool import DatabaseTool
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
+    DatabaseToolFactory,
     ForecastToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
     SearchToolFactory,
-    SQLTableToolFactory,
+    SQLToolFactory,
     ToolFactory,
     ValueToolFactory,
 )
@@ -15,12 +17,13 @@ from backend.tools.impl.memory_tool import MemoryTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.search_tool import SearchTool
-from backend.tools.impl.sql_table_tool import SQLTableTool
+from backend.tools.impl.sql_tool import SQLTool
 from backend.tools.impl.value_tool import ValueTool
 
 __all__ = [
     # Tool instances
     "BaseExecTool",
+    "DatabaseTool",
     "PandasTool",
     "PlotlyTool",
     "ValueTool",
@@ -28,13 +31,14 @@ __all__ = [
     "ForecastTool",
     "MemoryTool",
     "SearchTool",
-    "SQLTableTool",
+    "SQLTool",
     # Factories
     "ToolFactory",
     "SearchToolFactory",
     "ForecastToolFactory",
     "AnomalyPlanfactToolFactory",
-    "SQLTableToolFactory",
+    "DatabaseToolFactory",
+    "SQLToolFactory",
     "PlotlyToolFactory",
     "PandasToolFactory",
     "ValueToolFactory",

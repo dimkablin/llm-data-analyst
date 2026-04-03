@@ -3,12 +3,26 @@ name: Plotly Tool
 description: Построение интерактивных графиков через Plotly. Единственный инструмент для визуализации — используй всегда когда нужен chart/plot/diagram.
 kind: tool
 tool_key: plotly_tool
-triggers: график, диаграмма, визуализация, plotly, chart, plot, scatter, bar, line, pie, histogram, heatmap
+triggers: график, графики, графика, диаграмм, диаграмма, визуализац, визуализация, plotly, chart, charts, plot, scatter, bar, line, pie, histogram, heatmap, столбчат, линейн
 ---
 
 ## plotly_tool — интерактивные графики
 
 Вход: Python-код. Выход: Plotly `Figure`, обёрнутый через `chart.result(fig, artifact_name="...")`.
+
+### Примеры запросов пользователя
+
+Вызывай этот инструмент, когда пользователь просит:
+- "Построй график продаж по месяцам"
+- "Покажи диаграмму распределения"
+- "Визуализируй корреляцию X и Y"
+- "Сделай scatter plot"
+- "Нарисуй столбчатую диаграмму"
+- "Покажи линейный тренд"
+- "chart по категориям"
+- "histogram по возрасту"
+
+IMPORTANT: если пользователь просит визуализацию — обязательно вызови plotly_tool и доведи до `chart.result(fig, ...)`. Не подменяй график только `pandas_tool` или `value_tool`.
 
 ### Переменные в scope
 
@@ -106,7 +120,7 @@ tool_result
 ### Сценарий 3: данные из БД через `db.query_dataframe()` (режим db_connection)
 
 Используй когда сессия подключена к БД и нужно сделать SQL-выборку прямо внутри графика.
-Это эффективнее чем sql_table_tool → plotly_tool, потому что данные не покидают scope.
+Это эффективнее чем sql_tool → plotly_tool, потому что данные не покидают scope.
 
 IMPORTANT: `db.query_dataframe(sql)` возвращает `pd.DataFrame`. Передавай его прямо в `px.*`.
 

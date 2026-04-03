@@ -109,7 +109,7 @@ class UserToolSettingsTests(unittest.TestCase):
         self.assertFalse(by_key["forecast_tool"].available_globally)
         self.assertFalse(by_key["forecast_tool"].effective_enabled)
         self.assertTrue(by_key["anomaly_planfact_tool"].effective_enabled)
-        self.assertIn("SQL", by_key["sql_table_tool"].display_name_ru)
+        self.assertIn("SQL", by_key["sql_tool"].display_name_ru)
         self.assertTrue(by_key["search_tool"].description_ru)
 
     def test_effective_tool_keys_feed_runtime_policy_layer(self) -> None:
@@ -182,7 +182,7 @@ class UserToolSettingsTests(unittest.TestCase):
         self.assertFalse(is_tool_allowed("rag_tool", allowed_tool_keys))
         self.assertFalse(is_tool_allowed("plotly_tool", allowed_tool_keys))
         self.assertTrue(is_tool_allowed("forecast_tool", allowed_tool_keys))
-        self.assertTrue(is_tool_allowed("sql_table_tool", allowed_tool_keys))
+        self.assertTrue(is_tool_allowed("sql_tool", allowed_tool_keys))
 
 
 if __name__ == "__main__":

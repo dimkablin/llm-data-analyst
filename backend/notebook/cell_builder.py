@@ -63,11 +63,11 @@ def build_cell_from_tool_result(
     """
     # Determine cell tags based on tool.
     tags = _tags_for_tool(tool_name)
-    language = "sql" if tool_name == "sql_table_tool" else "python"
+    language = "sql" if tool_name == "sql_tool" else "python"
 
     # Extract question for SQL tools.
     question = ""
-    if tool_name == "sql_table_tool" and isinstance(result, tuple):
+    if tool_name == "sql_tool" and isinstance(result, tuple):
         question = plan_step
 
     # Build breadcrumbs.
@@ -170,7 +170,7 @@ def build_preamble_cell(session_id: str, sources_summary: str = "") -> NotebookC
 def _tags_for_tool(tool_name: str) -> list[str]:
     if tool_name == "plotly_tool":
         return ["visualization"]
-    if tool_name in ("pandas_tool", "value_tool", "sql_table_tool"):
+    if tool_name in ("pandas_tool", "value_tool", "sql_tool"):
         return ["analysis"]
     if tool_name == "search_tool":
         return ["search"]

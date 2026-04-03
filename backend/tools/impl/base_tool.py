@@ -1,12 +1,15 @@
 import ast
 import copy
 import hashlib
+import logging
 import re
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.artifacts.artifact_meta import extract_artifact_hints
@@ -17,6 +20,8 @@ if TYPE_CHECKING:
     from backend.tools.sandbox import SessionSandbox
 
 from backend.tools.sandbox import normalize_code
+
+logger = logging.getLogger(__name__)
 
 
 class ToolResultEnvelope(BaseModel):
@@ -73,6 +78,7 @@ class BaseExecTool(BaseTool):
     tool_result_schema_version: str = "1.0"
     artifact_name_max_len: int = 48
     tool_cache_size: int = 48
+    code_fix_max_retries: int = 3
     _df: pd.DataFrame = PrivateAttr()
     _include_plotly: bool = PrivateAttr(default=False)
     _tool_cache: OrderedDict[str, tuple[str, dict[str, object]]] = PrivateAttr(
@@ -81,6 +87,11 @@ class BaseExecTool(BaseTool):
     _dataset_signature: str = PrivateAttr(default="")
     _db_runtime_config: "RuntimeDBConnectionConfig | None" = PrivateAttr(default=None)
     _sandbox: "SessionSandbox | None" = PrivateAttr(default=None)
+    _llm_base_url: str | None = PrivateAttr(default=None)
+    _llm_model: str | None = PrivateAttr(default=None)
+    _llm_api_key: str | None = PrivateAttr(default=None)
+    _llm_enable_thinking: bool = PrivateAttr(default=False)
+    _llm_chat_template_kwargs_enabled: bool = PrivateAttr(default=True)
 
     def __init__(
         self,
@@ -90,15 +101,27 @@ class BaseExecTool(BaseTool):
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
         sandbox: "SessionSandbox | None" = None,
+        llm_base_url: str | None = None,
+        llm_model: str | None = None,
+        llm_api_key: str | None = None,
+        llm_enable_thinking: bool = False,
+        llm_chat_template_kwargs_enabled: bool = True,
+        code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__()
         self._df = df
         self._include_plotly = include_plotly
         self.execution_timeout_sec = execution_timeout_sec
         self.tool_cache_size = max(0, int(tool_cache_size))
+        self.code_fix_max_retries = max(0, int(code_fix_max_retries))
         self._dataset_signature = self._build_dataset_signature(df)
         self._db_runtime_config = db_runtime_config
         self._sandbox = sandbox
+        self._llm_base_url = llm_base_url
+        self._llm_model = llm_model
+        self._llm_api_key = llm_api_key
+        self._llm_enable_thinking = llm_enable_thinking
+        self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
@@ -366,6 +389,101 @@ class BaseExecTool(BaseTool):
             extra_scope=extra_scope or None,
         )
 
+    def _try_run_once(self, code: str) -> tuple[bool, str, dict[str, object]]:
+        """Execute code once. Returns (success, message, payload).
+
+        On success: success=True, message=✅ text, payload=full artifact dict.
+        On failure: success=False, message=clean error string, payload={}.
+        """
+        try:
+            tool_result = self._execute_in_sandbox(code)
+            artifact_hints = self._extract_payload_hints(tool_result)
+
+            if tool_result is None:
+                return False, "Не найдена переменная `tool_result`", {}
+
+            normalized_result, contract_message = self._validate_tool_contract(tool_result)
+            if normalized_result is None:
+                return False, contract_message, {}
+
+            normalized_result = self.post_process_tool_result(normalized_result)
+            if not isinstance(normalized_result, dict) or not normalized_result:
+                return False, "post_process_tool_result вернул пустой или неверный результат.", {}
+
+            valid, validate_message = self.validate_tool_result(normalized_result)
+            if not valid:
+                return False, validate_message, {}
+
+            text = (
+                f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
+                f"{', '.join(normalized_result.keys())}"
+            )
+            payload: dict[str, object] = {"text": text, "code": code}
+            if artifact_hints:
+                payload.update(artifact_hints)
+            payload[self.artifact_name] = normalized_result
+            return True, text, payload
+
+        except SyntaxError as e:
+            code_lines = code.splitlines()
+            error_line = (
+                code_lines[e.lineno - 1]
+                if e.lineno and e.lineno <= len(code_lines)
+                else ""
+            )
+            return False, f"SyntaxError: {e.msg}\n{error_line}", {}
+        except Exception as e:
+            return False, sanitize_error_text(str(e) or e.__class__.__name__), {}
+
+    def _fix_with_llm(self, code: str, error: str, attempt: int) -> str | None:
+        """Ask LLM to fix broken code given the error message. Returns fixed code or None."""
+        if not self._llm_base_url or not self._llm_model:
+            return None
+
+        llm_kwargs: dict[str, Any] = {
+            "model": self._llm_model,
+            "base_url": self._llm_base_url,
+            "api_key": self._llm_api_key or "no-key",
+            "streaming": False,
+            "temperature": 0.0,
+            "timeout": 60.0,
+        }
+        if self._llm_chat_template_kwargs_enabled:
+            llm_kwargs["extra_body"] = {
+                "chat_template_kwargs": {"enable_thinking": False}
+            }
+        llm = ChatOpenAI(**llm_kwargs)
+
+        # Extract the first ~400 chars of the tool description to give the LLM scope context.
+        scope_hint = (self.description or "")[:400].strip()
+
+        prompt = f"""Fix the Python code for {self.name} (attempt {attempt}).
+
+Tool scope (available variables):
+{scope_hint}
+
+Failed code:
+{code}
+
+Error:
+{error}
+
+Return ONLY the corrected Python code. No markdown, no explanations, no code fences."""
+
+        try:
+            resp = llm.invoke([
+                SystemMessage(content="/no_think Fix code. Return Python only."),
+                HumanMessage(content=prompt),
+            ])
+            fixed = str(resp.content or "").strip()
+            # Strip markdown code fences if LLM adds them despite instructions.
+            fixed = re.sub(r"^```(?:python)?\s*", "", fixed, flags=re.IGNORECASE)
+            fixed = re.sub(r"\s*```$", "", fixed)
+            return normalize_code(fixed.strip()) or None
+        except Exception as exc:
+            logger.debug("code_fix_with_llm failed on attempt %d: %s", attempt, exc)
+            return None
+
     def _run(self, code: str) -> tuple[str, dict[str, object]]:
         code = normalize_code(code)
         if not code:
@@ -387,58 +505,29 @@ class BaseExecTool(BaseTool):
             text = f"❌ Ошибка при создании {self.human_name}: {validate_message}"
             return text, {self.artifact_name: None, "text": text}
 
-        try:
-            tool_result = self._execute_in_sandbox(code)
-            artifact_hints = self._extract_payload_hints(tool_result)
+        current_code = code
+        last_error = ""
 
-            if tool_result is None:
-                text = (
-                    f"❌ Ошибка при создании {self.human_name}: "
-                    "Не найдена переменная `tool_result`"
-                )
-                return text, {self.artifact_name: None, "text": text}
+        for attempt in range(1 + self.code_fix_max_retries):
+            ok, msg, payload = self._try_run_once(current_code)
+            if ok:
+                result = (msg, payload)
+                self._cache_set(cache_key, result)
+                return result
 
-            normalized_result, contract_message = self._validate_tool_contract(
-                tool_result
-            )
-            if normalized_result is None:
-                text = (
-                    f"❌ Ошибка при создании {self.human_name}: "
-                    f"{contract_message}"
-                )
-                return text, {self.artifact_name: None, "text": text}
+            last_error = msg
 
-            normalized_result = self.post_process_tool_result(normalized_result)
-            if not isinstance(normalized_result, dict) or not normalized_result:
-                text = (
-                    f"❌ Ошибка валидации результатов {self.human_name}: "
-                    "post_process_tool_result вернул пустой или неверный результат."
-                )
-                return text, {self.artifact_name: None, "text": text}
+            if attempt < self.code_fix_max_retries:
+                fixed = self._fix_with_llm(current_code, last_error, attempt + 1)
+                if fixed and fixed != current_code:
+                    logger.debug(
+                        "%s: code fix attempt %d/%d — retrying after error: %s",
+                        self.name, attempt + 1, self.code_fix_max_retries, last_error[:120],
+                    )
+                    current_code = fixed
+                    continue
+                # LLM unavailable or returned identical code — no point retrying.
+                break
 
-            valid, validate_message = self.validate_tool_result(normalized_result)
-            if not valid:
-                text = (
-                    f"❌ Ошибка валидации результатов {self.human_name}: "
-                    f"{validate_message}"
-                )
-                return text, {self.artifact_name: None, "text": text}
-
-            text = (
-                f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
-                f"{', '.join(normalized_result.keys())}"
-            )
-            payload = {
-                "text": text,
-                "code": code,
-            }
-            if artifact_hints:
-                payload.update(artifact_hints)
-            payload[self.artifact_name] = normalized_result
-            result = (text, payload)
-            self._cache_set(cache_key, result)
-            return result
-        except SyntaxError as e:
-            return self.syntax_error(code, e)
-        except Exception as e:
-            return self.other_error(e)
+        text = f"❌ Ошибка при создании {self.human_name}: {last_error}"
+        return text, {self.artifact_name: None, "text": text}

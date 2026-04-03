@@ -21,7 +21,8 @@ from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.search_tool import SearchTool
-from backend.tools.impl.sql_table_tool import SQLTableTool
+from backend.tools.impl.database_tool import DatabaseTool
+from backend.tools.impl.sql_tool import SQLTool
 from backend.tools.impl.value_tool import ValueTool
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
@@ -114,8 +115,8 @@ class AnomalyPlanfactToolFactory:
 # ── Built-in factories ────────────────────────────────────────────────────────
 
 
-class SQLTableToolFactory:
-    key = "sql_table_tool"
+class SQLToolFactory:
+    key = "sql_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
         if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
@@ -124,8 +125,8 @@ class SQLTableToolFactory:
             return True
         return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
-    def build(self, ctx: ToolBuildContext) -> SQLTableTool:
-        return SQLTableTool(
+    def build(self, ctx: ToolBuildContext) -> SQLTool:
+        return SQLTool(
             llm_base_url=ctx.settings.llm_base_url,
             llm_model=ctx.settings.llm_model,
             llm_api_key=ctx.settings.llm_api_key,
@@ -136,6 +137,22 @@ class SQLTableToolFactory:
             csv_session_id=ctx.csv_session_id,
             max_rows=200,
             sandbox=ctx.sandbox,
+        )
+
+
+class DatabaseToolFactory:
+    key = "database_tool"
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        return ctx.tool_db_runtime is not None
+
+    def build(self, ctx: ToolBuildContext) -> DatabaseTool:
+        return DatabaseTool(
+            db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
+            timeout_sec=15.0,
         )
 
 
@@ -159,6 +176,11 @@ class PlotlyToolFactory:
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
+            llm_base_url=ctx.settings.llm_base_url,
+            llm_model=ctx.settings.llm_model,
+            llm_api_key=ctx.settings.llm_api_key,
+            llm_enable_thinking=ctx.settings.llm_enable_thinking,
+            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
         )
 
 
@@ -175,6 +197,11 @@ class PandasToolFactory:
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
+            llm_base_url=ctx.settings.llm_base_url,
+            llm_model=ctx.settings.llm_model,
+            llm_api_key=ctx.settings.llm_api_key,
+            llm_enable_thinking=ctx.settings.llm_enable_thinking,
+            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
         )
 
 
@@ -191,6 +218,11 @@ class ValueToolFactory:
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
+            llm_base_url=ctx.settings.llm_base_url,
+            llm_model=ctx.settings.llm_model,
+            llm_api_key=ctx.settings.llm_api_key,
+            llm_enable_thinking=ctx.settings.llm_enable_thinking,
+            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
         )
 
 

@@ -1,7 +1,7 @@
 """E2E smoke tests for llm-data-analyst backend.
 
 Tests: table display, chart generation, scalar metric, multi-tool sandbox,
-       sql_table_tool->plotly_tool variable injection fix.
+       sql_tool->plotly_tool variable injection fix.
 Requires: running backend at localhost:8605 with Ollama/Qwen3.
 """
 from __future__ import annotations
@@ -179,9 +179,9 @@ def check_multi_tool(result: dict) -> tuple[bool, str]:
 
 
 def check_sql_then_chart(result: dict) -> tuple[bool, str]:
-    """Key regression check: sql_table_tool result used by plotly_tool via sandbox variable.
+    """Key regression check: sql_tool result used by plotly_tool via sandbox variable.
 
-    Before the fix, plotly_tool would fail with NameError because sql_table_tool
+    Before the fix, plotly_tool would fail with NameError because sql_tool
     did not inject its result DataFrame into the sandbox scope.
     After the fix, the DataFrame is available as a named variable.
     """
@@ -325,7 +325,7 @@ def main():
             ("7. [DB] Chart from DB (inline SQL in plotly_tool)",
              f"Построй столбчатую диаграмму: количество пассажиров по классу билета (Pclass) из таблицы {table_short}",
              check_chart),
-            ("8. [DB] sql_table_tool->plotly_tool sandbox variable",
+            ("8. [DB] sql_tool->plotly_tool sandbox variable",
              f"Сначала получи топ-5 записей из таблицы {table_short} через sql инструмент, "
              f"затем построй по ним столбчатый график",
              check_sql_then_chart),

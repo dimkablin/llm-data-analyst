@@ -162,15 +162,15 @@ class SkillsIntegrationTests(unittest.TestCase):
 
         skill_ids = {s.skill_id for s in skills}
         assert "plotly_tool" in skill_ids
-        assert "sql_table_tool" in skill_ids
+        assert "sql_tool" in skill_ids
 
-    def test_sql_table_tool_skill_describes_data_flow(self) -> None:
+    def test_sql_tool_skill_describes_data_flow(self) -> None:
         from pathlib import Path
         from backend.skills import SkillRegistry
 
         skills_dir = Path(__file__).parent.parent / "skills"
         registry = SkillRegistry.from_path(skills_dir)
-        skill = registry.get("sql_table_tool")
+        skill = registry.get("sql_tool")
 
         assert "db.query_dataframe" in skill.instructions_markdown
 
@@ -180,7 +180,7 @@ class SkillsIntegrationTests(unittest.TestCase):
 
         skills_dir = Path(__file__).parent.parent / "skills"
         registry = SkillRegistry.from_path(skills_dir)
-        block = registry.build_tool_skills_prompt_block({"plotly_tool", "sql_table_tool"})
+        block = registry.build_tool_skills_prompt_block({"plotly_tool", "sql_tool"})
 
         assert "db.query_dataframe" in block
 

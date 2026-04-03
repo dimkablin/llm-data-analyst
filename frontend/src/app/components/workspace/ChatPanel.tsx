@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import React, { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   BookOpen,
   Bot,
@@ -29,7 +29,17 @@ import type {
 import { ExecutionGraphView } from "./ExecutionGraphView";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="group/tip relative inline-flex">
+      {children}
+      <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50">
+        {label}
+        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+      </div>
+    </div>
+  );
+}
 
 const QUICK_SUGGESTIONS = [
   "Покажи ключевые метрики датасета",
@@ -171,31 +181,25 @@ export function ChatPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onExportChat}
-                disabled={messages.length === 0}
-                className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Download className="h-5 w-5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Экспорт чата</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onSettingsClick}
-                className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground"
-              >
-                <Settings2 className="h-5 w-5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Настройки</TooltipContent>
-          </Tooltip>
+          <Tip label="Экспорт чата">
+            <button
+              type="button"
+              onClick={onExportChat}
+              disabled={messages.length === 0}
+              className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-5 w-5" />
+            </button>
+          </Tip>
+          <Tip label="Настройки">
+            <button
+              type="button"
+              onClick={onSettingsClick}
+              className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground"
+            >
+              <Settings2 className="h-5 w-5" />
+            </button>
+          </Tip>
         </div>
       </div>
 
@@ -590,31 +594,25 @@ function MessageBubble({
             {formatTime(message.timestamp)}
           </div>
           <div className={`flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 ${isUser ? "flex-row-reverse" : ""}`}>
-            <Tooltip>
-              <TooltipTrigger asChild>
+            <Tip label={copied ? "Скопировано" : "Копировать"}>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+              </button>
+            </Tip>
+            {isLast && !isUser && !isStreaming ? (
+              <Tip label="Повторить генерацию">
                 <button
                   type="button"
-                  onClick={handleCopy}
+                  onClick={() => void onRegenerate()}
                   className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-secondary hover:text-foreground"
                 >
-                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                  <RefreshCw className="h-3.5 w-3.5" />
                 </button>
-              </TooltipTrigger>
-              <TooltipContent>{copied ? "Скопировано" : "Копировать"}</TooltipContent>
-            </Tooltip>
-            {isLast && !isUser && !isStreaming ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => void onRegenerate()}
-                    className="rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-secondary hover:text-foreground"
-                  >
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Повторить генерацию</TooltipContent>
-              </Tooltip>
+              </Tip>
             ) : null}
           </div>
         </div>

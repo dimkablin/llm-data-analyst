@@ -17,7 +17,7 @@ class ArtifactMetaContractTests(unittest.TestCase):
     def test_normalize_recipe_steps_enforces_minimal_contract(self) -> None:
         steps = normalize_recipe_steps(
             [
-                {"sql": "select 1", "tool": "sql_table_tool"},
+                {"sql": "select 1", "tool": "sql_tool"},
                 {"kind": "python", "code": "tool_result = 1", "tool_name": "pandas_tool"},
                 {"kind": "metadata", "summary": "Read schema"},
                 {"kind": "plot", "summary": "Rendered chart", "depends_on": ["1", "2"]},
@@ -46,7 +46,7 @@ class ArtifactMetaContractTests(unittest.TestCase):
             },
             artifact_hints={
                 "source": {"source_label": "Sales DB"},
-                "recipe": [build_sql_recipe_step(sql="SELECT 1", tool_name="sql_table_tool")],
+                "recipe": [build_sql_recipe_step(sql="SELECT 1", tool_name="sql_tool")],
             },
         )
 
@@ -72,10 +72,10 @@ class ArtifactMetaContractTests(unittest.TestCase):
         self.assertEqual(meta["recipe"][0]["code"], "tool_result = df.head()")
 
     def test_recipe_builders_produce_reserved_future_chart_shape(self) -> None:
-        sql_step = build_sql_recipe_step(sql="SELECT * FROM orders LIMIT 10", tool_name="sql_table_tool")
+        sql_step = build_sql_recipe_step(sql="SELECT * FROM orders LIMIT 10", tool_name="sql_tool")
         metadata_step = build_db_metadata_recipe_step(
             action="describe_table",
-            tool_name="sql_table_tool",
+            tool_name="sql_tool",
             summary="Read table metadata",
         )
         chart_step = build_chart_recipe_step(
@@ -99,7 +99,7 @@ class ArtifactMetaContractTests(unittest.TestCase):
                 "recipe": [
                     build_sql_recipe_step(
                         sql="SELECT month, revenue FROM monthly_revenue LIMIT 12",
-                        tool_name="sql_table_tool",
+                        tool_name="sql_tool",
                     ),
                     build_chart_recipe_step(
                         tool_name="plotly_tool",

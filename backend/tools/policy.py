@@ -1,11 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any, Iterable
 
 DATAFRAME_BASE_TOOL_KEYS: frozenset[str] = frozenset(
     {"pandas_tool", "value_tool", "plotly_tool"}
 )
-DB_BASE_TOOL_KEYS: frozenset[str] = frozenset({"sql_table_tool"})
+DB_BASE_TOOL_KEYS: frozenset[str] = frozenset({"sql_tool", "database_tool"})
 ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset({"search_tool", "memory"})
 
 

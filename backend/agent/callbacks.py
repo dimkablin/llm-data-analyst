@@ -148,6 +148,12 @@ class ToolCollector(BaseCallbackHandler):
             if self._phase_collector_ref is not None:
                 self._phase_collector_ref._graph_version += 1
 
+    def on_tool_error(self, error: BaseException | str, tool=None, **kwargs: Any) -> None:
+        self.tool_calls += 1
+        tool_name = self._resolve_tool_name(tool=tool, kwargs=kwargs) or self._last_tool_name
+        if tool_name:
+            self.tool_names.append(tool_name)
+
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
         payload = self._normalize_output(output)

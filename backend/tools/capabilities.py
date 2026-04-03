@@ -13,7 +13,7 @@ _CAPABILITY_SPECS: tuple[dict[str, Any], ...] = (
     {
         "key": "db_query",
         "label": "SQL-анализ БД",
-        "requires_any_tools": ("sql_table_tool",),
+        "requires_any_tools": ("sql_tool", "database_tool"),
         "requires_data_source": "db",
     },
     {

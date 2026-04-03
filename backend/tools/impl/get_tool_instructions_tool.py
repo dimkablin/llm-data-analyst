@@ -17,7 +17,7 @@ class _Input(BaseModel):
     tool_name: str = Field(
         description=(
             "Key of the tool to fetch instructions for "
-            "(e.g. 'plotly_tool', 'sql_table_tool', 'pandas_tool')."
+            "(e.g. 'plotly_tool', 'sql_tool', 'pandas_tool')."
         )
     )
 
@@ -29,7 +29,7 @@ class GetToolInstructionsTool(BaseTool):
     description: str = (
         "Get full usage instructions for a tool before using it. "
         "Returns scope variables, code patterns, rules, and examples. "
-        "Call this before plotly_tool, sql_table_tool, or pandas_tool "
+        "Call this before plotly_tool, sql_tool, or pandas_tool "
         "when you need to know the exact API or code contract."
     )
     args_schema: type[BaseModel] = _Input

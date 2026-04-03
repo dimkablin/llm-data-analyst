@@ -38,6 +38,12 @@ class ValueTool(BaseExecTool):
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
         sandbox: object | None = None,
+        llm_base_url: str | None = None,
+        llm_model: str | None = None,
+        llm_api_key: str | None = None,
+        llm_enable_thinking: bool = False,
+        llm_chat_template_kwargs_enabled: bool = True,
+        code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__(
             df,
@@ -46,6 +52,12 @@ class ValueTool(BaseExecTool):
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
             sandbox=sandbox,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+            llm_api_key=llm_api_key,
+            llm_enable_thinking=llm_enable_thinking,
+            llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            code_fix_max_retries=code_fix_max_retries,
         )
 
     def validate_tool_result(self, tool_result: dict[str, object]) -> tuple[bool, str]:

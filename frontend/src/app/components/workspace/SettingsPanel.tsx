@@ -270,7 +270,7 @@ function NotebookCellView({ cell }: { cell: NotebookCell }) {
         <span className="text-[10px] text-muted-foreground/50">{cell.timestamp}</span>
       </div>
 
-      {/* Question (only for sql_table_tool) */}
+      {/* Question (only for sql_tool) */}
       {cell.question && (
         <div className="px-3 pt-2 pb-1 text-[11px] italic text-muted-foreground/70 border-b border-border/20">
           Q: {cell.question}

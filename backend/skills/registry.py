@@ -199,13 +199,21 @@ class SkillRegistry:
         lines = [
             "## Инструменты (краткое описание)",
             "",
-            "IMPORTANT: перед первым использованием инструмента вызови "
+            "CRITICAL: ПЕРЕД первым вызовом любого инструмента ОБЯЗАТЕЛЬНО вызови "
             "`get_tool_instructions(tool_name)` чтобы получить полные инструкции, "
-            "примеры кода и обязательные правила.",
+            "примеры кода и обязательные правила. БЕЗ этого вызова ты не знаешь "
+            "контракт результата и допустишь ошибки.",
+            "",
+            "Пример: get_tool_instructions('plotly_tool') → получишь scope, "
+            "правила chart.result(), примеры кода.",
             "",
         ]
         for skill in tool_skills:
-            lines.append(f"- `{skill.tool_key}`: {skill.description}")
+            triggers_hint = ""
+            if skill.triggers:
+                sample = ", ".join(skill.triggers[:5])
+                triggers_hint = f" (триггеры: {sample})"
+            lines.append(f"- `{skill.tool_key}`: {skill.description}{triggers_hint}")
         return "\n".join(lines).strip()
 
     def _parse_skill_file(self, path: Path) -> Skill:

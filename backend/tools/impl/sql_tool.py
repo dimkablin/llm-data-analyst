@@ -12,20 +12,20 @@ if TYPE_CHECKING:
     from backend.tools.sandbox import SessionSandbox
 
 
-class SQLTableToolArgs(BaseModel):
+class SQLToolArgs(BaseModel):
     question: str = Field(
         ...,
         description="Естественно-языковой аналитический вопрос по доступным таблицам.",
     )
 
 
-class SQLTableTool(BaseTool):
-    name: str = "sql_table_tool"
+class SQLTool(BaseTool):
+    name: str = "sql_tool"
     description: str = (
         "Основной инструмент табличной аналитики по БД и/или CSV в DuckDB-сессии. "
         "Выбирает таблицу, генерирует безопасный SELECT и возвращает результат как табличный артефакт."
     )
-    args_schema: Type[BaseModel] = SQLTableToolArgs
+    args_schema: Type[BaseModel] = SQLToolArgs
     response_format: str = "content_and_artifact"
 
     _service: SQLTableService = PrivateAttr()
@@ -77,12 +77,12 @@ class SQLTableTool(BaseTool):
         if injected:
             vars_hint = ", ".join(f"`{v}`" for v in injected)
             text = (
-                f"✅ Выполнен sql_table_tool: {item_names}. "
+                f"✅ Выполнен sql_tool: {item_names}. "
                 f"Результаты сохранены в переменных sandbox: {vars_hint}. "
                 f"Используй эти имена напрямую в plotly_tool/pandas_tool."
             )
         else:
-            text = f"✅ Выполнен sql_table_tool: {item_names}"
+            text = f"✅ Выполнен sql_tool: {item_names}"
 
         result: dict[str, object] = {
             "text": text,
@@ -121,7 +121,7 @@ class SQLTableTool(BaseTool):
             sql = recipe.get("sql", "") if isinstance(recipe, dict) else ""
 
             self._sandbox.log_code_entry(
-                tool_name="sql_table_tool",
+                tool_name="sql_tool",
                 language="sql",
                 question=question,
                 code=sql,

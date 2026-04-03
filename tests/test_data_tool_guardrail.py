@@ -80,7 +80,7 @@ class DataToolGuardrailTests(unittest.TestCase):
         self.assertEqual(response.route, "analysis")
         self.assertEqual(response.tool_calls, 0)
         self.assertEqual(response.artifacts, [])
-        self.assertIn("sql_table_tool", response.final_text)
+        self.assertIn("sql_tool", response.final_text)
         self.assertIn("plotly_tool", response.final_text)
 
     def test_greeting_with_dataset_is_not_blocked_by_guardrail(self) -> None:

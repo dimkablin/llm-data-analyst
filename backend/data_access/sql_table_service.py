@@ -303,7 +303,7 @@ class SQLTableService:
                 build_db_metadata_recipe_step(
                     action="list_tables",
                     title="List Tables",
-                    tool_name="sql_table_tool",
+                    tool_name="sql_tool",
                     summary="CSV session table catalog",
                 )
             ],
@@ -345,7 +345,7 @@ class SQLTableService:
                 build_db_metadata_recipe_step(
                     action="list_tables",
                     title="List Tables (CSV)",
-                    tool_name="sql_table_tool",
+                    tool_name="sql_tool",
                     summary="CSV session table catalog",
                 )
             )
@@ -420,6 +420,10 @@ CANDIDATES:
         if not candidates:
             raise ValueError("Нет доступных таблиц ни из DB runtime, ни из CSV session.")
 
+        # Single candidate — no disambiguation needed.
+        if len(candidates) == 1:
+            return candidates[0]
+
         explicit = self._find_explicit_table(question, candidates)
         if explicit is not None:
             return explicit
@@ -450,6 +454,22 @@ CANDIDATES:
         except Exception:
             return {"first_rows": []}
 
+    @staticmethod
+    def _quoted_columns_str(columns: list[str], dialect: str) -> str:
+        """Return columns string with double-quotes for mixed-case names.
+
+        PostgreSQL and DuckDB lower-case unquoted identifiers, so any column
+        whose name contains an uppercase letter must be double-quoted.
+        """
+        needs_quoting = dialect.lower() in ("postgresql", "postgres", "duckdb")
+        parts: list[str] = []
+        for col in columns:
+            if needs_quoting and any(c.isupper() for c in col):
+                parts.append(f'"{col}"')
+            else:
+                parts.append(col)
+        return ", ".join(parts)
+
     def _call_llm_sql_only(
         self,
         *,
@@ -460,7 +480,7 @@ CANDIDATES:
         feedback: str | None = None,
     ) -> str:
         table_name = candidate.qualified_name
-        columns_str = ", ".join(candidate.columns)
+        columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
 
         if previous_sql and feedback:
             user_prompt = f"""
@@ -512,13 +532,18 @@ CANDIDATES:
     def _is_trivial_sql(sql: str) -> bool:
         """Detect trivial queries that don't need LLM judge validation."""
         s = re.sub(r"\s+", " ", sql.strip().upper())
-        # SELECT * / SELECT col, col ... FROM ... (no subqueries, no joins)
-        if re.match(r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET)\s+.*)?\s*;?\s*$", s):
-            # No subquery, no JOIN
-            if "JOIN" not in s and s.count("SELECT") == 1:
+        # Only one SELECT (no subqueries)
+        if s.count("SELECT") != 1:
+            return False
+        # Simple SELECT ... FROM ... with optional WHERE/ORDER BY/LIMIT/GROUP BY/HAVING (no JOINs)
+        if re.match(r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET|GROUP\s+BY|HAVING)\s+.*)?\s*;?\s*$", s):
+            if "JOIN" not in s:
                 return True
-        # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...)
-        if re.match(r"^SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(", s) and s.count("SELECT") == 1:
+        # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...) [optional GROUP BY]
+        if re.match(r"^SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(", s):
+            return True
+        # Multi-aggregate: SELECT COUNT(...), SUM(...) etc. from single table
+        if re.match(r"^SELECT\s+((COUNT|SUM|AVG|MIN|MAX)\s*\([^)]*\)\s*,?\s*)+\s*FROM\s+\S+", s):
             return True
         return False
 
@@ -707,7 +732,7 @@ SAMPLE_RESULT:
                 build_sql_recipe_step(
                     sql=executed_sql,
                     title="Executed SQL",
-                    tool_name="sql_table_tool",
+                    tool_name="sql_tool",
                     summary=f"Analytical read query; max_rows={self.max_rows}",
                 )
             ],

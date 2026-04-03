@@ -56,7 +56,7 @@ class DBToolMetadataResultTests(unittest.TestCase):
         self.assertEqual(result["source"]["source_type"], "db_connection")
         self.assertEqual(result["source"]["source_ref_id"], "conn-1")
         self.assertEqual(result["recipe"][0]["kind"], "db_metadata")
-        self.assertEqual(result["recipe"][0]["tool_name"], "sql_table_tool")
+        self.assertEqual(result["recipe"][0]["tool_name"], "sql_tool")
         rows = result["items"]["db_schemas"]
         self.assertEqual(list(rows.columns), ["name", "display_name"])
         self.assertEqual(len(rows), 2)

@@ -141,130 +141,6 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
         logger.exception("%s failed", where)
 
 
-ANALYTICAL_HINTS = (
-    "таблиц",
-    "таблица",
-    "график",
-    "графика",
-    "графики",
-    "диаграмм",
-    "распредел",
-    "корреляц",
-    "средн",
-    "медиан",
-    "сумм",
-    "посчитай",
-    "агрег",
-    "pivot",
-    "hist",
-    "scatter",
-    "plot",
-    "выживаем",
-    "статист",
-    "dataset",
-    "датасет",
-    "данных",
-)
-INSIGHT_HINTS = (
-    "инсайт",
-    "insight",
-    "вывод",
-    "observations",
-    "наблюден",
-    "паттерн",
-    "гипотез",
-    "что интересного",
-    "что можно сказать",
-    "комплекс",
-    "полный анализ",
-)
-
-SEARCH_HINTS = (
-    # trigger words
-    "найди",
-    "поищи",
-    "поиск",
-    "погугли",
-    "загугли",
-    # content references
-    "материал",
-    "источник",
-    "ссылк",
-    "статью",
-    "статьи",
-    # current-events / news queries
-    "новост",
-    "что было",
-    "что произошло",
-    "что случилось",
-    "что происходит",
-    "что сейчас",
-    "что нового",
-    "последнее время",
-    "последних событи",
-    "актуальн",
-    "свежие данные",
-    "свежую информацию",
-    "в интернете",
-    # english fallbacks
-    "search",
-    "google",
-    "fresh",
-    "latest",
-    "news",
-    "recent",
-    # broader web-research phrasing (covered by search_tool + fetch)
-    "deep research",
-    "глубокое исследование",
-    "развернутый ресерч",
-    "подробный анализ по теме",
-)
-RAG_HINTS = (
-    "rag",
-    "база знаний",
-    "в документации",
-    "по документации",
-    "по базе знаний",
-    "по документам",
-    "в базе знаний",
-    "найди в документах",
-    "что сказано в документации",
-    "что сказано в документах",
-    "что есть в базе знаний",
-)
-
-SUMMARY_HINTS = (
-    "суммариз",
-    "саммари",
-    "резюмир",
-    "выжимк",
-    "краткое содержание",
-    "подведи итог",
-    "мини отчет",
-    "мини-отчет",
-    "мини отчёт",
-    "отчет по чату",
-    "отчёт по чату",
-)
-
-CHAT_HINTS_RE = re.compile(
-    r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
-    re.IGNORECASE,
-)
-# Substrings in user prompt → remind the ACT model to finish with plotly_tool, not only tables.
-_VISUALIZATION_HINT_TOKENS: tuple[str, ...] = (
-    "график",
-    "графики",
-    "диаграмм",
-    "визуализац",
-    "chart",
-    "charts",
-    "histogram",
-    "scatter",
-    "столбчат",
-    "линейн",
-    "plotly",
-)
 RECOVERY_TEXT_PREFIX = "Шаг анализа завершился с ограничением итераций модели"
 GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефакты построены"
 
@@ -290,7 +166,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
         ),
     },
     "medium": {
-        "max_steps_cap": 30,
+        "max_steps_cap": 8,
         "evaluate_enabled": True,
         "think_instruction": (
             "Стиль: сбалансированный.\n"
@@ -300,7 +176,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
         ),
     },
     "deep": {
-        "max_steps_cap": 50,
+        "max_steps_cap": 15,
         "evaluate_enabled": True,
         "think_instruction": (
             "Стиль: глубокий.\n"
@@ -414,27 +290,8 @@ class AgentRunner:
         depth_cap = self._depth_max_steps_cap()
         user_cap = max(2, int(self.settings.agent_max_steps))
         max_steps = min(user_cap, depth_cap)
-        if self._is_insight_request(prompt):
-            max_steps = min(depth_cap, max_steps + 2)
-        # Visualization requests may need extra steps (data + chart).
-        if any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
-            max_steps = max(max_steps, min(user_cap, 5))
         return max_steps
 
-    def _try_fast_plan(self, prompt: str, tool_keys: list[str]) -> str | None:
-        """Return a hardcoded plan for trivial queries, skipping the LLM think call."""
-        if self.settings.agent_analysis_depth != "light":
-            return None
-        lower = prompt.strip().lower()
-        # "Show data/table" patterns → single pandas_tool step
-        _show_data_tokens = (
-            "покажи таблиц", "покажи данн", "показать таблиц", "показать данн",
-            "выведи таблиц", "выведи данн", "таблица из датасет", "данные из датасет",
-            "что в датасет", "структура датасет", "head", "первые строки",
-        )
-        if "pandas_tool" in tool_keys and any(t in lower for t in _show_data_tokens):
-            return "1. `pandas_tool` → показать таблицу из датасета."
-        return None
 
     @staticmethod
     def _has_confirmed_analysis_output(response: AgentResponse | None) -> bool:
@@ -474,7 +331,7 @@ class AgentRunner:
         if not has_tabular:
             lines.append(
                 "В оперативной памяти агента нет загруженного табличного датасета (CSV). "
-                "Для выборок из таблиц БД вызывай инструмент `sql_table_tool` с параметром `question` "
+                "Для выборок из таблиц БД вызывай инструмент `sql_tool` с параметром `question` "
                 "(формулировка на естественном языке). "
                 "Если пользователь спрашивает только о том, с какой базой данных ведётся работа, "
                 "ответь по полям выше обычным текстом — для этого tool не обязателен."
@@ -917,6 +774,7 @@ class AgentRunner:
         if session_memory_block:
             system_parts.append(session_memory_block)
 
+        recent: list[dict[str, Any]] = []
         if use_history and history:
             max_msgs = max(0, self.settings.agent_history_max_messages)
             recent = history[-max_msgs:] if max_msgs > 0 else []
@@ -1066,40 +924,19 @@ class AgentRunner:
 
         normalized = prompt.strip().lower()
 
-        # ── Tier 1: instant rules (no LLM) ──────────────────────────────────
         if not normalized:
             return "chat"
 
-        if any(hint in normalized for hint in RAG_HINTS):
-            return "rag"
-
-        if any(hint in normalized for hint in SUMMARY_HINTS):
-            return "summary"
-
-        # Clear greeting without data context → chat
-        if CHAT_HINTS_RE.search(normalized) and not has_data:
-            return "chat"
-
-        # Data is loaded → usually analysis, but pure greetings still go to chat.
+        # Data is loaded → default to analysis; the LLM agent will pick tools
+        # based on skill instructions.
         if has_data:
-            _is_greeting = bool(CHAT_HINTS_RE.search(normalized))
-            _has_analytics = any(h in normalized for h in ANALYTICAL_HINTS)
-            _has_rag_kw = any(h in normalized for h in RAG_HINTS)
-            if _is_greeting and not _has_analytics and not _has_rag_kw:
-                return "chat"
             return "analysis"
 
-        # Explicit keyword hints → analysis (fast path, no LLM needed)
-        if any(hint in normalized for hint in ANALYTICAL_HINTS):
-            return "analysis"
-        if has_search and any(hint in normalized for hint in SEARCH_HINTS):
-            return "analysis"
-
-        # No tools available → chat
+        # No data and no tools → chat
         if not has_any_tool:
             return "chat"
 
-        # ── Tier 2: analytics-aware LLM classifier ────────────────────────
+        # Ambiguous: have tools (search/rag) but no data → LLM classifier
         return self._classify_intent(
             prompt,
             has_search=has_search,
@@ -1207,7 +1044,7 @@ class AgentRunner:
             final_text = (
                 "Не могу выполнить анализ по подключенной базе данных или CSV в DuckDB: "
                 "инструменты доступа к данным отключены в настройках аккаунта. "
-                "Включите как минимум `sql_table_tool`. Для построения графиков "
+                "Включите как минимум `sql_tool`. Для построения графиков "
                 "дополнительно можно включить `plotly_tool`."
             )
         else:
@@ -1226,13 +1063,6 @@ class AgentRunner:
             tool_calls=0,
             tool_names=[],
         )
-
-    @staticmethod
-    def _is_insight_request(prompt: str) -> bool:
-        normalized = prompt.strip().lower()
-        if not normalized:
-            return False
-        return any(token in normalized for token in INSIGHT_HINTS)
 
     @staticmethod
     def _build_runtime_metadata(
@@ -1414,12 +1244,6 @@ class AgentRunner:
         df: pd.DataFrame | None = None,
         stop_reason: str | None = None,
     ) -> str:
-        normalized = prompt.strip().lower()
-        if CHAT_HINTS_RE.search(normalized):
-            if "как дела" in normalized:
-                return "Все в порядке, спасибо. Готов продолжать анализ данных и отвечать на вопросы."
-            return "Привет. Я на связи и готов помочь с анализом данных."
-
         if df is not None:
             dataset_fallback = self._safe_dataset_fallback(df, prompt)
             if dataset_fallback:
@@ -1549,24 +1373,6 @@ class AgentRunner:
                 "Используй tool-вызовы для получения данных. "
                 "Передавай в tool только чистый Python-код (без markdown-блоков и без ```)."
             ),
-            *(
-                [
-                    "",
-                    "[ROLE: CHARTS]",
-                    (
-                        "Пользователь просит визуализацию: обязательно доведи до успешного `plotly_tool` "
-                        "(`chart.result(fig, ...)`) с понятным `artifact_name`. "
-                        "Не подменяй график только `pandas_tool`/`value_tool`. "
-                        "В коде plotly используй `df` или явно объявленную переменную выборки — не ссылайся на `df_plot`, "
-                        "если не создал её строкой выше."
-                    ),
-                ]
-                if any(
-                    tok in user_prompt.lower()
-                    for tok in _VISUALIZATION_HINT_TOKENS
-                )
-                else []
-            ),
             "",
             "[ROLE: CONTRACT]",
             (
@@ -1610,7 +1416,7 @@ class AgentRunner:
             finalize_block.append(
                 "• Режим БД: если в system prompt указаны имя подключения и тип СУБД, а вопрос только "
                 "о том, с какой базой вы работаете — ответь по этим полям текстом; tool не обязателен. "
-                "Для вопросов по содержимому таблиц используй `sql_table_tool` и опирайся на его результат."
+                "Для вопросов по содержимому таблиц используй `sql_tool` и опирайся на его результат."
             )
         blocks.extend(finalize_block)
 
@@ -1646,7 +1452,7 @@ class AgentRunner:
         if source_mode == "db":
             blocks.append(
                 "ВАЖНО (режим БД): переменная `df` пустая — НЕ используй `df` для получения данных. "
-                "Для любых запросов к таблицам используй `sql_table_tool`. "
+                "Для любых запросов к таблицам используй `sql_tool`. "
                 "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри."
             )
         if tool_descriptions:
@@ -1662,20 +1468,15 @@ class AgentRunner:
                 "Исправь предыдущую неудачную попытку: "
                 f"{refinement_feedback.strip()}"
             )
-        if any(tok in user_prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
-            blocks.append(
-                "Запрошена визуализация: сначала построй хотя бы один график через `plotly_tool`, "
-                "потом формируй итоговый ответ."
-            )
-
         # Sandbox context: available variables + session notebook.
         if sandbox:
             sandbox_block = sandbox.describe_for_prompt()
             if sandbox_block:
                 blocks.append(sandbox_block)
 
-        # Full tool skill instructions injected inline — no get_tool_instructions call needed.
-        tool_skills_block = self.skill_registry.build_tool_skills_prompt_block(
+        # Brief tool descriptions — LLM must call get_tool_instructions(tool_name)
+        # before first use of each tool to get full instructions and examples.
+        tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
             set(available_tools)
         )
         if tool_skills_block:
@@ -1937,8 +1738,6 @@ class AgentRunner:
             prompt.strip().endswith("?")
             or any(token in normalized for token in ("в каком", "какой", "сколько", "кто", "где"))
         )
-        is_insight = self._is_insight_request(prompt)
-
         table_count = sum(
             1
             for artifact in artifacts
@@ -1983,11 +1782,7 @@ class AgentRunner:
                 direct_answer = candidate
 
         if not direct_answer:
-            direct_answer = (
-                "Ниже структурированный вывод по построенным артефактам."
-                if is_insight
-                else "Ключевой вывод сформирован на основе полученных артефактов."
-            )
+            direct_answer = "Ключевой вывод сформирован на основе полученных артефактов."
 
         method_lines = self._artifact_method_lines(artifacts)
         if not method_lines:
@@ -1998,27 +1793,20 @@ class AgentRunner:
 
         observation_lines: list[str] = []
         observation_lines.extend(
-            self._value_observation_lines(value_payload, max_items=8 if is_insight else 5)
+            self._value_observation_lines(value_payload, max_items=5)
         )
         observation_lines.extend(
-            self._table_observation_lines(artifacts, max_items=4 if is_insight else 2)
+            self._table_observation_lines(artifacts, max_items=2)
         )
         if not observation_lines:
             observation_lines = [
                 f"- Построено артефактов: {len(artifacts)} (table={table_count}, plot={plot_count}, value={value_count})."
             ]
 
-        if is_insight:
-            conclusion = (
-                "Итог: наблюдения основаны на построенных таблицах, графиках и метриках. "
-                "Чтобы углубить анализ, стоит проверить причинно-следственные гипотезы на отдельных сегментах "
-                "и дополнительно валидировать устойчивость найденных закономерностей."
-            )
-        else:
-            conclusion = (
-                "Итог: ответ сформирован по подтвержденным артефактам; при необходимости могу расширить анализ "
-                "дополнительными срезами или детализацией по конкретным группам."
-            )
+        conclusion = (
+            "Итог: ответ сформирован по подтвержденным артефактам; при необходимости могу расширить анализ "
+            "дополнительными срезами или детализацией по конкретным группам."
+        )
 
         return (
             f"{direct_answer}\n\n"
@@ -2709,7 +2497,7 @@ class AgentRunner:
         csv_duckdb_mode = bool(csv_loaded and str(csv_session_id or "").strip())
 
         # В режиме CSV-in-DuckDB pandas/value-инструменты не предлагаем:
-        # анализ должен идти через sql_table_tool.
+        # анализ должен идти через sql_tool.
         tool_df = None if csv_duckdb_mode else df
 
         # Get or create a persistent sandbox for this session.
@@ -2816,34 +2604,29 @@ class AgentRunner:
             status="streaming",
         )
 
-        # Fast-path: skip LLM plan for trivial queries in light depth.
-        fast_plan = self._try_fast_plan(prompt, tool_keys)
         plan = ""
         think_llm_failed = False
-        if fast_plan:
-            plan = fast_plan
-        else:
-            silent_cbs = self._silent_callbacks(callbacks)
-            runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
-            metadata = self._build_runtime_metadata(state.get("trace_context"))
-            if metadata:
-                runtime_config["metadata"] = metadata
-            try:
-                response = llm.invoke(think_messages, config=runtime_config)
-                record_llm_usage_on_active_span(
-                    response,
-                    fallback_model=self.settings.llm_model,
-                    fallback_provider=self.settings.llm_provider,
-                )
-                raw_content = self._content_to_text(getattr(response, "content", ""))
-                plan = strip_thinking(raw_content).strip()
-                reasoning = extract_thinking(raw_content)
-                if not plan:
-                    plan = reasoning or "Анализировать данные по запросу пользователя."
-            except Exception as exc:
-                _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
-                plan = "Ошибка при планировании. Выполнить прямой анализ данных."
-                think_llm_failed = True
+        silent_cbs = self._silent_callbacks(callbacks)
+        runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
+        metadata = self._build_runtime_metadata(state.get("trace_context"))
+        if metadata:
+            runtime_config["metadata"] = metadata
+        try:
+            response = llm.invoke(think_messages, config=runtime_config)
+            record_llm_usage_on_active_span(
+                response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
+            raw_content = self._content_to_text(getattr(response, "content", ""))
+            plan = strip_thinking(raw_content).strip()
+            reasoning = extract_thinking(raw_content)
+            if not plan:
+                plan = reasoning or "Анализировать данные по запросу пользователя."
+        except Exception as exc:
+            _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
+            plan = "Ошибка при планировании. Выполнить прямой анализ данных."
+            think_llm_failed = True
 
         self._emit_phase_event(
             callbacks,
@@ -3029,27 +2812,6 @@ class AgentRunner:
                 ) or "Результат получен."
             else:
                 reason = "Пустой финальный ответ"
-                self._emit_phase_event(
-                    callbacks, phase="evaluate", title="Оценка результата",
-                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
-                )
-                return {"eval_passed": False, "eval_reason": reason}
-
-        requires_plot = (
-            any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS)
-            and self._tool_allowed("plotly_tool")
-        )
-        plotly_was_attempted = "plotly_tool" in (response.tool_names or [])
-        if requires_plot and not self._response_has_artifact_type(response, "plot"):
-            if plotly_was_attempted:
-                # plotly_tool was called but failed — retry won't help
-                reason = "plotly_tool был вызван, но не смог построить график — пропускаю retry"
-                self._emit_phase_event(
-                    callbacks, phase="evaluate", title="Оценка результата",
-                    content=reason, step_index=step_index, max_steps=max_steps, status="done",
-                )
-            else:
-                reason = "Запрошена визуализация, но plot-артефакт не построен. ОБЯЗАТЕЛЬНО вызови `plotly_tool` с Python-кодом для построения графика."
                 self._emit_phase_event(
                     callbacks, phase="evaluate", title="Оценка результата",
                     content=reason, step_index=step_index, max_steps=max_steps, status="fail",
@@ -3334,7 +3096,6 @@ class AgentRunner:
                     or response.final_text.strip().startswith(RECOVERY_TEXT_PREFIX)
                     or response.final_text.strip().startswith(GENERIC_ARTIFACT_SUMMARY_PREFIX)
                     or self._response_too_generic(prompt, response.final_text)
-                    or self._is_insight_request(prompt)
                     or prompt.strip().endswith("?")
                     or len(response.final_text.strip()) < 260
                     or _looks_like_plan

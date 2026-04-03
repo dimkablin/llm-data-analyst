@@ -30,7 +30,7 @@ def test_db_session_prompt_block_includes_connection_and_sql_hint_when_no_csv() 
     assert "analytics" in text
     assert "c1" in text
     assert "Моя БД" in text
-    assert "sql_table_tool" in text
+    assert "sql_tool" in text
 
 
 def test_db_session_prompt_block_empty_without_runtime() -> None:
@@ -63,4 +63,4 @@ def test_db_session_prompt_block_omits_sql_paragraph_when_csv_loaded() -> None:
         df=df,
     )
     assert "DB" in text
-    assert "sql_table_tool" not in text
+    assert "sql_tool" not in text

@@ -142,8 +142,8 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
             SELECT nspname
             FROM pg_catalog.pg_namespace
             WHERE nspname NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
-              AND nspname NOT LIKE 'pg_temp_%%'
-              AND nspname NOT LIKE 'pg_toast_temp_%%'
+              AND nspname NOT LIKE 'pg_temp_%'
+              AND nspname NOT LIKE 'pg_toast_temp_%'
             ORDER BY nspname
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:

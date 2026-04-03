@@ -130,7 +130,7 @@ class Settings:
     llm_presence_penalty: float = float(os.getenv("LLM_PRESENCE_PENALTY", "1.5"))
     llm_max_tokens_default: int = int(os.getenv("LLM_MAX_TOKENS_DEFAULT", "2048"))
     llm_max_tokens_reasoning: int = int(os.getenv("LLM_MAX_TOKENS_REASONING", "4096"))
-    llm_enable_thinking: bool = _get_bool("LLM_ENABLE_THINKING", True)
+    llm_enable_thinking: bool = _get_bool("LLM_ENABLE_THINKING", False)
     llm_num_ctx: int = int(os.getenv("LLM_NUM_CTX", "32768"))
     llm_streaming: bool = _get_bool("LLM_STREAMING", True)
     llm_streaming_force: bool = _get_bool("LLM_STREAMING_FORCE", True)

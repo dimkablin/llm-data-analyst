@@ -59,7 +59,7 @@ class CellMetadata:
     """Code language."""
 
     question: str = ""
-    """Natural-language question (used by sql_table_tool)."""
+    """Natural-language question (used by sql_tool)."""
 
     artifact_refs: list[str] = field(default_factory=list)
     """IDs of artifacts produced by this cell."""
