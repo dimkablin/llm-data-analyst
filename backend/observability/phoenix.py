@@ -276,6 +276,8 @@ def build_trace_context(
     use_history: bool,
     include_reasoning: bool,
     db_connection_id: str | None = None,
+    csv_session_id: str | None = None,
+    csv_duckdb_loaded: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "session_id": session_id,
@@ -284,9 +286,12 @@ def build_trace_context(
         "request_kind": request_kind,
         "use_history": bool(use_history),
         "include_reasoning": bool(include_reasoning),
+        "csv_duckdb_loaded": bool(csv_duckdb_loaded),
     }
     if isinstance(db_connection_id, str) and db_connection_id.strip():
         payload["db_connection_id"] = db_connection_id.strip()
+    if isinstance(csv_session_id, str) and csv_session_id.strip():
+        payload["csv_session_id"] = csv_session_id.strip()
     return payload
 
 
@@ -301,6 +306,8 @@ def query_trace_context(
     include_reasoning: bool,
     query: str,
     db_connection_id: str | None = None,
+    csv_session_id: str | None = None,
+    csv_duckdb_loaded: bool = False,
 ) -> Iterator[None]:
     if not settings.phoenix_enabled:
         yield
@@ -333,6 +340,10 @@ def query_trace_context(
     if isinstance(db_connection_id, str) and db_connection_id.strip():
         metadata["db_connection_id"] = db_connection_id.strip()
         metadata["data_source"] = "db_connection"
+    elif bool(csv_duckdb_loaded):
+        metadata["data_source"] = "csv_duckdb"
+    if isinstance(csv_session_id, str) and csv_session_id.strip():
+        metadata["csv_session_id"] = csv_session_id.strip()
     tags = [
         "backend",
         "reason-action",

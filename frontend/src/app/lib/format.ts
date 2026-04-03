@@ -34,6 +34,12 @@ export function formatNumber(value: number): string {
   });
 }
 
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}мс`;
+  const s = ms / 1000;
+  return `${s >= 10 ? s.toFixed(0) : s.toFixed(1)}с`;
+}
+
 export function summarizeError(error: unknown): string {
   if (error instanceof Error && error.message) {
     return error.message;

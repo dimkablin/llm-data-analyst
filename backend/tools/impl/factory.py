@@ -10,13 +10,14 @@ a common base class — duck typing is enough.
 """
 from __future__ import annotations
 
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool
 
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
 from backend.tools.impl.forecast_tool import ForecastTool
-from backend.tools.impl.memory_tool import MemoryTool
+from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
+from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.search_tool import SearchTool
@@ -58,6 +59,7 @@ class SearchToolFactory:
             search_service=self._service,
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=max(8, ctx.settings.tool_cache_size // 2),
+            sandbox=ctx.sandbox,
         )
 
 
@@ -81,6 +83,7 @@ class ForecastToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -104,6 +107,7 @@ class AnomalyPlanfactToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -131,6 +135,7 @@ class SQLTableToolFactory:
             csv_loaded=ctx.csv_loaded,
             csv_session_id=ctx.csv_session_id,
             max_rows=200,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -138,16 +143,22 @@ class PlotlyToolFactory:
     key = "plotly_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.has_data and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> PlotlyTool:
-        # Plotly needs extra time: module reimport in subprocess + chart rendering
         plotly_timeout = max(ctx.settings.tool_exec_timeout_sec * 2, 60.0)
         return PlotlyTool(
             ctx.tool_df,
             execution_timeout_sec=plotly_timeout,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -163,6 +174,7 @@ class PandasToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
@@ -178,11 +190,27 @@ class ValueToolFactory:
             execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
+            sandbox=ctx.sandbox,
         )
 
 
+class GetToolInstructionsToolFactory:
+    """Always available; returns full skill markdown on demand."""
+
+    key = "get_tool_instructions"
+
+    def __init__(self, skill_registry: Any) -> None:
+        self._skill_registry = skill_registry
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+        return True
+
+    def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:  # noqa: ARG002
+        return GetToolInstructionsTool(self._skill_registry)
+
+
 class MemoryToolFactory:
-    """Always available; needs only an `on_note` callback from the runner."""
+    """Always available; saves long-term facts about the user."""
 
     key = "memory_tool"
 
@@ -194,5 +222,20 @@ class MemoryToolFactory:
 
     def build(self, ctx: ToolBuildContext) -> MemoryTool:  # noqa: ARG002
         return MemoryTool(on_note=self._on_note)
+
+
+class SessionNoteToolFactory:
+    """Always available; saves session-level analysis context."""
+
+    key = "session_note_tool"
+
+    def __init__(self, on_note: Callable[[str], None]) -> None:
+        self._on_note = on_note
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+        return True
+
+    def build(self, ctx: ToolBuildContext) -> SessionNoteTool:  # noqa: ARG002
+        return SessionNoteTool(on_note=self._on_note)
 
 

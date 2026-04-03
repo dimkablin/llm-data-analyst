@@ -1,4 +1,4 @@
-﻿
+
 from backend.artifacts.artifact import (
     Artifact,
     ArtifactStore,
@@ -9,10 +9,22 @@ from backend.artifacts.artifact import (
     UserArtifact,
     artifact_factory,
 )
-from backend.artifacts.artifact_meta import *
-from backend.artifacts.serialization import serialize_artifact, serialize_plot, serialize_table
+from backend.artifacts.artifact_meta import *  # noqa: F403
+from backend.artifacts.execution import (
+    ExecArtifactType,
+    ExecArtifactSchema,
+    ExecutionArtifact,
+    ExecutionStore,
+)
+from backend.artifacts.presentation import (
+    PresentationType,
+    PresentationArtifact,
+    to_presentation,
+)
+from backend.artifacts.bridge import execution_to_api_payload
 
 __all__ = [
+    # Streamlit legacy (used by app.py)
     "Artifact",
     "TextArtifact",
     "UserArtifact",
@@ -21,7 +33,15 @@ __all__ = [
     "ErrorArtifact",
     "ArtifactStore",
     "artifact_factory",
-    "serialize_artifact",
-    "serialize_plot",
-    "serialize_table",
+    # Execution layer
+    "ExecArtifactType",
+    "ExecArtifactSchema",
+    "ExecutionArtifact",
+    "ExecutionStore",
+    # Presentation layer
+    "PresentationType",
+    "PresentationArtifact",
+    "to_presentation",
+    # Serialization
+    "execution_to_api_payload",
 ]

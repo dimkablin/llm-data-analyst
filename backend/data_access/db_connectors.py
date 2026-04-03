@@ -81,6 +81,21 @@ class BaseConnectionAdapter(ABC):
     def describe_table(self, schema: str, table: str) -> list[CatalogColumn]:
         """Return normalized column metadata for a table/view."""
 
+    def list_tables_with_columns(self, schema: str) -> dict[str, tuple[CatalogTable, list[CatalogColumn]]]:
+        """Return all tables in *schema* together with their columns in a single round-trip.
+
+        The default implementation falls back to N+1 calls; adapters should
+        override this with a single query for performance.
+
+        Returns a dict keyed by table name → (CatalogTable, [CatalogColumn, ...]).
+        """
+        tables = self.list_tables(schema)
+        result: dict[str, tuple[CatalogTable, list[CatalogColumn]]] = {}
+        for tbl in tables:
+            cols = self.describe_table(schema, tbl.name)
+            result[tbl.name] = (tbl, cols)
+        return result
+
 
 class PostgresConnectionAdapter(BaseConnectionAdapter):
     def _configured_schema(self) -> str | None:
@@ -124,10 +139,12 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
         import psycopg
 
         query = """
-            SELECT schema_name
-            FROM information_schema.schemata
-            WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
-            ORDER BY schema_name
+            SELECT nspname
+            FROM pg_catalog.pg_namespace
+            WHERE nspname NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+              AND nspname NOT LIKE 'pg_temp_%%'
+              AND nspname NOT LIKE 'pg_toast_temp_%%'
+            ORDER BY nspname
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:
             self._apply_session_schema(conn)
@@ -144,48 +161,53 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
         import psycopg
 
         query = """
-            SELECT table_name, table_type
-            FROM information_schema.tables
-            WHERE table_schema = %s
-              AND table_type IN ('BASE TABLE', 'VIEW', 'FOREIGN TABLE', 'LOCAL TEMPORARY')
-            ORDER BY table_name
+            SELECT c.relname,
+                   CASE c.relkind
+                       WHEN 'v' THEN 'view'
+                       WHEN 'm' THEN 'view'
+                       ELSE 'table'
+                   END AS table_type
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = %s
+              AND c.relkind IN ('r', 'v', 'f', 'p', 'm')
+            ORDER BY c.relname
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:
             self._apply_session_schema(conn)
             with conn.cursor() as cur:
                 cur.execute(query, (schema,))
                 rows = cur.fetchall()
-        normalized: list[CatalogTable] = []
-        for row in rows:
-            if not row or row[0] is None:
-                continue
-            name = str(row[0])
-            raw_type = str(row[1] or "").upper()
-            table_type = "view" if "VIEW" in raw_type else "table"
-            normalized.append(
-                CatalogTable(
-                    schema=schema,
-                    name=name,
-                    table_type=table_type,
-                    qualified_name=f"{schema}.{name}",
-                )
+        return [
+            CatalogTable(
+                schema=schema,
+                name=str(row[0]),
+                table_type=str(row[1]),
+                qualified_name=f"{schema}.{row[0]}",
             )
-        return normalized
+            for row in rows
+            if row and row[0] is not None
+        ]
 
     def describe_table(self, schema: str, table: str) -> list[CatalogColumn]:
         import psycopg
 
         query = """
             SELECT
-                column_name,
-                data_type,
-                is_nullable,
-                ordinal_position,
-                column_default
-            FROM information_schema.columns
-            WHERE table_schema = %s
-              AND table_name = %s
-            ORDER BY ordinal_position
+                a.attname,
+                pg_catalog.format_type(a.atttypid, a.atttypmod),
+                NOT a.attnotnull,
+                a.attnum,
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+            FROM pg_catalog.pg_attribute a
+            JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE n.nspname = %s
+              AND c.relname = %s
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            ORDER BY a.attnum
         """
         with psycopg.connect(**self._connect_kwargs()) as conn:
             self._apply_session_schema(conn)
@@ -197,19 +219,81 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
         for row in rows:
             if not row or row[0] is None:
                 continue
-            is_nullable_raw = str(row[2] or "").strip().upper()
             columns.append(
                 CatalogColumn(
                     schema=schema,
                     table=table,
                     name=str(row[0]),
                     data_type=str(row[1] or ""),
-                    is_nullable=True if is_nullable_raw == "YES" else False,
+                    is_nullable=bool(row[2]) if row[2] is not None else None,
                     ordinal_position=int(row[3]) if row[3] is not None else None,
                     default_expression=str(row[4]) if row[4] is not None else None,
                 )
             )
         return columns
+
+    def list_tables_with_columns(self, schema: str) -> dict[str, tuple[CatalogTable, list[CatalogColumn]]]:
+        import psycopg
+
+        query = """
+            SELECT
+                c.relname                                         AS table_name,
+                CASE c.relkind
+                    WHEN 'v' THEN 'view'
+                    WHEN 'm' THEN 'view'
+                    ELSE 'table'
+                END                                               AS table_type,
+                a.attname                                         AS col_name,
+                pg_catalog.format_type(a.atttypid, a.atttypmod)   AS col_type,
+                NOT a.attnotnull                                  AS col_nullable,
+                a.attnum                                          AS col_pos,
+                pg_catalog.pg_get_expr(d.adbin, d.adrelid)        AS col_default
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_catalog.pg_attribute a
+                ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+            LEFT JOIN pg_catalog.pg_attrdef d
+                ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE n.nspname = %s
+              AND c.relkind IN ('r', 'v', 'f', 'p', 'm')
+            ORDER BY c.relname, a.attnum
+        """
+        with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(query, (schema,))
+                rows = cur.fetchall()
+
+        result: dict[str, tuple[CatalogTable, list[CatalogColumn]]] = {}
+        for row in rows:
+            if not row or row[0] is None:
+                continue
+            tbl_name = str(row[0])
+            tbl_type = str(row[1])
+            if tbl_name not in result:
+                result[tbl_name] = (
+                    CatalogTable(
+                        schema=schema,
+                        name=tbl_name,
+                        table_type=tbl_type,
+                        qualified_name=f"{schema}.{tbl_name}",
+                    ),
+                    [],
+                )
+            col_name = row[2]
+            if col_name is not None:
+                result[tbl_name][1].append(
+                    CatalogColumn(
+                        schema=schema,
+                        table=tbl_name,
+                        name=str(col_name),
+                        data_type=str(row[3] or ""),
+                        is_nullable=bool(row[4]) if row[4] is not None else None,
+                        ordinal_position=int(row[5]) if row[5] is not None else None,
+                        default_expression=str(row[6]) if row[6] is not None else None,
+                    )
+                )
+        return result
 
 
 class ClickHouseConnectionAdapter(BaseConnectionAdapter):
@@ -347,6 +431,61 @@ class ClickHouseConnectionAdapter(BaseConnectionAdapter):
                 )
             )
         return columns
+
+    def list_tables_with_columns(self, schema: str) -> dict[str, tuple[CatalogTable, list[CatalogColumn]]]:
+        escaped_schema = self._escape_literal(schema)
+        payload = self._request(
+            f"""
+            SELECT
+                t.name       AS table_name,
+                t.engine     AS engine,
+                c.name       AS col_name,
+                c.type       AS col_type,
+                c.default_kind,
+                c.default_expression,
+                c.position
+            FROM system.tables t
+            LEFT JOIN system.columns c
+                ON c.database = t.database AND c.table = t.name
+            WHERE t.database = '{escaped_schema}'
+            ORDER BY t.name, c.position
+            FORMAT JSON
+            """
+        )
+        rows = payload.get("data", [])
+        result: dict[str, tuple[CatalogTable, list[CatalogColumn]]] = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("table_name") is None:
+                continue
+            tbl_name = str(row["table_name"])
+            engine = str(row.get("engine") or "")
+            tbl_type = "view" if "view" in engine.lower() else "table"
+            if tbl_name not in result:
+                result[tbl_name] = (
+                    CatalogTable(
+                        schema=schema,
+                        name=tbl_name,
+                        table_type=tbl_type,
+                        qualified_name=f"{schema}.{tbl_name}",
+                    ),
+                    [],
+                )
+            col_name = row.get("col_name")
+            if col_name is not None:
+                raw_type = str(row.get("col_type") or "")
+                default_expression = row.get("default_expression")
+                result[tbl_name][1].append(
+                    CatalogColumn(
+                        schema=schema,
+                        table=tbl_name,
+                        name=str(col_name),
+                        data_type=raw_type,
+                        is_nullable=True if raw_type.startswith("Nullable(") else False,
+                        ordinal_position=int(row["position"]) if row.get("position") is not None else None,
+                        default_expression=str(default_expression) if default_expression is not None else None,
+                    )
+                )
+        return result
 
 
 def build_connection_adapter(

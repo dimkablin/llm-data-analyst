@@ -1,5 +1,5 @@
 ﻿
-from backend.observability.models import *
+from backend.observability.models import *  # noqa: F403
 from backend.observability.phoenix import (
     LLMUsageSnapshot,
     build_trace_context,

@@ -10,7 +10,11 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 
 from backend.artifacts.artifact_meta import build_artifact_meta, extract_artifact_hints
-from backend.core.internal_models import ArtifactRecord
+from backend.artifacts.execution import (
+    ExecArtifactType,
+    ExecutionArtifact,
+    ExecutionStore,
+)
 
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
@@ -61,13 +65,32 @@ class LLMTextCollector(BaseCallbackHandler):
 
 
 class ToolCollector(BaseCallbackHandler):
-    def __init__(self, source_context: dict[str, Any] | None = None) -> None:
-        self.artifacts: list[ArtifactRecord] = []
+    def __init__(
+        self,
+        source_context: dict[str, Any] | None = None,
+        queue: asyncio.Queue | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+        execution_store: ExecutionStore | None = None,
+    ) -> None:
+        self.artifacts: list[ExecutionArtifact] = []
         self.tool_calls: int = 0
         self.tool_names: list[str] = []
         self.events: list[dict[str, Any]] = []
         self._last_tool_name: str | None = None
         self._source_context = dict(source_context or {})
+        self._queue = queue
+        self._loop = loop
+        self.execution_store: ExecutionStore = execution_store or ExecutionStore(session_id="")
+        self.graph_tracker: Any | None = None  # Set externally for graph visualization
+        self._step_index: int = 0
+        self._phase_collector_ref: Any | None = None  # For graph version bumps
+
+    def _push_event(self, event_type: str, data: Any) -> None:
+        """Push event directly to SSE queue if available."""
+        if self._queue is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                self._queue.put_nowait, (event_type, data)
+            )
 
     @staticmethod
     def _resolve_tool_name(
@@ -109,14 +132,21 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self._last_tool_name = tool_name
             self.tool_names.append(tool_name)
-        self.events.append(
-            {
-                "phase": "start",
-                "tool_name": tool_name or "unknown",
-                "input_preview": input_str[:360],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+        event = {
+            "phase": "start",
+            "tool_name": tool_name or "unknown",
+            "input_preview": input_str[:360],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.events.append(event)
+        self._push_event("tool_start", {
+            "tool_name": event["tool_name"],
+            "input_preview": event["input_preview"],
+        })
+        if self.graph_tracker is not None:
+            self.graph_tracker.tool_start(event["tool_name"], self._step_index)
+            if self._phase_collector_ref is not None:
+                self._phase_collector_ref._graph_version += 1
 
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
@@ -162,32 +192,36 @@ class ToolCollector(BaseCallbackHandler):
             event_payload["status"] = "error"
             event_payload["error"] = str(payload.get("text"))
 
+        producer = tool_name or "unknown"
+
         if "plot" in payload and isinstance(payload["plot"], dict):
             event_payload["artifact_keys"].append("plot")
             for name, fig in payload["plot"].items():
                 if fig is None:
                     continue
-                self.artifacts.append(
-                    ArtifactRecord(
-                        artifact_type="plot",
-                        data=fig,
-                        text=name,
-                        meta=dict(artifact_meta),
-                    )
-                )
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.PLOT,
+                    producer_tool=producer,
+                    data=fig,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+
         if "table" in payload and isinstance(payload["table"], dict):
             event_payload["artifact_keys"].append("table")
             for name, table in payload["table"].items():
                 if table is None:
                     continue
-                self.artifacts.append(
-                    ArtifactRecord(
-                        artifact_type="table",
-                        data=table,
-                        text=name,
-                        meta=dict(artifact_meta),
-                    )
-                )
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.DATAFRAME,
+                    producer_tool=producer,
+                    data=table,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+
         if "value" in payload and isinstance(payload["value"], dict):
             event_payload["artifact_keys"].append("value")
             clean_value_payload = {
@@ -198,15 +232,29 @@ class ToolCollector(BaseCallbackHandler):
             if not clean_value_payload:
                 self.events.append(event_payload)
                 return
-            self.artifacts.append(
-                ArtifactRecord(
-                    artifact_type="value",
-                    data=clean_value_payload,
-                    text="values",
-                    meta=dict(artifact_meta),
-                )
-            )
+            ea = self.execution_store.put(ExecutionArtifact(
+                artifact_type=ExecArtifactType.SCALAR,
+                producer_tool=producer,
+                data=clean_value_payload,
+                name="values",
+                meta=dict(artifact_meta),
+            ))
+            self.artifacts.append(ea)
         self.events.append(event_payload)
+        self._push_event("tool_end", {
+            "tool_name": event_payload["tool_name"],
+            "status": event_payload["status"],
+            "artifact_keys": event_payload.get("artifact_keys", []),
+        })
+        if self.graph_tracker is not None:
+            self.graph_tracker.tool_end(
+                event_payload["tool_name"],
+                self._step_index,
+                status="done" if event_payload["status"] == "ok" else "error",
+                artifact_keys=event_payload.get("artifact_keys"),
+            )
+            if self._phase_collector_ref is not None:
+                self._phase_collector_ref._graph_version += 1
 
     @staticmethod
     def _normalize_output(output: object) -> object:
@@ -275,6 +323,8 @@ class PhaseCollector(BaseCallbackHandler):
     def __init__(self) -> None:
         super().__init__()
         self.events: list[dict[str, Any]] = []
+        self.graph_tracker: Any | None = None
+        self._graph_version: int = 0
 
     def add_phase(
         self,

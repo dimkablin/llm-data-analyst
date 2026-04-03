@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,8 +13,8 @@ from typing import Any
 
 import pandas as pd
 
-from backend.artifacts.serialization import serialize_artifact
-from backend.core.internal_models import ArtifactRecord
+from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
+
 
 _DF_CACHE_MAX_SIZE = 20
 
@@ -31,6 +32,12 @@ class SessionState:
     source_ref_id: str | None = None
     source_label: str | None = None
     source_mode: str | None = None
+    selected_skill_ids: list[str] | None = None
+    csv_loaded: bool = False
+    csv_session_id: str | None = None
+    csv_table_names: list[str] | None = None
+    csv_expires_at: int | None = None
+    session_memory: str = ""
 
 
 class SessionStore:
@@ -96,6 +103,12 @@ class SessionStore:
             source_ref_id=None,
             source_label=None,
             source_mode=None,
+            selected_skill_ids=[],
+            csv_loaded=False,
+            csv_session_id=None,
+            csv_table_names=[],
+            csv_expires_at=None,
+            session_memory="",
         )
         self._save_state(state)
         return state
@@ -118,6 +131,12 @@ class SessionStore:
             source_ref_id=raw.get("source_ref_id"),
             source_label=raw.get("source_label"),
             source_mode=raw.get("source_mode"),
+            selected_skill_ids=list(raw.get("selected_skill_ids", []) or []),
+            csv_loaded=bool(raw.get("csv_loaded", False)),
+            csv_session_id=raw.get("csv_session_id"),
+            csv_table_names=list(raw.get("csv_table_names") or []),
+            csv_expires_at=raw.get("csv_expires_at"),
+            session_memory=str(raw.get("session_memory", "")),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -142,9 +161,15 @@ class SessionStore:
             "source_ref_id": state.source_ref_id,
             "source_label": state.source_label,
             "source_mode": state.source_mode,
+            "selected_skill_ids": list(state.selected_skill_ids or []),
+            "csv_loaded": bool(state.csv_loaded),
+            "csv_session_id": state.csv_session_id,
+            "csv_table_names": list(state.csv_table_names or []),
+            "csv_expires_at": state.csv_expires_at,
+            "session_memory": state.session_memory or "",
         }
         self._state_path(state.session_id).write_text(
-            json.dumps(payload, ensure_ascii=False)
+            json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
         )
 
     def save_dataframe(self, session_id: str, df: pd.DataFrame) -> None:
@@ -220,6 +245,21 @@ class SessionStore:
             source_mode=source_mode,
         )
 
+    def set_selected_skill_ids(
+        self,
+        session_id: str,
+        selected_skill_ids: list[str] | None,
+    ) -> None:
+        normalized = [str(skill_id).strip() for skill_id in (selected_skill_ids or []) if str(skill_id).strip()]
+        deduped = list(dict.fromkeys(normalized))
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.selected_skill_ids = deduped
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
     def get_dataframe(self, session_id: str) -> pd.DataFrame | None:
         if session_id in self._df_cache:
             self._df_cache.move_to_end(session_id)
@@ -255,6 +295,7 @@ class SessionStore:
             if state is None:
                 return
             payload: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
                 "role": role,
                 "content": content,
                 "timestamp": self._now_iso(),
@@ -267,16 +308,88 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
-    def add_artifacts(self, session_id: str, artifacts: list[ArtifactRecord]) -> None:
+    def add_artifacts(self, session_id: str, artifacts: list) -> None:
+        from backend.artifacts.bridge import execution_to_api_payload
         with self._get_session_lock(session_id):
             state = self._load_state(session_id)
             if state is None:
                 return
-            serialized = [serialize_artifact(a) for a in artifacts]
+            serialized = [execution_to_api_payload(a) for a in artifacts]
             state.artifacts.extend(serialized)
             state.last_access = self._now_iso()
             self._save_state(state)
 
+
+    def set_csv_runtime_state(
+        self,
+        session_id: str,
+        *,
+        csv_loaded: bool,
+        csv_session_id: str | None,
+        csv_table_names: list[str] | None = None,
+        csv_expires_at: int | None = None,
+    ) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.csv_loaded = bool(csv_loaded)
+            state.csv_session_id = str(csv_session_id or "").strip() or None
+            state.csv_table_names = list(csv_table_names or [])
+            state.csv_expires_at = csv_expires_at
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def set_session_memory(self, session_id: str, content: str) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.session_memory = content.strip()
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def append_session_memory(self, session_id: str, note: str) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            existing = state.session_memory or ""
+            state.session_memory = (existing + "\n- " + note.strip()).lstrip()
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def clear_csv_runtime_state(self, session_id: str) -> None:
+        self.set_csv_runtime_state(
+            session_id,
+            csv_loaded=False,
+            csv_session_id=None,
+            csv_table_names=[],
+            csv_expires_at=None,
+        )
+
+    def delete_messages_from_id(self, session_id: str, message_id: str) -> int:
+        """Delete the message with *message_id* and all messages after it.
+
+        Returns the number of messages removed. If the ID is not found returns 0.
+        """
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return 0
+            history = state.chat_history
+            cut_index: int | None = None
+            for i, msg in enumerate(history):
+                if msg.get("id") == message_id:
+                    cut_index = i
+                    break
+            if cut_index is None:
+                return 0
+            removed = len(history) - cut_index
+            state.chat_history = history[:cut_index]
+            state.last_access = self._now_iso()
+            self._save_state(state)
+            return removed
 
     def delete_session(self, session_id: str) -> None:
         session_dir = self._session_dir(session_id)

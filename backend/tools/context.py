@@ -1,11 +1,15 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from backend.core.config import Settings
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
+
+if TYPE_CHECKING:
+    from backend.tools.sandbox import SessionSandbox
 
 
 @dataclass
@@ -18,6 +22,7 @@ class ToolBuildContext:
     tool_db_runtime: RuntimeDBConnectionConfig | None = None
     csv_loaded: bool = False
     csv_session_id: str | None = None
+    sandbox: SessionSandbox | None = None
 
     @property
     def has_data(self) -> bool:

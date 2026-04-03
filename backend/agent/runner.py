@@ -7,8 +7,10 @@ import json
 import logging
 import re
 import time
+from datetime import date
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import pandas as pd
@@ -21,7 +23,11 @@ from backend.agent.pandas_agent import (
     extract_agent_output_text,
     normalize_agent_messages,
 )
-from backend.agent.prompts import agent_prompt, get_detailed_data_info as _get_data_info
+from backend.agent.prompts import (
+    agent_prompt,
+    execution_agent_prompt,
+)
+from backend.skills import SkillRegistry
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.tools.capabilities import build_runtime_capability_context
 from backend.agent.callbacks import (
@@ -41,6 +47,7 @@ from backend.observability.phoenix import record_llm_usage_on_active_span
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
 from backend.tools.context import ToolBuildContext
+from backend.tools.sandbox_manager import SandboxManager
 from backend.tools.policy import (
     detect_data_access_mode,
     has_enabled_data_tools,
@@ -49,7 +56,9 @@ from backend.tools.policy import (
     supports_artifact_optional_output,
 )
 from backend.tools.registry import ToolRegistry
+from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
+from backend.sessions.session_memory import SessionMemory
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +233,20 @@ RAG_HINTS = (
     "что есть в базе знаний",
 )
 
+SUMMARY_HINTS = (
+    "суммариз",
+    "саммари",
+    "резюмир",
+    "выжимк",
+    "краткое содержание",
+    "подведи итог",
+    "мини отчет",
+    "мини-отчет",
+    "мини отчёт",
+    "отчет по чату",
+    "отчёт по чату",
+)
+
 CHAT_HINTS_RE = re.compile(
     r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
     re.IGNORECASE,
@@ -253,11 +276,13 @@ _LLM_UNAVAILABLE_USER_TEXT = (
 DEPTH_PROFILES: dict[str, dict[str, Any]] = {
     "light": {
         # Верхний лимит внешних итераций ReAct (модель останавливается раньше при успехе / оценке).
-        "max_steps_cap": 20,
+        "max_steps_cap": 3,
         "evaluate_enabled": False,
+        "inner_recursion_limit": 4,
+        "step_timeout_sec": 90,
         "think_instruction": (
-            "Стиль: лёгкий и быстрый.\n"
-            "Составь план из столько шагов, сколько реально нужно — без раздувания.\n"
+            "Стиль: лёгкий и быстрый. Максимум 1-2 шага.\n"
+            "Один tool call = один шаг. Для простых запросов — 1 шаг.\n"
             "Остановись мысленно на минимально достаточной цепочке инструментов.\n"
             "Предпочитай value_tool для коротких метрик, pandas_tool для компактных таблиц.\n"
             "Не подменяй внешние search-задачи value-артефактом, если search_tool доступен.\n"
@@ -292,7 +317,7 @@ class AgentResponse:
     final_text: str
     reasoning: str | None
     artifacts: list
-    route: Literal["chat", "analysis", "rag"] = "chat"
+    route: Literal["chat", "analysis", "rag", "summary"] = "chat"
     tool_calls: int = 0
     tool_names: list[str] = field(default_factory=list)
     llm_unreachable: bool = False
@@ -313,7 +338,8 @@ class AgentGraphState(TypedDict, total=False):
     callbacks: list
     trace_context: dict[str, Any]
     session_source: dict[str, Any]
-    route: Literal["chat", "analysis", "rag"]
+    selected_skill_ids: list[str]
+    route: Literal["chat", "analysis", "rag", "summary"]
 
     plan: str
     step_index: int
@@ -326,6 +352,8 @@ class AgentGraphState(TypedDict, total=False):
     tools: list
     capability_context: dict[str, Any]
     llm_unreachable: bool
+    sandbox: Any
+    graph_tracker: Any
 
     response: AgentResponse
 
@@ -341,6 +369,8 @@ class AgentRunner:
         rag_service: RAGService | None = None,
         allowed_tool_keys: set[str] | None = None,
         user_memory: UserMemory | None = None,
+        session_memory: SessionMemory | None = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.db_runtime_service = db_runtime_service
@@ -350,13 +380,19 @@ class AgentRunner:
         self.rag_service = rag_service
         self.allowed_tool_keys = normalize_allowed_tool_keys(allowed_tool_keys)
         self.user_memory: UserMemory = user_memory or UserMemory(profile="", notes="")
-        # Buffer for notes appended by the memory tool during this request cycle.
+        self.session_memory: SessionMemory = session_memory or SessionMemory()
+        # Buffers for notes appended by memory tools during this request cycle.
+        self._user_memory_buffer: list[str] = []
         self._session_memory_buffer: list[str] = []
+        self.skill_registry = skill_registry or SkillRegistry.from_path(self.settings.skills_dir)
+        self.skill_registry.load()
         self._tool_registry = ToolRegistry.from_services(
             search_service=search_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
-            memory_note_callback=self._session_memory_buffer.append,
+            memory_note_callback=self._user_memory_buffer.append,
+            session_note_callback=self._session_memory_buffer.append,
+            skill_registry=self.skill_registry,
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
@@ -380,7 +416,25 @@ class AgentRunner:
         max_steps = min(user_cap, depth_cap)
         if self._is_insight_request(prompt):
             max_steps = min(depth_cap, max_steps + 2)
+        # Visualization requests may need extra steps (data + chart).
+        if any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
+            max_steps = max(max_steps, min(user_cap, 5))
         return max_steps
+
+    def _try_fast_plan(self, prompt: str, tool_keys: list[str]) -> str | None:
+        """Return a hardcoded plan for trivial queries, skipping the LLM think call."""
+        if self.settings.agent_analysis_depth != "light":
+            return None
+        lower = prompt.strip().lower()
+        # "Show data/table" patterns → single pandas_tool step
+        _show_data_tokens = (
+            "покажи таблиц", "покажи данн", "показать таблиц", "показать данн",
+            "выведи таблиц", "выведи данн", "таблица из датасет", "данные из датасет",
+            "что в датасет", "структура датасет", "head", "первые строки",
+        )
+        if "pandas_tool" in tool_keys and any(t in lower for t in _show_data_tokens):
+            return "1. `pandas_tool` → показать таблицу из датасета."
+        return None
 
     @staticmethod
     def _has_confirmed_analysis_output(response: AgentResponse | None) -> bool:
@@ -435,10 +489,8 @@ class AgentRunner:
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
     ) -> ChatOpenAI:
-        enable_thinking = self.settings.llm_enable_thinking and (
-            include_reasoning or role == "plan"
-        )
-        if role == "evaluate":
+        enable_thinking = self.settings.llm_enable_thinking and include_reasoning
+        if role in ("evaluate", "plan", "tool"):
             enable_thinking = False
 
         # Qwen3.5: thinking -> temp=1.0, top_p=0.95; non-thinking -> configured, top_p=0.8
@@ -456,7 +508,9 @@ class AgentRunner:
             )
             top_p = 0.8
 
-        presence_penalty = 0.0 if role == "evaluate" else self.settings.llm_presence_penalty
+        # Disable presence_penalty for tool and evaluate roles: high values
+        # can suppress tool-calling tokens on some models (e.g. Qwen3).
+        presence_penalty = 0.0 if role in ("evaluate", "tool") else self.settings.llm_presence_penalty
 
         max_tokens = max_tokens_override or self.settings.llm_max_tokens_default
         if max_tokens_override is None and include_reasoning:
@@ -465,10 +519,14 @@ class AgentRunner:
             max_tokens = self.settings.agent_evaluate_max_tokens
 
         extra_body: dict[str, Any] = {}
-        if self.settings.llm_chat_template_kwargs_enabled:
+        # Skip chat_template_kwargs for tool role: it can interfere with
+        # tool-calling reliability on some models (e.g. Qwen3 via Ollama).
+        if self.settings.llm_chat_template_kwargs_enabled and role != "tool":
             extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
         if self.settings.llm_top_k > 0:
             extra_body["top_k"] = self.settings.llm_top_k
+        if self.settings.llm_num_ctx > 0:
+            extra_body["num_ctx"] = self.settings.llm_num_ctx
 
         kwargs: dict[str, Any] = {
             "model": self.settings.llm_model,
@@ -613,14 +671,251 @@ class AgentRunner:
         summary = "Краткая сводка предыдущего диалога:\n" + "\n".join(summary_rows)
         return self._truncate(summary, max_chars)
 
+    def _artifact_table_to_text(self, data: Any, *, max_rows: int = 20, max_cols: int = 12) -> str:
+        try:
+            if isinstance(data, pd.Series):
+                data = data.to_frame()
+
+            if isinstance(data, pd.DataFrame):
+                df = data.copy()
+                if df.empty:
+                    return "Пустая таблица."
+
+                rows, cols = df.shape
+                visible_cols = [str(c) for c in df.columns[:max_cols]]
+                lines: list[str] = [
+                    f"shape={rows}x{cols}",
+                    f"columns={visible_cols}",
+                ]
+
+                if rows <= max_rows and cols <= max_cols:
+                    try:
+                        lines.append("full_table:")
+                        lines.append(df.iloc[:max_rows, :max_cols].to_markdown(index=False))
+                    except Exception:
+                        lines.append("full_table:")
+                        lines.append(str(df.iloc[:max_rows, :max_cols]))
+                    return "\n".join(lines)
+
+                preview_df = df.iloc[: min(8, len(df)), :max_cols]
+                try:
+                    lines.append("preview_rows:")
+                    lines.append(preview_df.to_markdown(index=False))
+                except Exception:
+                    lines.append("preview_rows:")
+                    lines.append(str(preview_df))
+
+                numeric_cols = list(df.select_dtypes(include="number").columns[:max_cols])
+                if numeric_cols:
+                    try:
+                        desc = df[numeric_cols].describe().transpose().round(4)
+                        lines.append("numeric_describe:")
+                        lines.append(desc.to_markdown())
+                    except Exception:
+                        pass
+
+                return "\n".join(lines)
+
+            if isinstance(data, dict):
+                return json.dumps(data, ensure_ascii=False, default=str)[:1500]
+
+            if isinstance(data, list):
+                return json.dumps(data[:20], ensure_ascii=False, default=str)[:1500]
+
+            return str(data)[:1500]
+        except Exception as exc:
+            return f"Не удалось сериализовать артефакт: {exc}"
+
+    def _history_artifact_summary(self, history: list[dict[str, Any]]) -> str:
+        if not history:
+            return ""
+
+        blocks: list[str] = []
+
+        for item in history[-12:]:
+            artifacts = item.get("artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                continue
+
+            for idx, artifact in enumerate(artifacts[:6], start=1):
+                if not isinstance(artifact, dict):
+                    continue
+
+                artifact_type = str(artifact.get("type", "artifact")).strip() or "artifact"
+                artifact_name = str(artifact.get("text", "")).strip() or f"{artifact_type}_{idx}"
+                data = artifact.get("data")
+
+                block_lines = [
+                    f"Артефакт: {artifact_name}",
+                    f"Тип: {artifact_type}",
+                ]
+
+                if artifact_type in {"table", "value"}:
+                    block_lines.append(self._artifact_table_to_text(data))
+                elif artifact_type == "plot":
+                    if data is not None and not isinstance(data, str):
+                        block_lines.append(self._artifact_table_to_text(data))
+                    else:
+                        block_lines.append(
+                            "Построен график. Если отдельные данные графика недоступны, ориентируйся на чат и связанные таблицы."
+                        )
+                else:
+                    block_lines.append(self._artifact_table_to_text(data))
+
+                blocks.append("\n".join(block_lines))
+
+        if not blocks:
+            return ""
+
+        return "Артефакты из истории:\n\n" + "\n\n---\n\n".join(blocks[:12])
+
+    def _build_management_note(
+        self,
+        *,
+        prompt: str,
+        history: list[dict[str, Any]],
+        include_reasoning: bool,
+        callbacks: list,
+        trace_context: dict[str, Any] | None = None,
+    ) -> AgentResponse:
+        llm = self._build_llm(
+            role="chat",
+            include_reasoning=include_reasoning,
+            timeout_sec=min(30, self.settings.backend_query_timeout_sec),
+        )
+
+        chat_summary = self._history_summary(history)
+
+        recent_rows: list[str] = []
+        for item in history[-20:]:
+            role = str(item.get("role", "assistant")).strip()
+            content = self._truncate(str(item.get("content", "")).strip(), 700)
+            if not content:
+                continue
+            marker = "Пользователь" if role == "user" else "Ассистент"
+            recent_rows.append(f"{marker}: {content}")
+
+        recent_chat_block = "\n".join(recent_rows).strip()
+        artifact_block = self._history_artifact_summary(history)
+
+        system_prompt = (
+            "Ты готовишь управленческую записку по текущим данным и релевантной истории переписки.\n\n"
+            "Формат ответа строго такой:\n"
+            "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
+            "1. Цель анализа\n"
+            "...\n"
+            "2. Основные выводы\n"
+            "...\n"
+            "3. Рекомендации\n"
+            "- действие — ответственный — KPI\n"
+            "4. Заключение\n"
+            "...\n"
+            "5. Следующие шаги\n"
+            "- что сделать — кто отвечает\n\n"
+            "Правила:\n"
+            "- Пиши по-русски.\n"
+            "- Не выдумывай факты.\n"
+            "- Опирайся только на чат и артефакты из входа.\n"
+            "- Не добавляй даты, сроки, дедлайны и периоды в пункты 3 и 5.\n"
+            "- В 'Основные выводы' можно дать несколько пунктов, если в чате несколько важных тем.\n"
+            "- В 'Рекомендации' пиши только практические рекомендации в формате 'действие — ответственный — KPI'.\n"
+            "- В 'Заключение' обязательно отрази сильные стороны, зоны роста и цель на период.\n"
+            "- В 'Следующие шаги' пиши только 'что сделать — кто отвечает', без дат и сроков.\n"
+            "- Если таблица маленькая, используй её целиком как основание для выводов.\n"
+            "- Если таблица большая, опирайся на preview, shape, columns и describe.\n"
+            "- Если график есть, но его содержимое неполное, опирайся на чат и связанные таблицы.\n"
+            "- Не пиши markdown-таблицы, JSON, код и служебные комментарии.\n"
+        )
+
+        user_prompt = (
+            f"Текущий запрос пользователя:\n{prompt.strip()}\n\n"
+            f"{chat_summary or 'Краткой сводки чата нет.'}\n\n"
+            f"Последние сообщения:\n{recent_chat_block or 'Нет доступных последних сообщений.'}\n\n"
+            f"{artifact_block or 'Артефактов в истории нет.'}\n\n"
+            "Сформируй управленческую записку."
+        )
+
+        runtime_config: dict[str, Any] = {"callbacks": callbacks}
+        metadata = self._build_runtime_metadata(trace_context)
+        if metadata:
+            runtime_config["metadata"] = metadata
+
+        try:
+            response = llm.invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ],
+                config=runtime_config,
+            )
+            record_llm_usage_on_active_span(
+                response,
+                fallback_model=self.settings.llm_model,
+                fallback_provider=self.settings.llm_provider,
+            )
+
+            output_text = self._content_to_text(getattr(response, "content", ""))
+            final_text = strip_thinking(output_text).strip()
+            reasoning = extract_thinking(output_text) or None
+
+            if not final_text:
+                final_text = (
+                    "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
+                    "1. Цель анализа\nНедостаточно данных для формулировки цели.\n\n"
+                    "2. Основные выводы\nНе удалось извлечь подтверждённые выводы.\n\n"
+                    "3. Рекомендации\n- уточнить контекст запроса — пользователь — наличие уточнённой постановки\n\n"
+                    "4. Заключение\nСильные стороны: запрос на структурированный итог сформулирован. "
+                    "Зоны роста: недостаточно данных. Цель на период: уточнить входные материалы.\n\n"
+                    "5. Следующие шаги\n- уточнить, по какой части переписки нужен отчёт — пользователь"
+                )
+
+            return AgentResponse(
+                final_text=final_text,
+                reasoning=reasoning,
+                artifacts=[],
+                route="summary",
+                tool_calls=0,
+                tool_names=[],
+            )
+        except Exception as exc:
+            return AgentResponse(
+                final_text=(
+                    "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
+                    "1. Цель анализа\nНе удалось сформировать.\n\n"
+                    "2. Основные выводы\nОшибка генерации summary.\n\n"
+                    "3. Рекомендации\n- повторить запрос в более узкой формулировке — пользователь — получен корректный отчёт\n\n"
+                    "4. Заключение\nСильные стороны: структура отчёта задана. "
+                    "Зоны роста: произошла ошибка генерации. Цель на период: успешно сформировать итоговый отчёт.\n\n"
+                    "5. Следующие шаги\n- повторить формирование управленческой записки — пользователь"
+                ),
+                reasoning=f"summary failed: {exc}",
+                artifacts=[],
+                route="summary",
+                tool_calls=0,
+                tool_names=[],
+            )
+
     def _build_messages(
-        self, prompt: str, history: list[dict[str, Any]], use_history: bool
+        self,
+        prompt: str,
+        history: list[dict[str, Any]],
+        use_history: bool,
+        system_prompt: str | None = None,
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
 
+        system_parts: list[str] = []
+
+        if system_prompt:
+            system_parts.append(system_prompt)
+
         memory_block = self.user_memory.build_block()
         if memory_block:
-            messages.append(SystemMessage(content=memory_block))
+            system_parts.append(memory_block)
+
+        session_memory_block = self.session_memory.build_block()
+        if session_memory_block:
+            system_parts.append(session_memory_block)
 
         if use_history and history:
             max_msgs = max(0, self.settings.agent_history_max_messages)
@@ -629,7 +924,10 @@ class AgentRunner:
 
             summary = self._history_summary(older)
             if summary:
-                messages.append(SystemMessage(content=summary))
+                system_parts.append(summary)
+
+        if system_parts:
+            messages.append(SystemMessage(content="\n\n".join(system_parts)))
 
             for item in recent:
                 role = item.get("role")
@@ -701,6 +999,7 @@ class AgentRunner:
         history: list[dict[str, Any]],
         use_history: bool,
         include_reasoning: bool,
+        selected_skill_ids: list[str] | None = None,
     ) -> str:
         payload = {
             "model": self.settings.llm_model,
@@ -710,6 +1009,7 @@ class AgentRunner:
             "use_history": bool(use_history),
             "include_reasoning": bool(include_reasoning),
             "analysis_depth": str(self.settings.agent_analysis_depth or "light"),
+            "selected_skill_ids": list(selected_skill_ids or []),
             "max_steps": self.settings.agent_max_steps,
             "step_timeout": self.settings.agent_step_timeout_sec,
             "inner_recursion_limit": self.settings.agent_inner_recursion_limit,
@@ -750,7 +1050,7 @@ class AgentRunner:
         df: pd.DataFrame | None,
         prompt: str,
         session_source: dict[str, Any] | None = None,
-    ) -> Literal["chat", "analysis", "rag"]:
+    ) -> Literal["chat", "analysis", "rag", "summary"]:
         _probe = ToolBuildContext(
             settings=self.settings,
             allowed_tool_keys=self.allowed_tool_keys,
@@ -772,6 +1072,9 @@ class AgentRunner:
 
         if any(hint in normalized for hint in RAG_HINTS):
             return "rag"
+
+        if any(hint in normalized for hint in SUMMARY_HINTS):
+            return "summary"
 
         # Clear greeting without data context → chat
         if CHAT_HINTS_RE.search(normalized) and not has_data:
@@ -809,7 +1112,7 @@ class AgentRunner:
         *,
         has_search: bool,
         has_rag: bool,
-    ) -> Literal["chat", "analysis", "rag"]:
+    ) -> Literal["chat", "analysis", "rag", "summary"]:
         """Analytics-specialised LLM router.
 
         Called only when Tier-1 rules are inconclusive and at least one tool
@@ -825,21 +1128,21 @@ class AgentRunner:
 
         system = (
             "You are the intent router for a data analytics AI assistant.\n\n"
-            "The assistant specialises in:\n"
-            "- Analyzing tabular data (CSV, pandas DataFrames, SQL databases)\n"
-            "- Statistical analysis, forecasting, anomaly detection\n"
-            "- Data visualisation (charts, plots)\n"
-            "- Web research: business topics, markets, current events, news\n"
-            "- General conversation about data science and analytics\n\n"
+            "The assistant can do:\n"
+            "- chat: general conversation and explanations\n"
+            "- analysis: tool-based analytics, SQL, charts, search, calculations\n"
+            "- rag: internal knowledge base lookup\n"
+            "- summary: management note, chat recap, executive summary based on history and artifacts\n\n"
             f"Available tools:\n{caps_block}\n\n"
             "Classify the user query into exactly one category:\n"
-            "  chat      — conversational: greetings, explaining theory,\n"
-            "              general knowledge that needs no live data or tools\n"
-            "  analysis  — needs tools: search, research, calculations,\n"
-            "              anything requiring current or external information\n"
-            "  rag       — explicitly asks to search the internal knowledge base\n\n"
-            "When in doubt → analysis.\n"
-            "Reply with exactly one word: chat, analysis, or rag."
+            "  chat      — greeting, casual conversation, simple explanation\n"
+            "  analysis  — needs tools, calculations, charts, SQL, search, fresh info\n"
+            "  rag       — explicitly asks to search internal knowledge base\n"
+            "  summary   — asks to summarize, recap, build a management note, or produce an executive report from the chat\n\n"
+            "When in doubt:\n"
+            "- if the request is mainly summary / recap / management note / report -> summary\n"
+            "- otherwise -> analysis\n\n"
+            "Reply with exactly one word: chat, analysis, rag, or summary."
         )
         try:
             llm = self._build_llm(
@@ -855,6 +1158,8 @@ class AgentRunner:
             text = self._content_to_text(result.content).strip().lower()
             if "rag" in text:
                 return "rag"
+            if "summary" in text:
+                return "summary"
             if "analysis" in text:
                 return "analysis"
             return "chat"
@@ -869,32 +1174,38 @@ class AgentRunner:
         df: pd.DataFrame | None,
         prompt: str,
         session_source: dict[str, Any] | None = None,
+        trace_context: dict[str, Any] | None = None,
     ) -> AgentResponse | None:
+        normalized_session_source = self._normalize_session_source_for_sql_mode(
+            session_source,
+            trace_context,
+        )
+
         route = self._route_intent(
             df,
             prompt,
-            session_source=session_source,
+            session_source=normalized_session_source,
         )
         if route != "analysis":
             return None
 
         mode = detect_data_access_mode(
             has_dataframe=df is not None,
-            session_source=session_source,
+            session_source=normalized_session_source,
         )
         if mode is None:
             return None
 
         if has_enabled_data_tools(
             has_dataframe=df is not None,
-            session_source=session_source,
+            session_source=normalized_session_source,
             allowed_tool_keys=self.allowed_tool_keys,
         ):
             return None
 
         if mode == "db":
             final_text = (
-                "Не могу выполнить анализ по подключенной базе данных: "
+                "Не могу выполнить анализ по подключенной базе данных или CSV в DuckDB: "
                 "инструменты доступа к данным отключены в настройках аккаунта. "
                 "Включите как минимум `sql_table_tool`. Для построения графиков "
                 "дополнительно можно включить `plotly_tool`."
@@ -955,6 +1266,13 @@ class AgentRunner:
                 metadata["db_connection_id"] = value.strip()
                 metadata["data_source"] = "db_connection"
                 break
+
+        csv_session_id = trace_context.get("csv_session_id")
+        if isinstance(csv_session_id, str) and csv_session_id.strip():
+            metadata["csv_session_id"] = csv_session_id.strip()
+
+        if bool(trace_context.get("csv_duckdb_loaded")) and "data_source" not in metadata:
+            metadata["data_source"] = "csv_duckdb"
 
         return metadata
 
@@ -1017,12 +1335,50 @@ class AgentRunner:
         session_source: dict[str, Any] | None,
         trace_context: dict[str, Any] | None,
     ) -> tuple[bool, str | None]:
-        _ = session_source
+        if isinstance(session_source, dict):
+            direct_loaded = bool(session_source.get("csv_loaded"))
+            direct_sid = session_source.get("csv_session_id")
+            if direct_loaded and isinstance(direct_sid, str) and direct_sid.strip():
+                return True, direct_sid.strip()
+
+            source_type = str(session_source.get("source_type", "")).strip().lower()
+            if source_type == "csv" and isinstance(direct_sid, str) and direct_sid.strip():
+                return True, direct_sid.strip()
+
         if trace_context and bool(trace_context.get("csv_duckdb_loaded")):
             sid = trace_context.get("csv_session_id") or trace_context.get("session_id")
             if isinstance(sid, str) and sid.strip():
                 return True, sid.strip()
+
         return False, None
+
+    @staticmethod
+    def _normalize_session_source_for_sql_mode(
+        session_source: dict[str, Any] | None,
+        trace_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(session_source, dict):
+            session_source = {}
+
+        normalized = dict(session_source)
+
+        csv_loaded, csv_session_id = AgentRunner._resolve_csv_runtime_state(
+            session_source,
+            trace_context,
+        )
+        if csv_loaded and csv_session_id:
+            normalized["source_type"] = "db_connection"
+            normalized["source_ref_id"] = csv_session_id
+            normalized["source_label"] = str(
+                normalized.get("source_label") or f"CSV DuckDB session {csv_session_id}"
+            )
+            normalized["source_mode"] = str(
+                normalized.get("source_mode") or "read_only"
+            )
+            normalized["csv_loaded"] = True
+            normalized["csv_session_id"] = csv_session_id
+
+        return normalized
 
     @staticmethod
     def _safe_dataset_fallback(df: pd.DataFrame, prompt: str) -> str | None:
@@ -1098,36 +1454,57 @@ class AgentRunner:
         )
 
     _THINK_SYSTEM_PROMPT_BASE = (
-        "Ты — аналитический агент. Перед выполнением задачи составь краткий план.\n\n"
-        "Ответь на следующие вопросы:\n"
-        "1) Что хочет пользователь? (тип задачи: метрика / таблица / график / поиск / комплекс)\n"
-        "2) Какие инструменты использовать и в каком порядке?\n"
-        "   - данные CSV/датафрейм → pandas_tool, plotly_tool, value_tool\n"
-        "   - SQL-база → sql_table_tool (вопрос на языке → безопасный SELECT → таблица; графики — plotly_tool)\n"
-        "   - текущие события / внешняя информация → search_tool\n"
-        "   - ничего из выше + общий вопрос → прямой текстовый ответ без tool-вызовов\n"
-        "3) Конкретные параметры: столбцы, фильтры, агрегации, временной диапазон.\n"
-        "4) Как будет выглядеть финальный ответ (что покажем, что скажем)?\n\n"
-        "Правила:\n"
-        "- Используй только реально доступные в runtime tools.\n"
-        "- Если нужный инструмент недоступен, не обещай его использование — честно опиши ограничение.\n"
-        "- Не путай `value_tool` (Python-вычисление по данным) с поиском в интернете.\n"
-        "- Для свежей информации / новостей → search_tool (при доступности).\n"
+        "Ты — планировщик аналитического агента. Составь КРАТКИЙ план действий.\n\n"
+        "## Формат плана\n"
+        "Для каждого шага укажи: номер, tool, что получить.\n"
+        "Пример: 1. `pandas_tool` → показать первые строки таблицы.\n\n"
+        "## Правила\n"
+        "- Используй ТОЛЬКО инструменты из [ДОСТУПНЫЕ ИНСТРУМЕНТЫ].\n"
+        "- Минимум шагов: не добавляй лишние.\n"
+        "- Для простых запросов (показать данные, структура) → 1 шаг.\n"
+        "- Для графиков → обязательно `plotly_tool`.\n"
+        "- Не путай `value_tool` (метрики из df) с `search_tool` (веб-поиск).\n"
+        "- Если источники данных НЕ прикреплены (активный режим данных = `none`) "
+        "и запрос требует табличных данных — НЕ планируй tool-вызовы для анализа данных. "
+        "Ответь пользователю, что источники данных не прикреплены и нужно загрузить CSV или подключить БД.\n"
     )
 
-    def _think_system_prompt(self, capability_context: dict[str, Any] | None = None) -> str:
+    def _think_system_prompt(
+        self,
+        capability_context: dict[str, Any] | None = None,
+        selected_skill_ids: list[str] | None = None,
+        tool_descriptions: str = "",
+        available_tool_keys: set[str] | None = None,
+    ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
+        today = date.today().strftime("%Y-%m-%d")
         prompt = (
             self._THINK_SYSTEM_PROMPT_BASE
-            + f"\n[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
+            + f"\n[СЕГОДНЯ: {today}]\n"
+            + f"[УРОВЕНЬ АНАЛИЗА: {depth_label}]\n{depth_instruction}\n"
         )
+        if tool_descriptions:
+            prompt += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{tool_descriptions}\n"
+        # Auto-selected tool skill instructions
+        if available_tool_keys:
+            tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
+                available_tool_keys
+            )
+            if tool_skills_block:
+                prompt += f"\n{tool_skills_block}\n"
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
         if capability_block:
             prompt += f"\n{capability_block}\n"
         memory_block = self.user_memory.build_block()
         if memory_block:
             prompt += f"\n{memory_block}\n"
+        session_memory_block = self.session_memory.build_block()
+        if session_memory_block:
+            prompt += f"\n{session_memory_block}\n"
+        skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
+        if skills_block:
+            prompt += f"\n{skills_block}\n"
         return prompt
 
     _EVALUATE_PROMPT_TEMPLATE = (
@@ -1138,16 +1515,15 @@ class AgentRunner:
         "Текст ответа: {response_text}\n\n"
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
-        "Критерии оценки (PASS если выполнено хотя бы одно):\n"
-        "1. Ответ прямо отвечает на вопрос и подкреплён хотя бы одним артефактом "
-        "(table/plot/value — в т.ч. таблица результатов search_tool).\n"
-        "2. Если нужный capability недоступен/вернул ошибку в runtime — честное объяснение ограничения допустимо.\n"
-        "3. Поиск (search_tool) был запущен, но не вернул полезных данных (network/timeout) — "
-        "ответ с анализом из датасета вместо поиска допустим.\n"
-        "4. В списке артефактов есть table от веб-поиска (search_results и т.п.) — "
-        "это УЖЕ подтверждение задачи «найти в интернете»; PASS если текст ответа кратко резюмирует "
-        "найденное или перечисляет факты, даже без отдельных графиков по датасету.\n"
-        "FAIL только если: ответ пустой, полностью нерелевантен вопросу, или состоит только из описания технических ошибок.\n"
+        "Критерии оценки (pass=true если выполнено хотя бы одно:\n"
+        "1. Ответ прямо и по существу отвечает на вопрос пользователя.\n"
+        "2. Для простых вопросов (метаданные, структура, количество строк/столбцов) "
+        "достаточно корректного текстового ответа без артефактов.\n"
+        "3. Для аналитических вопросов ответ подкреплён артефактами (table/plot/value) "
+        "или содержит конкретные числа/факты из данных.\n"
+        "4. Если capability недоступен или вернул ошибку — честное объяснение ограничения допустимо.\n"
+        "pass=false только если: ответ пустой, полностью нерелевантен вопросу, "
+        "содержит только технические ошибки, или LLM придумала данные не вызвав инструмент.\n"
         "Только JSON, без пояснений."
     )
 
@@ -1240,6 +1616,73 @@ class AgentRunner:
 
         return "\n".join(blocks).strip()
 
+    def _build_execution_system_prompt(
+        self,
+        *,
+        user_prompt: str,
+        plan: str,
+        refinement_feedback: str,
+        step_index: int,
+        max_steps: int,
+        capability_context: dict[str, Any] | None = None,
+        sandbox: Any | None = None,
+    ) -> str:
+        source_mode = str((capability_context or {}).get("source_mode", "")).strip() or "dataset"
+        tool_descriptions = str((capability_context or {}).get("tool_descriptions", "")).strip()
+        available_tools = [
+            str(item).strip()
+            for item in (capability_context or {}).get("available_tool_keys", [])
+            if str(item).strip()
+        ]
+        tool_list = ", ".join(f"`{item}`" for item in available_tools) if available_tools else "нет"
+
+        today = date.today().strftime("%Y-%m-%d")
+        blocks = [
+            execution_agent_prompt.strip(),
+            f"Сегодня: {today}.",
+            f"Режим данных: `{source_mode}`.",
+            f"Доступные tools в этом запуске: {tool_list}.",
+        ]
+        if source_mode == "db":
+            blocks.append(
+                "ВАЖНО (режим БД): переменная `df` пустая — НЕ используй `df` для получения данных. "
+                "Для любых запросов к таблицам используй `sql_table_tool`. "
+                "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри."
+            )
+        if tool_descriptions:
+            blocks.extend(["Описание доступных tools:", tool_descriptions])
+
+        blocks.append(
+            f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {self.settings.agent_analysis_depth}."
+        )
+        if plan.strip():
+            blocks.append(f"Ориентир плана: {plan.strip()}")
+        if refinement_feedback.strip():
+            blocks.append(
+                "Исправь предыдущую неудачную попытку: "
+                f"{refinement_feedback.strip()}"
+            )
+        if any(tok in user_prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS):
+            blocks.append(
+                "Запрошена визуализация: сначала построй хотя бы один график через `plotly_tool`, "
+                "потом формируй итоговый ответ."
+            )
+
+        # Sandbox context: available variables + session notebook.
+        if sandbox:
+            sandbox_block = sandbox.describe_for_prompt()
+            if sandbox_block:
+                blocks.append(sandbox_block)
+
+        # Full tool skill instructions injected inline — no get_tool_instructions call needed.
+        tool_skills_block = self.skill_registry.build_tool_skills_prompt_block(
+            set(available_tools)
+        )
+        if tool_skills_block:
+            blocks.append(tool_skills_block)
+
+        return "\n".join(blocks).strip()
+
     def _collect_text_and_reasoning(
         self,
         *,
@@ -1289,7 +1732,8 @@ class AgentRunner:
     def _extract_value_payload(artifacts: list) -> dict[str, Any]:
         merged: dict[str, Any] = {}
         for artifact in artifacts:
-            if str(getattr(artifact, "artifact_type", "")).strip() != "value":
+            type_str = artifact_type_label(getattr(artifact, "artifact_type", ""))
+            if type_str not in ("value", "scalar"):
                 continue
             data = getattr(artifact, "data", None)
             if isinstance(data, dict):
@@ -1398,11 +1842,11 @@ class AgentRunner:
     def _artifact_method_lines(self, artifacts: list, max_items: int = 8) -> list[str]:
         lines: list[str] = []
         for artifact in artifacts[:max_items]:
-            artifact_type = str(getattr(artifact, "artifact_type", "")).strip() or "artifact"
-            name = str(getattr(artifact, "text", "")).strip() or artifact_type
+            artifact_type = artifact_type_label(getattr(artifact, "artifact_type", "")) or "artifact"
+            name = str(getattr(artifact, "name", "") or getattr(artifact, "text", "")).strip() or artifact_type
             data = getattr(artifact, "data", None)
 
-            if artifact_type == "value" and isinstance(data, dict):
+            if artifact_type in ("value", "scalar") and isinstance(data, dict):
                 metric_keys = [str(key) for key in data.keys()]
                 preview = ", ".join(metric_keys[:5])
                 suffix = ", ..." if len(metric_keys) > 5 else ""
@@ -1412,7 +1856,7 @@ class AgentRunner:
                 )
                 continue
 
-            if artifact_type == "table":
+            if artifact_type in ("table", "dataframe", "sql_result"):
                 if isinstance(data, pd.Series):
                     data = data.to_frame()
                 if isinstance(data, pd.DataFrame):
@@ -1498,17 +1942,17 @@ class AgentRunner:
         table_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "table"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "table"
         )
         plot_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "plot"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "plot"
         )
         value_count = sum(
             1
             for artifact in artifacts
-            if str(getattr(artifact, "artifact_type", "")).strip() == "value"
+            if artifact_type_label(getattr(artifact, "artifact_type", "")) == "value"
         )
 
         direct_answer = self._table_extreme_summary(prompt, artifacts)
@@ -1533,7 +1977,7 @@ class AgentRunner:
                         f"В датасете {int(row_count)} строк и {int(column_count)} столбцов."
                     )
 
-        if not direct_answer:
+        if not direct_answer and not self._response_looks_like_plan_or_trace(base_text):
             candidate = self._first_sentence(str(base_text or ""))
             if candidate:
                 direct_answer = candidate
@@ -1610,6 +2054,44 @@ class AgentRunner:
         return False
 
     @staticmethod
+    def _response_looks_like_plan_or_trace(response_text: str) -> bool:
+        text = str(response_text or "").strip().lower()
+        if not text:
+            return True
+
+        plan_prefixes = (
+            "план анализа",
+            "план решения",
+            "план выполнения",
+            "план:",
+            "plan:",
+            "корректировка плана",
+            "интеграция внешней",
+            "извлечение ключевых",
+            "что хочет пользователь?",
+            "какие инструменты использовать",
+            "выполняю шаг",
+            "проверяю результат шага",
+            "доработка через повторный цикл",
+            "рассуждение (chain of thought)",
+        )
+        if any(text.startswith(prefix) for prefix in plan_prefixes):
+            return True
+
+        trace_markers = (
+            '"name": "value_tool"',
+            '"name": "pandas_tool"',
+            '"name": "memory_tool"',
+            '"artifact_type": "value"',
+            '"artifact_type": "table"',
+            "tool_result",
+            "value_tool(",
+            "pandas_tool(",
+            "memory_tool(",
+        )
+        return any(marker in text for marker in trace_markers)
+
+    @staticmethod
     def _latest_collected_text(callbacks: list) -> tuple[str, str | None]:
         for cb in callbacks:
             if not isinstance(cb, LLMTextCollector):
@@ -1638,9 +2120,12 @@ class AgentRunner:
         expected = str(artifact_type or "").strip().lower()
         if not expected:
             return False
+        # Map legacy type names to ExecArtifactType values
+        _LEGACY_ALIASES = {"table": "dataframe", "value": "scalar"}
+        expected_exec = _LEGACY_ALIASES.get(expected, expected)
         for artifact in response.artifacts:
-            current = str(getattr(artifact, "artifact_type", "")).strip().lower()
-            if current == expected:
+            current = artifact_type_label(getattr(artifact, "artifact_type", ""))
+            if current == expected or current == expected_exec:
                 return True
         return False
 
@@ -1695,6 +2180,15 @@ class AgentRunner:
                 max_steps=max_steps,
                 status=status,
             )
+            # Update graph tracker.
+            gt = getattr(collector, "graph_tracker", None)
+            if gt is not None:
+                si = step_index if isinstance(step_index, int) else 0
+                if status == "streaming":
+                    gt.phase_start(phase, si)
+                elif status in ("done", "pass", "fail", "error"):
+                    gt.phase_end(phase, si, status="done" if status in ("done", "pass") else "error")
+                collector._graph_version += 1
 
     @staticmethod
     def _silent_callbacks(callbacks: list) -> list:
@@ -1796,6 +2290,8 @@ class AgentRunner:
         tools: list,
         session_source: dict[str, Any] | None = None,
         tool_db_runtime: RuntimeDBConnectionConfig | None = None,
+        selected_skill_ids: list[str] | None = None,
+        execution_system_prompt: str | None = None,
     ) -> AgentResponse:
         self._reset_text_collectors(callbacks)
         llm = self._build_llm(
@@ -1813,25 +2309,44 @@ class AgentRunner:
             df=df,
         )
 
+        skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
+        act_prefix = (execution_system_prompt or execution_agent_prompt).strip()
+        if skills_block:
+            act_prefix = f"{act_prefix}\n\n{skills_block}"
+
+        depth_inner_limit = self._depth_profile.get("inner_recursion_limit")
+        effective_inner_limit = (
+            depth_inner_limit
+            if isinstance(depth_inner_limit, int)
+            else self.settings.agent_inner_recursion_limit
+        )
         agent = create_pandas_dataframe_agent(
             llm=llm,
             df=df.copy(),
             tools=tools,
             verbose=False,
             return_intermediate_steps=True,
-            max_iterations=max(1, self.settings.agent_inner_recursion_limit),
-            max_execution_time=float(self.settings.agent_step_timeout_sec),
-            prefix=agent_prompt,
+            max_iterations=max(1, effective_inner_limit),
+            max_execution_time=float(
+                self._depth_profile.get("step_timeout_sec", self.settings.agent_step_timeout_sec)
+            ),
+            prefix=act_prefix,
             suffix=db_suffix or None,
             include_df_in_prompt=True,
-            number_of_head_rows=max(1, self.settings.agent_prompt_head_rows),
-            data_info_max_columns=max(6, self.settings.agent_prompt_max_columns),
+            number_of_head_rows=min(2, max(1, self.settings.agent_prompt_head_rows)),
+            data_info_max_columns=min(10, max(6, self.settings.agent_prompt_max_columns)),
         )
 
         prompt_messages = self._build_messages(prompt, history, use_history)
+        # Use depth-profile override if available, else global setting.
+        # Minimum 4 to allow at least: LLM call → tool → LLM response.
+        recursion_limit = max(
+            4,
+            min(24, effective_inner_limit * 2 + 2),
+        )
         runtime_config: dict[str, Any] = {
             "callbacks": callbacks,
-            "recursion_limit": max(8, min(24, self.settings.agent_inner_recursion_limit)),
+            "recursion_limit": recursion_limit,
         }
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -1903,6 +2418,7 @@ class AgentRunner:
         graph.add_node("route", self._route_node)
         graph.add_node("chat", self._chat_node)
         graph.add_node("rag", self._rag_node)
+        graph.add_node("summary", self._summary_node)
         graph.add_node("think", self._think_node)
         graph.add_node("act", self._act_node)
         graph.add_node("evaluate", self._evaluate_node)
@@ -1913,10 +2429,16 @@ class AgentRunner:
         graph.add_conditional_edges(
             "route",
             self._route_edge,
-            {"chat": "chat", "analysis": "think", "rag": "rag"},
+            {
+                "chat": "chat",
+                "analysis": "think",
+                "rag": "rag",
+                "summary": "summary",
+            },
         )
         graph.add_edge("chat", "finalize")
         graph.add_edge("rag", "finalize")
+        graph.add_edge("summary", "finalize")
 
         graph.add_conditional_edges(
             "think",
@@ -1940,7 +2462,7 @@ class AgentRunner:
 
     def _route_node(
         self, state: AgentGraphState
-    ) -> dict[str, Literal["chat", "analysis", "rag"]]:
+    ) -> dict[str, Literal["chat", "analysis", "rag", "summary"]]:
         route = self._route_intent(
             state.get("df"),
             state.get("prompt", ""),
@@ -1949,7 +2471,7 @@ class AgentRunner:
         return {"route": route}
 
     @staticmethod
-    def _route_edge(state: AgentGraphState) -> Literal["chat", "analysis", "rag"]:
+    def _route_edge(state: AgentGraphState) -> Literal["chat", "analysis", "rag", "summary"]:
         return state.get("route", "chat")
 
     @staticmethod
@@ -2125,6 +2647,51 @@ class AgentRunner:
                 "stop_reason": "rag_failed",
             }
 
+    def _summary_node(self, state: AgentGraphState) -> dict[str, AgentResponse]:
+        callbacks = state.get("callbacks", [])
+
+        self._emit_phase_event(
+            callbacks,
+            phase="act",
+            title="Формирование управленческой записки",
+            content="",
+            step_index=0,
+            max_steps=1,
+            status="streaming",
+        )
+        self._emit_progress_event(
+            callbacks,
+            phase="act",
+            title="Собираю управленческую записку",
+            details="Анализирую релевантную историю переписки и артефакты.",
+            step_index=0,
+            max_steps=1,
+        )
+
+        response = self._build_management_note(
+            prompt=state.get("prompt", ""),
+            history=state.get("history", []),
+            include_reasoning=state.get("include_reasoning", False),
+            callbacks=callbacks,
+            trace_context=state.get("trace_context"),
+        )
+
+        self._emit_phase_event(
+            callbacks,
+            phase="act",
+            title="Формирование управленческой записки",
+            content="Управленческая записка сформирована.",
+            step_index=0,
+            max_steps=1,
+            status="done",
+        )
+
+        return {
+            "response": response,
+            "done": True,
+            "stop_reason": "summary_ready",
+        }
+
     def _think_node(self, state: AgentGraphState) -> dict[str, Any]:
         df = state.get("df")
         prompt = state.get("prompt", "")
@@ -2139,23 +2706,44 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
+        csv_duckdb_mode = bool(csv_loaded and str(csv_session_id or "").strip())
+
+        # В режиме CSV-in-DuckDB pandas/value-инструменты не предлагаем:
+        # анализ должен идти через sql_table_tool.
+        tool_df = None if csv_duckdb_mode else df
+
+        # Get or create a persistent sandbox for this session.
+        trace_ctx = state.get("trace_context") or {}
+        session_id = trace_ctx.get("session_id", "default")
+        sandbox = SandboxManager.get_instance().get_or_create(session_id)
+        sandbox.ensure_storage_dir(Path(self.settings.storage_dir) / session_id)
+        if df is not None:
+            source_label = str(trace_ctx.get("dataset_name", "") or "")
+            sandbox.bind_dataframe(df, source_label=source_label, db_runtime_config=tool_db_runtime)
+
         _ctx = ToolBuildContext(
             settings=self.settings,
             allowed_tool_keys=self.allowed_tool_keys,
-            df=df,
+            df=tool_df,
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
+            sandbox=sandbox,
         )
         tools: list = self._tool_registry.build_tools(_ctx)
+        tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
 
         max_steps = self._effective_outer_max_steps(prompt=prompt)
 
         data_context = ""
         if df is not None:
             try:
-                data_context = _get_data_info(
-                    df, max_columns=max(6, self.settings.agent_prompt_max_columns)
+                # Compact data info for planning — full stats go to act phase
+                cols = list(df.columns)
+                dtypes = {c: str(df[c].dtype) for c in cols[:20]}
+                data_context = (
+                    f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов.\n"
+                    f"Столбцы и типы: {dtypes}"
                 )
             except Exception:
                 data_context = f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
@@ -2168,6 +2756,14 @@ class AgentRunner:
         if db_block:
             data_context = f"{data_context}\n\n{db_block}".strip() if data_context else db_block
 
+        if not data_context.strip():
+            data_context = (
+                "Источники данных: НЕ прикреплены. "
+                "Нет загруженного датафрейма (CSV) и нет подключённой базы данных.\n"
+                "Если запрос пользователя требует работы с данными — НЕ планируй tool-вызовы для анализа данных. "
+                "Сообщи пользователю, что сначала нужно загрузить CSV-файл или подключить базу данных."
+            )
+
         tool_keys = [
             str(getattr(tool, "name", "")).strip()
             for tool in tools
@@ -2175,9 +2771,10 @@ class AgentRunner:
         ]
         capability_context = build_runtime_capability_context(
             available_tool_keys=tool_keys,
-            has_dataframe=df is not None,
-            has_db_source=tool_db_runtime is not None,
+            has_dataframe=tool_df is not None,
+            has_db_source=(tool_db_runtime is not None) or csv_duckdb_mode,
         )
+        capability_context["tool_descriptions"] = tool_descriptions
 
         user_block = f"Вопрос пользователя: {prompt.strip()}"
         if refinement_feedback.strip():
@@ -2187,18 +2784,25 @@ class AgentRunner:
                 "Скорректируй план с учётом этой обратной связи."
             )
 
+        # NOTE: tool skills are NOT injected into think phase to keep prompt small.
+        # They are injected into execution phase (_build_execution_system_prompt).
         think_messages = [
-            SystemMessage(content=self._think_system_prompt(capability_context)),
+            SystemMessage(content=self._think_system_prompt(
+                capability_context,
+                selected_skill_ids=state.get("selected_skill_ids"),
+                tool_descriptions=tool_descriptions,
+            )),
             HumanMessage(content=f"{data_context}\n\n{user_block}"),
         ]
 
         llm = self._build_llm(
             role="plan",
-            include_reasoning=True,
+            include_reasoning=False,
             timeout_sec=min(
                 self.settings.agent_step_timeout_sec,
                 self.settings.backend_query_timeout_sec,
             ),
+            max_tokens_override=256,
         )
 
         current_step = int(state.get("step_index", 0))
@@ -2212,30 +2816,34 @@ class AgentRunner:
             status="streaming",
         )
 
-        silent_cbs = self._silent_callbacks(callbacks)
-        runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
-        metadata = self._build_runtime_metadata(state.get("trace_context"))
-        if metadata:
-            runtime_config["metadata"] = metadata
-
+        # Fast-path: skip LLM plan for trivial queries in light depth.
+        fast_plan = self._try_fast_plan(prompt, tool_keys)
         plan = ""
         think_llm_failed = False
-        try:
-            response = llm.invoke(think_messages, config=runtime_config)
-            record_llm_usage_on_active_span(
-                response,
-                fallback_model=self.settings.llm_model,
-                fallback_provider=self.settings.llm_provider,
-            )
-            raw_content = self._content_to_text(getattr(response, "content", ""))
-            plan = strip_thinking(raw_content).strip()
-            reasoning = extract_thinking(raw_content)
-            if not plan:
-                plan = reasoning or "Анализировать данные по запросу пользователя."
-        except Exception as exc:
-            _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
-            plan = "Ошибка при планировании. Выполнить прямой анализ данных."
-            think_llm_failed = True
+        if fast_plan:
+            plan = fast_plan
+        else:
+            silent_cbs = self._silent_callbacks(callbacks)
+            runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
+            metadata = self._build_runtime_metadata(state.get("trace_context"))
+            if metadata:
+                runtime_config["metadata"] = metadata
+            try:
+                response = llm.invoke(think_messages, config=runtime_config)
+                record_llm_usage_on_active_span(
+                    response,
+                    fallback_model=self.settings.llm_model,
+                    fallback_provider=self.settings.llm_provider,
+                )
+                raw_content = self._content_to_text(getattr(response, "content", ""))
+                plan = strip_thinking(raw_content).strip()
+                reasoning = extract_thinking(raw_content)
+                if not plan:
+                    plan = reasoning or "Анализировать данные по запросу пользователя."
+            except Exception as exc:
+                _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
+                plan = "Ошибка при планировании. Выполнить прямой анализ данных."
+                think_llm_failed = True
 
         self._emit_phase_event(
             callbacks,
@@ -2268,6 +2876,7 @@ class AgentRunner:
         if first_run:
             result["tools"] = tools
             result["step_index"] = 0
+            result["sandbox"] = sandbox
         result["capability_context"] = capability_context
         return result
 
@@ -2288,13 +2897,15 @@ class AgentRunner:
             state.get("trace_context"),
         )
 
-        step_prompt = self._compose_step_prompt(
+        sandbox = state.get("sandbox")
+        execution_system_prompt = self._build_execution_system_prompt(
             user_prompt=state.get("prompt", ""),
             plan=plan,
             refinement_feedback=refinement_feedback,
             step_index=step_index,
             max_steps=max_steps,
             capability_context=state.get("capability_context"),
+            sandbox=sandbox,
         )
 
         self._emit_phase_event(
@@ -2319,7 +2930,7 @@ class AgentRunner:
         try:
             response = self._analysis_step(
                 df=tool_df,
-                prompt=step_prompt,
+                prompt=state.get("prompt", ""),
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
                 include_reasoning=state.get("include_reasoning", False),
@@ -2328,6 +2939,8 @@ class AgentRunner:
                 tools=tools,
                 session_source=state.get("session_source"),
                 tool_db_runtime=tool_db_runtime,
+                selected_skill_ids=state.get("selected_skill_ids"),
+                execution_system_prompt=execution_system_prompt,
             )
         except Exception as exc:
             artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
@@ -2339,44 +2952,6 @@ class AgentRunner:
                 tool_calls=tool_calls,
                 tool_names=tool_names,
             )
-
-        requires_plot = (
-            any(tok in str(state.get("prompt", "")).lower() for tok in _VISUALIZATION_HINT_TOKENS)
-            and any(str(getattr(tool, "name", "")).strip() == "plotly_tool" for tool in tools)
-        )
-        if requires_plot and not self._response_has_artifact_type(response, "plot"):
-            retry_prompt = (
-                f"{state.get('prompt', '').strip()}\n\n"
-                "[ROLE: VISUALIZATION_RETRY]\n"
-                "Предыдущая попытка не построила plot-артефакт. "
-                "Сейчас выполни только то, что нужно для успешного графика:\n"
-                "- обязательно вызови `plotly_tool`\n"
-                "- создай реальный Plotly `Figure`\n"
-                "- верни результат через `chart.result(fig, artifact_name=\"...\")`\n"
-                "- не пересказывай план и не ограничивайся таблицей или метрикой"
-            )
-            self._emit_progress_event(
-                callbacks,
-                phase="act",
-                title=f"Повторяю шаг {step_index} для графика",
-                details="Предыдущая попытка не вернула plot-артефакт. Форсирую отдельный вызов plotly_tool.",
-                step_index=step_index,
-                max_steps=max_steps,
-            )
-            retry_response = self._analysis_step(
-                df=tool_df,
-                prompt=retry_prompt,
-                history=state.get("history", []),
-                use_history=state.get("use_history", True),
-                include_reasoning=state.get("include_reasoning", False),
-                callbacks=callbacks,
-                trace_context=state.get("trace_context"),
-                tools=tools,
-                session_source=state.get("session_source"),
-                tool_db_runtime=tool_db_runtime,
-            )
-            if self._response_has_artifact_type(retry_response, "plot"):
-                response = retry_response
 
         elapsed_sec = time.perf_counter() - started_at
         if elapsed_sec > max(1, self.settings.agent_step_timeout_sec):
@@ -2390,9 +2965,9 @@ class AgentRunner:
         if response.tool_names:
             tool_summary_lines.append(f"Инструменты: {', '.join(response.tool_names)}")
         if response.artifacts:
-            types = [
-                str(getattr(a, "artifact_type", "")).strip() for a in response.artifacts
-            ]
+            types = []
+            for a in response.artifacts:
+                types.append(artifact_type_label(getattr(a, "artifact_type", "")))
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
         self._emit_phase_event(
@@ -2417,7 +2992,6 @@ class AgentRunner:
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", self.settings.agent_max_steps))
         capability_context = state.get("capability_context") or {}
-        unavailable_capabilities = capability_context.get("unavailable_capability_keys") or []
 
         if response is None:
             self._emit_phase_event(
@@ -2434,59 +3008,64 @@ class AgentRunner:
                 "eval_reason": "Нет ответа после шага ACT.",
             }
 
-        if not response.final_text.strip():
-            reason = "Пустой финальный ответ"
-            self._emit_phase_event(
-                callbacks, phase="evaluate", title="Оценка результата",
-                content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+        has_confirmed_output = self._has_confirmed_analysis_output(response)
+        if has_confirmed_output and (
+            self._response_too_generic(prompt, response.final_text)
+            or self._response_looks_like_plan_or_trace(response.final_text)
+        ):
+            grounded_summary = self._artifact_grounded_summary(
+                prompt,
+                response.artifacts,
+                base_text=response.final_text,
             )
-            return {"eval_passed": False, "eval_reason": reason}
+            if grounded_summary:
+                response.final_text = grounded_summary
+
+        if not response.final_text.strip():
+            # If confirmed artifacts exist, treat empty text as acceptable — finalize will generate summary.
+            if has_confirmed_output:
+                response.final_text = self._artifact_grounded_summary(
+                    prompt, response.artifacts, base_text=response.final_text,
+                ) or "Результат получен."
+            else:
+                reason = "Пустой финальный ответ"
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
 
         requires_plot = (
             any(tok in prompt.lower() for tok in _VISUALIZATION_HINT_TOKENS)
             and self._tool_allowed("plotly_tool")
         )
+        plotly_was_attempted = "plotly_tool" in (response.tool_names or [])
         if requires_plot and not self._response_has_artifact_type(response, "plot"):
-            reason = "Запрошена визуализация, но plot-артефакт не построен"
-            self._emit_phase_event(
-                callbacks,
-                phase="evaluate",
-                title="Оценка результата",
-                content=reason,
-                step_index=step_index,
-                max_steps=max_steps,
-                status="fail",
-            )
-            return {"eval_passed": False, "eval_reason": reason}
+            if plotly_was_attempted:
+                # plotly_tool was called but failed — retry won't help
+                reason = "plotly_tool был вызван, но не смог построить график — пропускаю retry"
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="done",
+                )
+            else:
+                reason = "Запрошена визуализация, но plot-артефакт не построен. ОБЯЗАТЕЛЬНО вызови `plotly_tool` с Python-кодом для построения графика."
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
 
-        has_confirmed_output = self._has_confirmed_analysis_output(response)
-        # Search attempted but returned errors still counts as "attempted"
-        search_attempted = bool(
-            response
-            and response.tool_calls > 0
-            and "search_tool" in (response.tool_names or [])
-        )
-
-        wf = state.get("df")
-        has_tabular_frame = wf is not None and len(wf.columns) > 0
-        db_metadata_answer_ok = (
-            str(capability_context.get("source_mode", "")).strip() == "db"
-            and not has_tabular_frame
-            and bool(str(response.final_text or "").strip())
-        )
-
-        if (
-            not has_confirmed_output
-            and not unavailable_capabilities
-            and not search_attempted
-            and not db_metadata_answer_ok
-        ):
-            reason = "Нет подтвержденных tool-вызовов с артефактами"
-            self._emit_phase_event(
-                callbacks, phase="evaluate", title="Оценка результата",
-                content=reason, step_index=step_index, max_steps=max_steps, status="fail",
-            )
-            return {"eval_passed": False, "eval_reason": reason}
+        # If no tools were called at all and plan expected tool usage, retry.
+        if response.tool_calls == 0 and not has_confirmed_output:
+            plan = state.get("plan", "")
+            if plan and any(t in plan for t in ("_tool", "tool_")):
+                reason = "План предполагал вызов инструмента, но ни один не был вызван. ОБЯЗАТЕЛЬНО вызови инструмент из плана."
+                self._emit_phase_event(
+                    callbacks, phase="evaluate", title="Оценка результата",
+                    content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+                )
+                return {"eval_passed": False, "eval_reason": reason}
 
         depth_eval = self._depth_profile.get("evaluate_enabled", True)
         if not self.settings.agent_evaluate_enabled or not depth_eval:
@@ -2527,7 +3106,7 @@ class AgentRunner:
                 runtime_config["metadata"] = metadata
 
             llm_response = llm.invoke(
-                [SystemMessage(content="Ты оцениваешь качество аналитических ответов. Отвечай только JSON."),
+                [SystemMessage(content="Ты оцениваешь, насколько ответ агента соответствует запросу пользователя. Отвечай только JSON."),
                  HumanMessage(content=evaluate_prompt)],
                 config=runtime_config,
             )
@@ -2579,12 +3158,18 @@ class AgentRunner:
 
         has_confirmed_output = self._has_confirmed_analysis_output(response)
 
-        # Also accept when the evaluator approved a search result even
-        # if there are no "data" artifacts (search itself is the artifact).
-        _search_tools = {"search_tool"}
-        _search_attempted = any(t in (response.tool_names or []) for t in _search_tools)
+        # Fast exit: if we have confirmed artifacts, stop even without text
+        # (finalize_node will generate summary text from artifacts).
+        if has_confirmed_output and eval_passed:
+            self._emit_progress_event(
+                callbacks, phase="decide",
+                title="Завершаю цикл ReAct",
+                details="Артефакты получены, перехожу к финализации.",
+                step_index=step_index, max_steps=max_steps,
+            )
+            return {"done": True, "stop_reason": "ready"}
 
-        if eval_passed and response.final_text.strip() and (has_confirmed_output or _search_attempted):
+        if eval_passed and response.final_text.strip():
             self._emit_progress_event(
                 callbacks, phase="decide",
                 title="Завершаю цикл ReAct",
@@ -2614,6 +3199,16 @@ class AgentRunner:
                 step_index=step_index, max_steps=max_steps,
             )
             return {"done": True, "stop_reason": "act_recursion_limit"}
+
+        # If no tools were called for 2+ consecutive retry steps, LLM is stuck — stop looping.
+        if step_index > 2 and response.tool_calls == 0:
+            self._emit_progress_event(
+                callbacks, phase="decide",
+                title="Остановка: инструменты не вызваны",
+                details="LLM не вызвала ни одного инструмента повторно, retry бессмысленен.",
+                step_index=step_index, max_steps=max_steps,
+            )
+            return {"done": True, "stop_reason": "no_tool_calls"}
 
         feedback = eval_reason or "Результат не прошёл оценку."
         self._emit_progress_event(
@@ -2755,18 +3350,37 @@ class AgentRunner:
                         response.final_text = grounded_summary
 
             if not has_confirmed_output:
-                fallback_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
-                reasoning = (response.reasoning or "").strip()
-                reason_suffix = f"Tool-required policy enforced: {stop_reason or 'missing artifacts'}."
-                reasoning = f"{reasoning}\n\n{reason_suffix}".strip()
-                response = AgentResponse(
-                    final_text=fallback_text,
-                    reasoning=reasoning,
-                    artifacts=[],
-                    route="analysis",
-                    tool_calls=response.tool_calls,
-                    tool_names=response.tool_names,
-                )
+                prior_reasoning = (response.reasoning or "").strip()
+                prior_tool_calls = response.tool_calls
+                prior_tool_names = response.tool_names
+                try:
+                    response = self.chat(
+                        prompt=prompt,
+                        history=state.get("history", []),
+                        use_history=state.get("use_history", True),
+                        include_reasoning=state.get("include_reasoning", False),
+                        callbacks=callbacks,
+                        trace_context=state.get("trace_context"),
+                    )
+                    response.route = "analysis"
+                    response.tool_calls = prior_tool_calls
+                    response.tool_names = prior_tool_names
+                    if prior_reasoning:
+                        response.reasoning = (
+                            f"{prior_reasoning}\n\nFallback: no confirmed artifacts, answered via chat."
+                        )
+                except Exception:
+                    fallback_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
+                    reason_suffix = f"Tool-required policy enforced: {stop_reason or 'missing artifacts'}."
+                    reasoning = f"{prior_reasoning}\n\n{reason_suffix}".strip()
+                    response = AgentResponse(
+                        final_text=fallback_text,
+                        reasoning=reasoning,
+                        artifacts=[],
+                        route="analysis",
+                        tool_calls=prior_tool_calls,
+                        tool_names=prior_tool_names,
+                    )
             elif not bool(state.get("eval_passed", False)):
                 reasoning = (response.reasoning or "").strip()
                 eval_reason = state.get("eval_reason", "")
@@ -2800,7 +3414,7 @@ class AgentRunner:
         trace_context: dict[str, Any] | None = None,
     ) -> AgentResponse:
         llm = self._build_llm(role="chat", include_reasoning=include_reasoning)
-        prompt_messages = self._build_messages(prompt, history, use_history)
+        prompt_messages = self._build_messages(prompt, history, use_history, system_prompt=agent_prompt)
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -2852,7 +3466,9 @@ class AgentRunner:
         callbacks: list,
         trace_context: dict[str, Any] | None = None,
         session_source: dict[str, Any] | None = None,
+        selected_skill_ids: list[str] | None = None,
     ) -> AgentResponse:
+        resolved_skill_ids = [skill.skill_id for skill in self.skill_registry.resolve_selection(selected_skill_ids)]
         request_kind = str((trace_context or {}).get("request_kind", "")).strip().lower()
         cache_allowed = self.settings.agent_cache_enabled and request_kind != "stream"
 
@@ -2862,6 +3478,7 @@ class AgentRunner:
             history=history,
             use_history=use_history,
             include_reasoning=include_reasoning,
+            selected_skill_ids=resolved_skill_ids,
         )
         if cache_allowed:
             cached = self._cache_get(cache_key)
@@ -2872,12 +3489,18 @@ class AgentRunner:
             df,
             prompt,
             session_source=session_source,
+            trace_context=trace_context,
         )
         if data_tools_disabled is not None:
             if cache_allowed:
                 self._cache_set(cache_key, data_tools_disabled)
             return data_tools_disabled
 
+        # Set recursion_limit well above the max supersteps the outer graph can produce.
+        # Each outer cycle = 4 supersteps (think+act+evaluate+decide) + 2 bookends (route, finalize).
+        # Worst case: visualization boost gives max_steps=5 → 5*4+2 = 22 supersteps.
+        # Use depth_max_steps_cap * 6 + 20 to handle all depth profiles safely.
+        _outer_recursion_limit = max(50, self._depth_max_steps_cap() * 6 + 20)
         try:
             result = self._graph.invoke(
                 {
@@ -2889,9 +3512,12 @@ class AgentRunner:
                     "callbacks": callbacks,
                     "trace_context": trace_context or {},
                     "session_source": session_source or {},
-                }
+                    "selected_skill_ids": resolved_skill_ids,
+                },
+                config={"recursion_limit": _outer_recursion_limit},
             )
         except Exception:
+            logger.exception("graph.invoke failed for prompt=%r", prompt[:60])
             fallback = AgentResponse(
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,

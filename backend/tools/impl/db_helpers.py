@@ -466,6 +466,31 @@ class DBAnalyticsHelper:
             for item in adapter.list_tables(target_schema)
         ]
 
+    def list_tables_with_columns(
+        self,
+        schema: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Single-query fetch of all tables + their column names.
+
+        Returns a list of dicts compatible with TableCandidate construction:
+        [{"schema", "table_name", "table_type", "qualified_name", "columns"}, ...]
+        """
+        target_schema = str(schema or self._default_schema()).strip()
+        adapter = self._catalog_adapter()
+        combined = adapter.list_tables_with_columns(target_schema)
+        result: list[dict[str, Any]] = []
+        for _tbl_name, (cat_table, cat_columns) in combined.items():
+            result.append(
+                {
+                    "schema": cat_table.schema,
+                    "table_name": cat_table.name,
+                    "table_type": cat_table.table_type,
+                    "qualified_name": cat_table.qualified_name,
+                    "columns": [col.name for col in cat_columns],
+                }
+            )
+        return result
+
     def list_tables_result(
         self,
         schema: str | None = None,

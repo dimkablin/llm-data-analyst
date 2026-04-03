@@ -103,8 +103,8 @@ export function UserMemorySection() {
 
       <p className="text-sm text-muted-foreground leading-relaxed">
         Агент использует эти данные для персонализации ответов. <strong>Профиль</strong> вы
-        редактируете вручную. <strong>Заметки</strong> агент пишет сам в процессе диалога и
-        обновляет после каждого запроса.
+        редактируете вручную. <strong>Заметки</strong> агент пишет сам — только факты о вас
+        (предпочтения, роль, экспертиза). Контекст анализа хранится отдельно в памяти сессии.
       </p>
 
       {error && (
@@ -133,7 +133,7 @@ export function UserMemorySection() {
       {/* Notes */}
       <MemoryBlock
         title="Заметки агента"
-        subtitle="Наблюдения агента о ваших предпочтениях и рабочих паттернах."
+        subtitle="Заметки агента о вас: предпочтения, экспертиза, роль."
         value={memory.notes}
         isEditing={editing === "notes"}
         draft={draft}

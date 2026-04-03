@@ -108,6 +108,7 @@ class ForecastTool(BaseExecTool):
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
+        sandbox: object | None = None,
     ) -> None:
         self._forecast_service = forecast_service
         super().__init__(
@@ -116,6 +117,7 @@ class ForecastTool(BaseExecTool):
             include_plotly=False,
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
+            sandbox=sandbox,
         )
 
     def get_execution_scope(self) -> dict[str, Any]:

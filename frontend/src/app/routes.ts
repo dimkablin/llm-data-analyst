@@ -49,7 +49,7 @@ export const router = createBrowserRouter(
       Component: Technical,
     },
     {
-      path: "/phoenix",
+      path: "/tracing",
       Component: Phoenix,
     },
     {

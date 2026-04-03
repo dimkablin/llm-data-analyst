@@ -4,6 +4,7 @@ import type {
   DBConnection,
   DBConnectionFormPayload,
   DBConnectionTestResult,
+  ExecutionGraph,
   PhaseEvent,
   PhoenixOverview,
   QueryResponse,
@@ -241,10 +242,47 @@ export async function deleteSession(sessionId: string): Promise<void> {
   await assertOk(response);
 }
 
+export async function deleteAllSessions(): Promise<void> {
+  const response = await authFetch("/sessions", { method: "DELETE" });
+  await assertOk(response);
+}
+
+export async function deleteLastMessages(sessionId: string, messageId: string): Promise<void> {
+  const params = new URLSearchParams({ message_id: messageId });
+  const response = await authFetch(`/sessions/${sessionId}/messages/last?${params.toString()}`, {
+    method: "DELETE",
+  });
+  await assertOk(response);
+}
+
 export async function getSession(sessionId: string): Promise<SessionState> {
   const response = await authFetch(`/sessions/${sessionId}`);
   await assertOk(response);
   return (await response.json()) as SessionState;
+}
+
+export async function getSessionNotebook(sessionId: string): Promise<string> {
+  const response = await authFetch(`/sessions/${sessionId}/notebook`);
+  await assertOk(response);
+  return await response.text();
+}
+
+export interface NotebookCell {
+  index: number;
+  entry_type: "code" | "data_source_change";
+  tool_name: string;
+  language: string;
+  question: string;
+  code: string;
+  result_summary: string;
+  variables_created: string[];
+  timestamp: string;
+}
+
+export async function getSessionNotebookCells(sessionId: string): Promise<NotebookCell[]> {
+  const response = await authFetch(`/sessions/${sessionId}/notebook/cells`);
+  await assertOk(response);
+  return (await response.json()) as NotebookCell[];
 }
 
 export async function getRuntimeModelProfile(): Promise<RuntimeModelProfile> {
@@ -350,12 +388,22 @@ export async function clearSessionSource(
   return (await response.json()) as SessionSourceState;
 }
 
+type ToolEvent = {
+  tool_name: string;
+  input_preview?: string;
+  status?: string;
+  artifact_keys?: string[];
+};
+
 type StreamHandlers = {
   onToken: (token: string) => void;
   onFinal: (payload: QueryResponse) => void;
   onReasoning: (payload: string, mode: "chunk" | "token") => void;
   onPhase?: (event: PhaseEvent) => void;
   onPhaseToken?: (token: string) => void;
+  onToolStart?: (event: ToolEvent) => void;
+  onToolEnd?: (event: ToolEvent) => void;
+  onGraphUpdate?: (graph: ExecutionGraph) => void;
   onError: (error: string) => void;
 };
 
@@ -404,6 +452,18 @@ function consumeSseLine(
   }
   if (currentEvent === "phase_token" && typeof payload === "string") {
     handlers.onPhaseToken?.(payload);
+    return;
+  }
+  if (currentEvent === "tool_start" && typeof payload === "object" && payload !== null) {
+    handlers.onToolStart?.(payload as ToolEvent);
+    return;
+  }
+  if (currentEvent === "tool_end" && typeof payload === "object" && payload !== null) {
+    handlers.onToolEnd?.(payload as ToolEvent);
+    return;
+  }
+  if (currentEvent === "execution_graph" && typeof payload === "object" && payload !== null) {
+    handlers.onGraphUpdate?.(payload as ExecutionGraph);
     return;
   }
   if (currentEvent === "error") {

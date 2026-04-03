@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
 import { useTheme } from "next-themes";
 import {
+  AlertTriangle,
   BadgeCheck,
   Bell,
   Brush,
@@ -13,16 +14,19 @@ import {
   Palette,
   Save,
   Shield,
+  Trash2,
   User,
   Users,
+  Wrench,
 } from "lucide-react";
 import { Navigation } from "../components/Navigation";
-import { ToolAccessSection } from "../components/account/ToolAccessSection";
+import { ToolAccessSection, type ToolAccessSectionRef } from "../components/account/ToolAccessSection";
 import { UserMemorySection } from "../components/account/UserMemorySection";
+import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { useAppSession } from "../context/AppSessionContext";
-import { changePassword, createAdminUser, deleteAdminUser, listAdminUsers, updateAdminUser } from "../lib/backend-api";
+import { changePassword, createAdminUser, deleteAdminUser, deleteAllSessions, listAdminUsers, updateAdminUser } from "../lib/backend-api";
 import type { AccentId } from "../lib/accent";
 import { getStoredAccent, setStoredAccent } from "../lib/accent";
 import {
@@ -33,10 +37,11 @@ import {
 } from "../lib/backend-types";
 import { formatDateTime, summarizeError } from "../lib/format";
 
-type AccountTab = "general" | "notifications" | "security" | "users" | "account";
+type AccountTab = "general" | "tools" | "notifications" | "security" | "users" | "account";
 
 const TABS: Array<{ id: AccountTab; label: string; icon: ReactNode }> = [
   { id: "general", label: "Общее", icon: <Brush className="h-4 w-4" /> },
+  { id: "tools", label: "Доступ к инструментам", icon: <Wrench className="h-4 w-4" /> },
   { id: "notifications", label: "Уведомления", icon: <Bell className="h-4 w-4" /> },
   { id: "security", label: "Безопасность", icon: <Shield className="h-4 w-4" /> },
   { id: "users", label: "Пользователи", icon: <Users className="h-4 w-4" /> },
@@ -61,9 +66,15 @@ export function Account() {
   const [activeTab, setActiveTab] = useState<AccountTab>("general");
   const [settingsDraft, setSettingsDraft] = useState<UserSettings>(settings);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSavedFlash, setSettingsSavedFlash] = useState(false);
   const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">(settings.theme);
   const [accent, setAccent] = useState<AccentId>(() => getStoredAccent());
   const [language, setLanguage] = useState("Русский");
+
+  const toolsSectionRef = useRef<ToolAccessSectionRef>(null);
+  const [isToolsRefreshing, setIsToolsRefreshing] = useState(false);
+  const savedSettingsRef = useRef(settings);
 
   const [browserNotifications, setBrowserNotifications] = useState(true);
   const [emailNotifications, setEmailNotifications] = useState(false);
@@ -80,16 +91,39 @@ export function Account() {
   const [newPassword, setNewPassword] = useState("");
   const [newIsAdmin, setNewIsAdmin] = useState(false);
 
+  const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
+  const [confirmDeleteSessions, setConfirmDeleteSessions] = useState(false);
+  const [deleteSessionsMessage, setDeleteSessionsMessage] = useState<string | null>(null);
+
   const selectedAccent = useMemo(
     () => ACCENTS.find((option) => option.id === accent) ?? ACCENTS[0],
     [accent],
   );
 
   useEffect(() => {
+    savedSettingsRef.current = settings;
     setSettingsDraft(settings);
     setThemeMode(settings.theme);
     setSettingsMessage(null);
   }, [settings]);
+
+  // Live preview zoom as user drags the slider
+  useEffect(() => {
+    const scale = settingsDraft.ui_scale;
+    const zoom = scale && scale !== 100 ? scale / 100 : 1;
+    document.documentElement.style.zoom = zoom !== 1 ? `${scale}%` : "";
+    document.documentElement.style.setProperty("--ui-zoom", String(zoom));
+  }, [settingsDraft.ui_scale]);
+
+  // Restore saved zoom on unmount (if user left without saving)
+  useEffect(() => {
+    return () => {
+      const scale = savedSettingsRef.current.ui_scale;
+      const zoom = scale && scale !== 100 ? scale / 100 : 1;
+      document.documentElement.style.zoom = zoom !== 1 ? `${scale}%` : "";
+      document.documentElement.style.setProperty("--ui-zoom", String(zoom));
+    };
+  }, []);
 
   useEffect(() => {
     setStoredAccent(accent);
@@ -110,13 +144,18 @@ export function Account() {
   }
 
   async function handleSaveSettings(): Promise<void> {
+    setIsSavingSettings(true);
     try {
       const updated = await saveSettings(settingsDraft);
       setSettingsDraft(updated);
       setTheme(themeMode);
-      setSettingsMessage("Настройки сохранены.");
+      setSettingsMessage(null);
+      setSettingsSavedFlash(true);
+      setTimeout(() => setSettingsSavedFlash(false), 2500);
     } catch (error) {
       setSettingsMessage(summarizeError(error));
+    } finally {
+      setIsSavingSettings(false);
     }
   }
 
@@ -137,6 +176,24 @@ export function Account() {
       setPasswordMessage("Пароль обновлен.");
     } catch (error) {
       setPasswordMessage(summarizeError(error));
+    }
+  }
+
+  async function handleDeleteAllSessions(): Promise<void> {
+    if (!confirmDeleteSessions) {
+      setConfirmDeleteSessions(true);
+      return;
+    }
+    setIsDeletingAllSessions(true);
+    setConfirmDeleteSessions(false);
+    setDeleteSessionsMessage(null);
+    try {
+      await deleteAllSessions();
+      setDeleteSessionsMessage("Все сессии удалены. При следующем открытии workspace будет создана новая.");
+    } catch (error) {
+      setDeleteSessionsMessage(summarizeError(error));
+    } finally {
+      setIsDeletingAllSessions(false);
     }
   }
 
@@ -229,6 +286,36 @@ export function Account() {
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </Field>
+
+                    <Field label="Масштаб интерфейса">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: Math.max(70, prev.ui_scale - 5) }))}
+                          disabled={settingsDraft.ui_scale <= 70}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 bg-secondary/40 text-lg font-bold transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          −
+                        </button>
+                        <span className="w-14 text-center text-sm font-bold tabular-nums">{settingsDraft.ui_scale}%</span>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: Math.min(150, prev.ui_scale + 5) }))}
+                          disabled={settingsDraft.ui_scale >= 150}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 bg-secondary/40 text-lg font-bold transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: 100 }))}
+                          className="ml-1 rounded-lg border border-border/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
+                        >
+                          Сбросить
+                        </button>
+                      </div>
+                    </Field>
+
                   </Card>
 
                   <Card title="Локализация и ответы" subtitle="Язык интерфейса и формат вывода аналитики." icon={<Globe className="h-4 w-4" />}>
@@ -280,11 +367,6 @@ export function Account() {
                         </SelectContent>
                       </Select>
                     </Field>
-                    <button type="button" onClick={() => void handleSaveSettings()} className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20">
-                      <Save className="h-4 w-4" />
-                      Сохранить настройки
-                    </button>
-                    {settingsMessage ? <p className="text-sm text-muted-foreground">{settingsMessage}</p> : null}
                   </Card>
 
                   <div className="xl:col-span-2">
@@ -300,7 +382,7 @@ export function Account() {
                           value={settingsDraft.agent_max_steps}
                           min={2}
                           max={ANALYSIS_DEPTH_STEP_CEILING[settingsDraft.analysis_depth]}
-                          hint={`Потолок с уровнем: ${ANALYSIS_DEPTH_STEP_CEILING[settingsDraft.analysis_depth]}. Раньше — по решению модели.`}
+
                           step={1}
                           onChange={(value) =>
                             setSettingsDraft((prev) => ({
@@ -315,10 +397,59 @@ export function Account() {
                     </Card>
                   </div>
 
-                  <div className="xl:col-span-2">
-                    <ToolAccessSection />
+                  <div className="flex items-center gap-4 xl:col-span-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveSettings()}
+                      disabled={isSavingSettings}
+                      className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold shadow-lg transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${
+                        settingsSavedFlash
+                          ? "bg-green-600 text-white shadow-green-500/20"
+                          : "bg-primary text-primary-foreground shadow-primary/20"
+                      }`}
+                    >
+                      {isSavingSettings ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          Сохраняю...
+                        </>
+                      ) : settingsSavedFlash ? (
+                        <>
+                          <Check className="h-4 w-4" />
+                          Сохранено!
+                        </>
+                      ) : (
+                        <>
+                          <Save className="h-4 w-4" />
+                          Сохранить настройки
+                        </>
+                      )}
+                    </button>
+                    {settingsMessage ? <p className="text-sm text-destructive">{settingsMessage}</p> : null}
                   </div>
+
                 </div>
+              </SectionBlock>
+            ) : null}
+
+            {activeTab === "tools" ? (
+              <SectionBlock
+                title="Доступ к инструментам"
+                subtitle="Управление инструментами и интеграциями агента."
+                icon={<Wrench className="h-4 w-4" />}
+                action={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={isToolsRefreshing}
+                    onClick={() => toolsSectionRef.current?.refresh()}
+                  >
+                    Обновить
+                  </Button>
+                }
+              >
+                <ToolAccessSection ref={toolsSectionRef} onLoadingChange={setIsToolsRefreshing} />
               </SectionBlock>
             ) : null}
 
@@ -422,6 +553,51 @@ export function Account() {
                 <SectionBlock title="Память" subtitle="Персональный контекст агента для текущего пользователя." icon={<Cpu className="h-4 w-4" />}>
                   <UserMemorySection />
                 </SectionBlock>
+
+                <SectionBlock title="Опасная зона" subtitle="Необратимые действия — выполняются немедленно без возможности отмены." icon={<AlertTriangle className="h-4 w-4 text-rose-400" />}>
+                  <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-[15px] font-semibold">Удалить все сессии</p>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Весь список чатов и история сообщений будут удалены безвозвратно.
+                        </p>
+                      </div>
+                      {confirmDeleteSessions ? (
+                        <div className="flex shrink-0 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteAllSessions()}
+                            disabled={isDeletingAllSessions}
+                            className="rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-rose-500 disabled:opacity-60"
+                          >
+                            {isDeletingAllSessions ? "Удаление…" : "Да, удалить всё"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteSessions(false)}
+                            className="rounded-xl border border-border/50 bg-secondary/80 px-4 py-2.5 text-sm font-bold transition-colors hover:bg-muted"
+                          >
+                            Отмена
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteAllSessions()}
+                          disabled={isDeletingAllSessions}
+                          className="flex shrink-0 items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-400 transition-all hover:bg-rose-500/20 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Удалить
+                        </button>
+                      )}
+                    </div>
+                    {deleteSessionsMessage ? (
+                      <p className="mt-3 text-sm text-muted-foreground">{deleteSessionsMessage}</p>
+                    ) : null}
+                  </div>
+                </SectionBlock>
               </>
             ) : null}
           </section>
@@ -471,13 +647,16 @@ function AdminUserRow({
   );
 }
 
-function SectionBlock({ title, subtitle, icon, children }: { title: string; subtitle: string; icon: ReactNode; children: ReactNode }) {
+function SectionBlock({ title, subtitle, icon, action, children }: { title: string; subtitle: string; icon: ReactNode; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="rounded-[30px] border border-border/55 bg-card/42 p-6 shadow-xl backdrop-blur-xl">
       <div className="mb-5 border-b border-border/35 pb-4">
-        <div className="flex items-center gap-2">
-          <span className="rounded-lg bg-primary/10 p-1.5 text-primary">{icon}</span>
-          <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg bg-primary/10 p-1.5 text-primary">{icon}</span>
+            <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
+          </div>
+          {action}
         </div>
         <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>
       </div>

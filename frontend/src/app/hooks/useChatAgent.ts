@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getSession, streamQuery } from "../lib/backend-api";
+import { deleteLastMessages, getSession, streamQuery } from "../lib/backend-api";
 import type {
   ArtifactPayload,
   ChatMessage,
+  ExecutionGraph,
   PhaseEvent,
   QueryResponse,
   SessionState,
@@ -140,6 +141,7 @@ function applyLiveReasoningSnapshot(
 function toChatMessages(
   sessionId: string,
   history: Array<{
+    id?: string;
     role: string;
     content: string;
     timestamp: string;
@@ -148,14 +150,16 @@ function toChatMessages(
   }>,
 ): ChatMessage[] {
   const messages = history.map((item, index) => ({
-    id: `${item.timestamp}-${index}`,
+    // Prefer the backend UUID as the React key when available for stability.
+    id: item.id ?? `${item.timestamp}-${index}`,
+    backendId: item.id,
     timestamp: item.timestamp,
-    role: item.role === "user" ? "user" : "assistant",
+    role: item.role === "user" ? "user" : ("assistant" as const),
     content: item.content,
     reasoning: item.reasoning ?? null,
     artifacts: item.artifacts ?? [],
   }));
-  return applyLiveReasoningSnapshot(sessionId, messages);
+  return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
 }
 
 function buildStreamingReasoning(
@@ -197,6 +201,7 @@ type UseChatAgentResult = {
   streamDraft: string;
   streamReasoning: string;
   streamPhases: PhaseEvent[];
+  streamGraph: ExecutionGraph | null;
   error: string | null;
   lastQuery: string | null;
   hydrate: (
@@ -224,9 +229,12 @@ export function useChatAgent({
   const [streamDraft, setStreamDraft] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [streamPhases, setStreamPhases] = useState<PhaseEvent[]>([]);
+  const [streamGraph, setStreamGraph] = useState<ExecutionGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  messagesRef.current = messages;
   const phaseTokenBufRef = useRef("");
   const phaseFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -239,12 +247,15 @@ export function useChatAgent({
     };
   }, []);
 
+  const isStreamingRef = useRef(isStreaming);
+  isStreamingRef.current = isStreaming;
+
   const hydrate = useCallback((
     session: SessionState,
     options?: { preserveStreamingForSessionId?: string | null },
   ) => {
     const preserveStreaming =
-      isStreaming &&
+      isStreamingRef.current &&
       options?.preserveStreamingForSessionId &&
       options.preserveStreamingForSessionId === session.session_id;
     const hydratedMessages = toChatMessages(session.session_id, session.chat_history);
@@ -270,7 +281,7 @@ export function useChatAgent({
       setIsStreaming(false);
       setLastQuery(null);
     }
-  }, [isStreaming]);
+  }, []);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -320,6 +331,7 @@ export function useChatAgent({
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
+      setStreamGraph(null);
       setIsStreaming(true);
       setStreamingSessionId(sessionId);
       setMessages((prev) => [
@@ -417,7 +429,29 @@ export function useChatAgent({
                 return [...prev, phaseEvent];
               });
             },
+            onToolStart: (event) => {
+              if (!includeReasoning) return;
+              const text = `\n🔧 **${event.tool_name}** запущен`;
+              collectedReasoning += text;
+              setStreamReasoning((prev) => prev + text);
+            },
+            onToolEnd: (event) => {
+              if (!includeReasoning) return;
+              const status = event.status === "ok" ? "✅" : "❌";
+              const artifacts = event.artifact_keys?.length
+                ? ` → ${event.artifact_keys.join(", ")}`
+                : "";
+              const text = `\n${status} **${event.tool_name}** завершён${artifacts}`;
+              collectedReasoning += text;
+              setStreamReasoning((prev) => prev + text);
+            },
+            onGraphUpdate: (graph) => {
+              setStreamGraph(graph);
+            },
             onPhaseToken: (token) => {
+              if (!includeReasoning) {
+                return;
+              }
               phaseTokenBufRef.current += token;
               if (!phaseFlushRef.current) {
                 phaseFlushRef.current = setTimeout(() => {
@@ -530,6 +564,7 @@ export function useChatAgent({
             livePhases,
             metrics: finalPayload.metrics,
             artifacts: finalPayload.artifacts,
+            executionGraph: (finalPayload as Record<string, unknown>).execution_graph as ExecutionGraph | undefined,
           },
         ]);
         setArtifacts((prev) => [...prev, ...finalPayload.artifacts]);
@@ -596,11 +631,36 @@ export function useChatAgent({
   );
 
   const retryLast = useCallback(async () => {
-    if (!lastQuery || isStreaming) {
+    if (isStreaming || !sessionId) {
       return;
     }
-    await sendQuery(lastQuery);
-  }, [isStreaming, lastQuery, sendQuery]);
+    const msgs = messagesRef.current;
+    // lastQuery is only populated during the current browser session.
+    // Fall back to the content of the last user message so the button works
+    // after a page reload or when the session is restored from the backend.
+    let lastUserMsg: ChatMessage | undefined;
+    for (let i = msgs.length - 1; i >= 0; i -= 1) {
+      if (msgs[i].role === "user") {
+        lastUserMsg = msgs[i];
+        break;
+      }
+    }
+    const query = lastQuery ?? lastUserMsg?.content ?? null;
+    if (!query) {
+      return;
+    }
+    // Delete from backend by the exact message ID so history stays consistent.
+    if (lastUserMsg?.backendId) {
+      try {
+        await deleteLastMessages(sessionId, lastUserMsg.backendId);
+      } catch {
+        // Best-effort: continue even if the message wasn't persisted yet.
+      }
+    }
+    // Mirror the deletion in local state (remove last user + assistant pair).
+    setMessages((prev) => (prev.length >= 2 ? prev.slice(0, -2) : []));
+    await sendQuery(query);
+  }, [isStreaming, lastQuery, sendQuery, sessionId]);
 
   return {
     messages,
@@ -610,6 +670,7 @@ export function useChatAgent({
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamGraph,
     error,
     lastQuery,
     hydrate,

@@ -6,6 +6,7 @@ from typing import Any
 import anyio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 
 from backend.agent.callbacks import (
     AgentProgressCollector,
@@ -27,14 +28,19 @@ from backend.api.routes import (
     observability_route,
     query,
     sessions,
+    skills,
     sources,
 )
-from backend.artifacts.serialization import serialize_artifact
 from backend.auth.auth_db import AuthDB
 from backend.auth.user_memory import UserMemoryService
 from backend.core.config import settings
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_runtime_service import DBRuntimeService
+from backend.notebook.kernel_manager import KernelManager
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import NotebookOrchestrator
+from backend.notebook.store import NotebookStore
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
@@ -64,6 +70,7 @@ _OPENAPI_TAGS: list[dict[str, str]] = [
     {"name": "Данные", "description": "Загрузка данных в сессию."},
     {"name": "Источники", "description": "Источники данных и привязка к сессии."},
     {"name": "Запросы и агент", "description": "Запросы к агенту и стриминг ответов."},
+    {"name": "Навыки", "description": "Просмотр доступных markdown skills и их идентификаторов."},
     {"name": "Подключения к БД", "description": "Сохранённые подключения к БД и схемы."},
     {"name": "Наблюдаемость", "description": "Обзор Phoenix / трассировки."},
 ]
@@ -97,6 +104,15 @@ auth_db.ensure_default_admin(
 user_memory_service = UserMemoryService(auth_db)
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
+csv_runtime = CSVSessionRuntime(default_ttl_sec=settings.csv_session_ttl_sec)
+notebook_store = NotebookStore(settings.storage_dir)
+manifest_store = ManifestStore(settings.storage_dir)
+notebook_orchestrator = NotebookOrchestrator(notebook_store)
+kernel_manager = KernelManager(
+    notebook_store=notebook_store,
+    manifest_store=manifest_store,
+    storage_dir=settings.storage_dir,
+)
 search_integration_service = SearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env()
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
@@ -150,13 +166,23 @@ def _configure_routes() -> None:
         runner=runner,
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
+        manifest_store=manifest_store,
     )
-    data.setup(auth_db=auth_db, store=store)
+    data.setup(
+        auth_db=auth_db,
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=notebook_orchestrator,
+    )
     sources.setup(
         auth_db=auth_db,
         store=store,
         db_connections_service=db_connections_service,
         integration_source_descriptors_fn=_integration_source_descriptors,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=notebook_orchestrator,
     )
     db_connections.setup(
         auth_db=auth_db,
@@ -173,10 +199,10 @@ def _configure_routes() -> None:
         anomaly_planfact_integration_service=anomaly_planfact_integration_service,
         rag_service=rag_service,
         user_memory_service=user_memory_service,
-        serialize_artifact_fn=serialize_artifact,
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
         app_settings=settings,
+        csv_runtime=csv_runtime,
         LLMTextCollector=LLMTextCollector,
         ToolCollector=ToolCollector,
         AgentProgressCollector=AgentProgressCollector,
@@ -188,6 +214,7 @@ def _configure_routes() -> None:
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,
     )
+    skills.setup(runner=runner)
     observability_route.setup(
         phoenix_observability_service=phoenix_observability_service,
     )
@@ -197,6 +224,7 @@ def _configure_routes() -> None:
     app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(sessions.router)
+    app.include_router(skills.router)
     app.include_router(data.router)
     app.include_router(sources.router)
     app.include_router(query.router)
@@ -206,3 +234,26 @@ def _configure_routes() -> None:
 _configure_routes()
 
 
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        openapi_version=app.openapi_version,
+        description=app.description,
+        tags=_OPENAPI_TAGS,
+        routes=app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    for path in schema.get("paths", {}).values():
+        for operation in path.values():
+            operation.setdefault("security", [{"BearerAuth": []}])
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _custom_openapi

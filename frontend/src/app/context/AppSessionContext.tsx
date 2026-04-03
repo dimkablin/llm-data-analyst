@@ -34,6 +34,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   agent_max_steps: 20,
   agent_step_timeout_sec: 45,
   agent_inner_recursion_limit: 6,
+  ui_scale: 100,
 };
 
 type AppSessionContextValue = {
@@ -86,6 +87,13 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshAuth();
   }, [refreshAuth]);
+
+  useEffect(() => {
+    const scale = settings.ui_scale;
+    const zoom = scale && scale !== 100 ? scale / 100 : 1;
+    document.documentElement.style.zoom = zoom !== 1 ? `${scale}%` : "";
+    document.documentElement.style.setProperty("--ui-zoom", String(zoom));
+  }, [settings.ui_scale]);
 
   const login = useCallback(async (username: string, password: string) => {
     const result = await loginUser(username, password);

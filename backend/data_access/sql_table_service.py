@@ -26,18 +26,21 @@ _SQL_START = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
 # Questions that only ask for table names from the catalog (no analytic SQL / LLM).
 _CATALOG_TABLE_LIST_RE = re.compile(
     r"(?is)^\s*("
-    r"показать\s+все\s+таблицы(\s+в\s+(базе(\s+данных)?|бд))?|"
-    r"покажи\s+все\s+таблицы(\s+в\s+(базе(\s+данных)?|бд))?|"
-    r"покажи\s+таблицы\s*$|"
-    r"показать\s+таблицы\s*$|"
-    r"список\s+таблиц(\s+в\s+(базе(\s+данных)?|бд))?|"
+    r"показать\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"покажи\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"покажи\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
+    r"показать\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
+    r"покажи\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"показать\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"получи(ть)?\s+список\s+(всех\s+)?таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
+    r"список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
     r"перечень\s+таблиц|"
     r"перечисли\s+таблицы|"
     r"какие\s+таблицы\s+(есть|в\s+(базе|бд|базе\s+данных))|"
     r"какие\s+есть\s+таблицы|"
     r"выведи\s+список\s+таблиц|"
     r"назови\s+таблицы|"
-    r"(show|list)\s+tables(\s+in\s+[\w\s]+)?|"
+    r"(show|list)\s+tables(\s+(in|from)\s+[\w\s]+)?|"
     r"(what|which)\s+tables\s+(are\s+there|exist|do\s+i\s+have|in\s+the\s+database)"
     r"|таблицы\.?\s*$|"
     r"tables\.?\s*$"
@@ -182,6 +185,8 @@ class SQLTableService:
         self.csv_session_id = str(csv_session_id or "").strip() or None
         self.max_rows = max(1, min(int(max_rows), 1000))
         self.csv_runtime = CSVSessionRuntime()
+        self._cached_db_helper: DBAnalyticsHelper | None = None
+        self._cached_candidates: list[TableCandidate] | None = None
 
         llm_kwargs: dict[str, Any] = {
             "model": llm_model,
@@ -200,14 +205,16 @@ class SQLTableService:
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
             raise ValueError("DB runtime is not configured")
-        return DBAnalyticsHelper(runtime=self.db_runtime_config, timeout_sec=15.0)
+        if self._cached_db_helper is None:
+            self._cached_db_helper = DBAnalyticsHelper(runtime=self.db_runtime_config, timeout_sec=15.0)
+        return self._cached_db_helper
 
     def _collect_db_candidates(self) -> list[TableCandidate]:
         if self.db_runtime_config is None:
             return []
 
         helper = self._db_helper()
-        rows = helper.list_tables()
+        rows = helper.list_tables_with_columns()
         out: list[TableCandidate] = []
         for row in rows:
             schema = row.get("schema")
@@ -215,12 +222,7 @@ class SQLTableService:
             if not table_name:
                 continue
             qualified_name = str(row.get("qualified_name") or table_name).strip()
-            columns_meta = helper.describe_table(table_name, schema=schema)
-            columns = [
-                str(item.get("column_name") or "").strip()
-                for item in columns_meta
-                if str(item.get("column_name") or "").strip()
-            ]
+            columns = [str(c) for c in row.get("columns", []) if str(c).strip()]
             out.append(
                 TableCandidate(
                     source_kind="db",
@@ -268,7 +270,9 @@ class SQLTableService:
         return out
 
     def collect_candidates(self) -> list[TableCandidate]:
-        return self._collect_db_candidates() + self._collect_csv_candidates()
+        if self._cached_candidates is None:
+            self._cached_candidates = self._collect_db_candidates() + self._collect_csv_candidates()
+        return self._cached_candidates
 
     @staticmethod
     def _wants_catalog_table_list(question: str) -> bool:
@@ -451,6 +455,7 @@ CANDIDATES:
         *,
         question: str,
         candidate: TableCandidate,
+        sample: dict[str, Any] | None = None,
         previous_sql: str | None = None,
         feedback: str | None = None,
     ) -> str:
@@ -492,8 +497,7 @@ CANDIDATES:
 {question}
 """.strip()
 
-        sample = self._table_sample(candidate)
-        if sample.get("first_rows"):
+        if sample and sample.get("first_rows"):
             user_prompt += "\n\nSAMPLE_ROWS:\n" + json.dumps(sample["first_rows"], ensure_ascii=False)
 
         resp = self.llm.invoke(
@@ -503,6 +507,20 @@ CANDIDATES:
             ]
         )
         return clean_sql(_message_text(resp.content))
+
+    @staticmethod
+    def _is_trivial_sql(sql: str) -> bool:
+        """Detect trivial queries that don't need LLM judge validation."""
+        s = re.sub(r"\s+", " ", sql.strip().upper())
+        # SELECT * / SELECT col, col ... FROM ... (no subqueries, no joins)
+        if re.match(r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET)\s+.*)?\s*;?\s*$", s):
+            # No subquery, no JOIN
+            if "JOIN" not in s and s.count("SELECT") == 1:
+                return True
+        # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...)
+        if re.match(r"^SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(", s) and s.count("SELECT") == 1:
+            return True
+        return False
 
     def _judge_sql(
         self,
@@ -548,16 +566,20 @@ SAMPLE_RESULT:
         *,
         question: str,
         candidate: TableCandidate,
-        max_attempts: int = 6,
+        max_attempts: int = 3,
         sample_rows: int = 5,
     ) -> dict[str, Any]:
         previous_sql: str | None = None
         feedback: str | None = None
 
+        # Fetch sample rows once (reused across retries and LLM prompts).
+        cached_sample = self._table_sample(candidate)
+
         for attempt in range(1, max_attempts + 1):
             sql = self._call_llm_sql_only(
                 question=question,
                 candidate=candidate,
+                sample=cached_sample,
                 previous_sql=previous_sql,
                 feedback=feedback,
             )
@@ -574,15 +596,20 @@ SAMPLE_RESULT:
                 feedback = f"SQL validation error: {exc}"
                 continue
 
-            _, err = self._run_query_no_throw(candidate, wrap_limit0(sql))
-            if err:
-                feedback = f"DB compile error: {err}"
-                continue
-
+            # Run sample query directly — it validates both syntax and data.
             sample_res, err = self._run_query_no_throw(candidate, wrap_sample(sql, sample_rows))
             if err:
-                feedback = f"DB runtime error: {err}"
+                feedback = f"DB error: {err}"
                 continue
+
+            # Skip judge for trivial queries that compiled and returned data.
+            if sample_res and self._is_trivial_sql(sql):
+                return {
+                    "ok": True,
+                    "sql": sql,
+                    "attempts": attempt,
+                    "judge_reason": "trivial_skip",
+                }
 
             ok, reason, fix_hint = self._judge_sql(
                 question=question,

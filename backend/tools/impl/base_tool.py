@@ -1,11 +1,7 @@
 import ast
-import builtins
 import copy
 import hashlib
-import multiprocessing
-import queue
 import re
-import traceback
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
@@ -18,38 +14,9 @@ from backend.core.redaction import sanitize_error_text
 
 if TYPE_CHECKING:
     from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
+    from backend.tools.sandbox import SessionSandbox
 
-
-SAFE_BUILTINS = {
-    "abs": builtins.abs,
-    "all": builtins.all,
-    "any": builtins.any,
-    "bool": builtins.bool,
-    "dict": builtins.dict,
-    "enumerate": builtins.enumerate,
-    "filter": builtins.filter,
-    "float": builtins.float,
-    "int": builtins.int,
-    "len": builtins.len,
-    "list": builtins.list,
-    "map": builtins.map,
-    "max": builtins.max,
-    "min": builtins.min,
-    "pow": builtins.pow,
-    "print": builtins.print,
-    "range": builtins.range,
-    "reversed": builtins.reversed,
-    "round": builtins.round,
-    "set": builtins.set,
-    "sorted": builtins.sorted,
-    "str": builtins.str,
-    "sum": builtins.sum,
-    "tuple": builtins.tuple,
-    "zip": builtins.zip,
-    "Exception": builtins.Exception,
-    "ValueError": builtins.ValueError,
-    "TypeError": builtins.TypeError,
-}
+from backend.tools.sandbox import normalize_code
 
 
 class ToolResultEnvelope(BaseModel):
@@ -60,131 +27,10 @@ class ToolResultEnvelope(BaseModel):
     items: dict[str, object]
 
 
-def _normalize_tool_code(code: str) -> str:
-    text = str(code or "").strip()
-    if not text:
-        return ""
-
-    fenced_blocks = re.findall(
-        r"```(?:python|py)?\s*([\s\S]*?)```",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if fenced_blocks:
-        parts = [block.strip() for block in fenced_blocks if block.strip()]
-        text = "\n\n".join(parts).strip()
-
-    lower = text.lower()
-    if lower.startswith("python\n"):
-        text = text.split("\n", 1)[1].strip()
-
-    return text.strip()
-
-
-def _execute_tool_code(
-    code: str,
-    df: pd.DataFrame,
-    include_plotly: bool,
-    allowed_libs: tuple[str, ...],
-    db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
-    extra_scope: dict[str, Any] | None = None,
-) -> object:
-    code = _normalize_tool_code(code)
-    allowed = set(allowed_libs)
-
-    def _safe_import(name, globals_=None, locals_=None, fromlist=(), level=0):
-        root = name.split(".")[0]
-        if root not in allowed:
-            raise ImportError(f"Импорт библиотеки '{root}' запрещен в инструменте")
-        return builtins.__import__(name, globals_, locals_, fromlist, level)
-
-    safe_builtins = dict(SAFE_BUILTINS)
-    safe_builtins["__import__"] = _safe_import
-
-    local_scope: dict[str, Any] = {
-        "df": df,
-        "db_connection": db_runtime_config,
-        "db_runtime": db_runtime_config,
-    }
-    if extra_scope:
-        local_scope.update(extra_scope)
-    import pandas as _pd
-    import numpy as _np
-
-    local_scope.update({"pd": _pd, "np": _np})
-    if include_plotly:
-        import plotly.express as _px
-        import plotly.graph_objects as _go
-
-        local_scope.update({"px": _px, "go": _go})
-
-    tree = ast.parse(code, filename="<tool_code>", mode="exec")
-    if tree.body and isinstance(tree.body[-1], ast.Expr):
-        tree.body[-1] = ast.Assign(
-            targets=[ast.Name(id="__tool_last_expr__", ctx=ast.Store())],
-            value=tree.body[-1].value,
-        )
-        ast.fix_missing_locations(tree)
-
-    compiled = compile(tree, filename="<tool_code>", mode="exec")
-    exec(compiled, {"__builtins__": safe_builtins}, local_scope)
-    if "tool_result" in local_scope:
-        return local_scope.get("tool_result")
-
-    alias_candidates = (
-        "result",
-        "output",
-        "final_result",
-        "artifact",
-        "artifacts",
-        "value",
-        "values",
-        "table",
-        "plot",
-        "payload",
-        "data",
-        "__tool_last_expr__",
-    )
-    for candidate in alias_candidates:
-        if candidate in local_scope:
-            return local_scope.get(candidate)
-
-    for key, value in local_scope.items():
-        key_text = str(key).strip().lower()
-        if key_text.endswith("_result") or key_text == "result":
-            return value
-
-    return None
-
-
-def _tool_worker(
-    result_queue: multiprocessing.Queue,
-    code: str,
-    df: pd.DataFrame,
-    include_plotly: bool,
-    allowed_libs: tuple[str, ...],
-    db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
-    extra_scope: dict[str, Any] | None = None,
-) -> None:
-    try:
-        result = _execute_tool_code(
-            code,
-            df,
-            include_plotly,
-            allowed_libs,
-            db_runtime_config,
-            extra_scope,
-        )
-        result_queue.put({"ok": True, "result": result})
-    except Exception:
-        result_queue.put(
-            {"ok": False, "error": sanitize_error_text(traceback.format_exc())}
-        )
-
-
 class BaseExecTool(BaseTool):
     """
-    Базовый инструмент для анализа данных с помощью безопасного изолированного выполнения.
+    Базовый инструмент для анализа данных.
+    Выполнение делегируется SessionSandbox — единому namespace на сессию.
     """
 
     name: str = "base_tool"
@@ -234,6 +80,7 @@ class BaseExecTool(BaseTool):
     )
     _dataset_signature: str = PrivateAttr(default="")
     _db_runtime_config: "RuntimeDBConnectionConfig | None" = PrivateAttr(default=None)
+    _sandbox: "SessionSandbox | None" = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -242,6 +89,7 @@ class BaseExecTool(BaseTool):
         include_plotly: bool = False,
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
+        sandbox: "SessionSandbox | None" = None,
     ) -> None:
         super().__init__()
         self._df = df
@@ -250,18 +98,20 @@ class BaseExecTool(BaseTool):
         self.tool_cache_size = max(0, int(tool_cache_size))
         self._dataset_signature = self._build_dataset_signature(df)
         self._db_runtime_config = db_runtime_config
+        self._sandbox = sandbox
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
         head = df.head(8).to_csv(index=False)
-        tail = df.tail(8).to_csv(index=False)
+        tail = df.iloc[-8:].to_csv(index=False)
         columns = ",".join(str(col) for col in df.columns[:64])
         payload = f"{df.shape}|{columns}|{head}|{tail}"
         return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
 
     def _cache_key(self, code: str) -> str:
+        sandbox_state = str(self._sandbox.execution_count) if self._sandbox else ""
         payload = (
-            f"{self.name}|{self._dataset_signature}|{self.execution_timeout_sec}|{code}"
+            f"{self.name}|{self._dataset_signature}|{self.execution_timeout_sec}|{sandbox_state}|{code}"
         )
         return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -437,7 +287,6 @@ class BaseExecTool(BaseTool):
                     "Нарушен контракт `tool_result`: поле `items` отсутствует или имеет неверный тип.",
                 )
             else:
-                # Совместимость с legacy-ответами, где tool_result = {"name": payload}
                 raw_items = raw_result
 
         if not isinstance(raw_items, dict):
@@ -496,15 +345,6 @@ class BaseExecTool(BaseTool):
             return None, "Поле `items` в `tool_result` не должно быть пустым."
         return dict(envelope.items), ""
 
-    @staticmethod
-    def _pick_start_method() -> str:
-        methods = multiprocessing.get_all_start_methods()
-        if "forkserver" in methods:
-            return "forkserver"
-        if "spawn" in methods:
-            return "spawn"
-        return "fork"
-
     def get_execution_scope(self) -> dict[str, Any]:
         return {}
 
@@ -513,44 +353,21 @@ class BaseExecTool(BaseTool):
         return extract_artifact_hints(tool_result)
 
     def _execute_in_sandbox(self, code: str) -> object:
-        ctx = multiprocessing.get_context(self._pick_start_method())
-        result_queue = ctx.Queue(maxsize=1)
+        """Delegate execution to the session sandbox."""
+        if self._sandbox is None:
+            raise RuntimeError("SessionSandbox не инициализирован для инструмента")
+
         extra_scope = self.get_execution_scope()
-        process = ctx.Process(
-            target=_tool_worker,
-            args=(
-                result_queue,
-                code,
-                self._df,
-                self._include_plotly,
-                tuple(sorted(self.allowed_libs)),
-                self._db_runtime_config,
-                extra_scope,
-            ),
-            daemon=True,
+        return self._sandbox.execute(
+            code=code,
+            tool_name=self.name,
+            include_plotly=self._include_plotly,
+            timeout_sec=self.execution_timeout_sec,
+            extra_scope=extra_scope or None,
         )
-        process.start()
-        process.join(timeout=self.execution_timeout_sec)
-
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1)
-            raise TimeoutError(
-                f"Превышен лимит выполнения инструмента ({self.execution_timeout_sec} сек)"
-            )
-
-        try:
-            payload = result_queue.get_nowait()
-        except queue.Empty:
-            raise RuntimeError("Инструмент завершился без результата")
-
-        if not payload.get("ok", False):
-            raise RuntimeError(payload.get("error", "Неизвестная ошибка выполнения"))
-
-        return payload.get("result")
 
     def _run(self, code: str) -> tuple[str, dict[str, object]]:
-        code = _normalize_tool_code(code)
+        code = normalize_code(code)
         if not code:
             text = f"❌ Ошибка при создании {self.human_name}: пустой код инструмента"
             return text, {self.artifact_name: None, "text": text}
@@ -625,5 +442,3 @@ class BaseExecTool(BaseTool):
             return self.syntax_error(code, e)
         except Exception as e:
             return self.other_error(e)
-
-

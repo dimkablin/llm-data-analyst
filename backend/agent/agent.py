@@ -7,14 +7,14 @@ from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
 from backend.agent.agent_callback import ReasoningCallbackHandler, ToolCallbackHandler
-from backend.agent.artifact import Artifact, artifact_factory
+from backend.artifacts.artifact import Artifact, artifact_factory
 from backend.agent.pandas_agent import (
     create_pandas_dataframe_agent,
     extract_agent_output_text,
     normalize_agent_messages,
 )
 from backend.agent.prompts import agent_prompt
-from backend.agent.tools import PandasTool, PlotlyTool, SQLTableTool, ValueTool
+from backend.tools.impl import PandasTool, PlotlyTool, SQLTableTool, ValueTool
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from utils.params_manager import params_manager
 
@@ -254,5 +254,4 @@ class Agent:
         artifacts = self._run_agent(prompt_for_llm)
         self._add_artifacts_to_store(artifacts)
         return artifacts
-
 

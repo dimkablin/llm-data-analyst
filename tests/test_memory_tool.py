@@ -4,8 +4,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from backend.agent.tools.factory import MemoryToolFactory
-from backend.agent.tools.memory_tool import MemoryTool
+from backend.tools.impl.factory import MemoryToolFactory
+from backend.tools.impl.memory_tool import MemoryTool
 from backend.core import Settings
 from backend.tools import ToolBuildContext, ToolRegistry
 

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -86,6 +86,10 @@ def apply_default_chart_style(fig: Any) -> Any:
 @dataclass
 class ChartArtifactHelper:
     tool_name: str = "plotly_tool"
+    _items: dict[str, Any] = field(default_factory=dict)
+    _recipe_steps: list[dict[str, Any]] = field(default_factory=list)
+    _source: dict[str, Any] = field(default_factory=dict)
+    _meta: dict[str, Any] = field(default_factory=dict)
 
     def result(
         self,
@@ -100,26 +104,34 @@ class ChartArtifactHelper:
         depends_on: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         styled = apply_default_chart_style(fig)
+        self._items[str(artifact_name or "chart")] = styled
+        if source:
+            self._source.update(dict(source))
+
+        normalized_recipe = normalize_recipe_steps(recipe)
+        step = build_chart_recipe_step(
+            tool_name=self.tool_name,
+            summary=summary,
+            title=title,
+            depends_on=depends_on,
+        )
+        normalized_recipe.append(step)
+        self._recipe_steps.extend(normalized_recipe)
+        if isinstance(meta, dict) and meta:
+            self._meta.update(dict(meta))
+
         payload: dict[str, Any] = {
             "schema_version": "1.0",
             "artifact_type": "plot",
-            "items": {str(artifact_name or 'chart'): styled},
+            "items": dict(self._items),
         }
-        if source:
-            payload["source"] = dict(source)
-
-        normalized_recipe = normalize_recipe_steps(recipe)
-        normalized_recipe.append(
-            build_chart_recipe_step(
-                tool_name=self.tool_name,
-                summary=summary,
-                title=title,
-                depends_on=depends_on,
-            )
-        )
-        payload["recipe"] = normalized_recipe
-        if isinstance(meta, dict) and meta:
-            payload["meta"] = dict(meta)
+        if self._source:
+            payload["source"] = dict(self._source)
+        merged_recipe = normalize_recipe_steps(self._recipe_steps)
+        if merged_recipe:
+            payload["recipe"] = merged_recipe
+        if self._meta:
+            payload["meta"] = dict(self._meta)
         return payload
 
 
@@ -150,13 +162,8 @@ class PlotlyTool(BaseExecTool):
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
+        sandbox: Any | None = None,
     ) -> None:
-        """
-        Инициализация инструмента с DataFrame и Plotly.
-
-        Args:
-            df (pd.DataFrame): Исходный DataFrame.
-        """
         _ = (px, go)  # imports остаются для явной зависимости инструмента
         super().__init__(
             df,
@@ -164,6 +171,7 @@ class PlotlyTool(BaseExecTool):
             include_plotly=True,
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
+            sandbox=sandbox,
         )
 
     def get_execution_scope(self) -> dict[str, Any]:
@@ -177,5 +185,4 @@ class PlotlyTool(BaseExecTool):
                 timeout_sec=min(15.0, self.execution_timeout_sec),
             )
         return scope
-
 

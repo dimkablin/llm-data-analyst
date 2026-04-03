@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+
+
+from backend.agent.graph_tracker import ExecutionGraphTracker
+from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
 import re
 import time
 from dataclasses import replace
@@ -13,12 +18,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from backend.auth.auth_db import AuthUser, AuthDB
 from backend.sessions.session_store import SessionStore, SessionState
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.core.config import settings
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
     QueryRequest,
     QueryResponse,
 )
+from backend.skills import SkillSelectionError
 
 router = APIRouter(tags=["Запросы и агент"])
 
@@ -37,10 +45,10 @@ _forecast_integration_service = None  # type: ignore
 _anomaly_planfact_integration_service = None  # type: ignore
 _rag_service = None  # type: ignore
 _user_memory_service = None  # type: ignore
-_serialize_artifact_fn = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
 _settings = None  # type: ignore
+_csv_runtime: CSVSessionRuntime = None  # type: ignore
 
 # Callback classes set during startup
 _LLMTextCollector = None  # type: ignore
@@ -55,6 +63,8 @@ _effective_enabled_tool_keys_fn = None  # type: ignore
 _build_tool_catalog_fn = None  # type: ignore
 _known_tool_keys = None  # type: ignore
 
+logger = logging.getLogger(__name__)
+
 
 def setup(
     auth_db: AuthDB,
@@ -66,7 +76,6 @@ def setup(
     anomaly_planfact_integration_service,
     rag_service,
     user_memory_service,
-    serialize_artifact_fn,
     build_trace_context_fn,
     query_trace_context_fn,
     app_settings,
@@ -80,16 +89,17 @@ def setup(
     effective_enabled_tool_keys_fn,
     build_tool_catalog_fn,
     known_tool_keys,
+    csv_runtime: CSVSessionRuntime,
 ) -> None:
     global _auth_db, _store, _runner, _db_runtime_service
     global _search_integration_service, _forecast_integration_service
     global _anomaly_planfact_integration_service, _rag_service
-    global _user_memory_service, _serialize_artifact_fn
+    global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
     global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
     global _PhaseCollector, _TokenStreamCallbackHandler, _PhaseTokenStreamHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
-    global _build_tool_catalog_fn, _known_tool_keys
+    global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
 
     _auth_db = auth_db
     _store = store
@@ -100,7 +110,6 @@ def setup(
     _anomaly_planfact_integration_service = anomaly_planfact_integration_service
     _rag_service = rag_service
     _user_memory_service = user_memory_service
-    _serialize_artifact_fn = serialize_artifact_fn
     _build_trace_context_fn = build_trace_context_fn
     _query_trace_context_fn = query_trace_context_fn
     _settings = app_settings
@@ -114,6 +123,7 @@ def setup(
     _effective_enabled_tool_keys_fn = effective_enabled_tool_keys_fn
     _build_tool_catalog_fn = build_tool_catalog_fn
     _known_tool_keys = known_tool_keys
+    _csv_runtime = csv_runtime
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────
@@ -134,6 +144,54 @@ def _session_source_payload(state: SessionState) -> dict[str, Any]:
         "source_label": state.source_label,
         "source_mode": state.source_mode,
     }
+
+
+def _session_runtime_source_payload(state: SessionState) -> dict[str, Any]:
+    payload = _session_source_payload(state)
+    source_type = _session_source_type(state)
+    if source_type == "csv":
+        payload["csv_loaded"] = bool(state.csv_loaded)
+        payload["csv_session_id"] = state.csv_session_id
+        payload["csv_table_names"] = list(state.csv_table_names or [])
+        payload["csv_expires_at"] = state.csv_expires_at
+    else:
+        payload["csv_loaded"] = False
+        payload["csv_session_id"] = None
+        payload["csv_table_names"] = []
+        payload["csv_expires_at"] = None
+    return payload
+
+
+def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
+    if _session_source_type(state) != "csv":
+        return state
+    if state.csv_loaded and state.csv_session_id:
+        return state
+    if not state.df_path:
+        raise HTTPException(status_code=400, detail="CSV dataset is not attached to this session")
+    df = _store.get_dataframe(session_id)
+    if df is None:
+        raise HTTPException(status_code=400, detail="Failed to load CSV dataframe for this session")
+    try:
+        csv_info = _csv_runtime.register_dataframe(
+            session_id=session_id,
+            table_name=state.dataset_name or "uploaded.csv",
+            df=df,
+            ttl_seconds=settings.csv_session_ttl_sec,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to initialize CSV runtime: {exc}") from exc
+    _store.set_csv_runtime_state(
+        session_id,
+        csv_loaded=True,
+        csv_session_id=csv_info.session_id,
+        csv_table_names=list(csv_info.table_names),
+        csv_expires_at=csv_info.expires_at,
+    )
+    refreshed = _store.load_session(session_id)
+    if refreshed is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return refreshed
 
 
 def _session_db_connection_id(state: SessionState) -> str | None:
@@ -175,6 +233,17 @@ def _enabled_tool_keys_for_user(user_id: int) -> set[str]:
     return _effective_enabled_tool_keys_fn(_tool_catalog_payload(user_id))
 
 
+def _effective_selected_skill_ids(
+    state: SessionState,
+    payload: QueryRequest,
+) -> list[str]:
+    if payload.selected_skill_ids is None:
+        selected_skill_ids = list(state.selected_skill_ids or [])
+    else:
+        selected_skill_ids = [str(skill_id).strip() for skill_id in payload.selected_skill_ids if str(skill_id).strip()]
+    return list(dict.fromkeys(selected_skill_ids))
+
+
 def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | None = None):
     user_runtime = _auth_db.get_user_settings(user_id)
     depth = analysis_depth_override or user_runtime.analysis_depth
@@ -192,8 +261,44 @@ def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | 
     )
 
 
+def _build_stream_callbacks(
+    *,
+    queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+    session_source: dict[str, Any],
+    exec_store: Any = None,
+    include_reasoning: bool = True,
+) -> tuple[list[Any], Any, Any, Any, Any, Any]:
+    """Build the full callback stack for a streaming request.
+
+    Returns: (callbacks, token_collector, tool_collector, progress_collector,
+               phase_collector, graph_tracker)
+    """
+    text_collector = _LLMTextCollector()
+    tool_collector = _ToolCollector(
+        source_context=session_source, queue=queue, loop=loop, execution_store=exec_store
+    )
+    progress_collector = _AgentProgressCollector()
+    phase_collector = _PhaseCollector()
+    graph_tracker = ExecutionGraphTracker()
+    phase_collector.graph_tracker = graph_tracker
+    tool_collector.graph_tracker = graph_tracker
+    tool_collector._phase_collector_ref = phase_collector
+    token_collector = _TokenStreamCallbackHandler(queue, loop)
+    callbacks: list[Any] = [
+        token_collector,
+        text_collector,
+        tool_collector,
+        progress_collector,
+        phase_collector,
+    ]
+    if include_reasoning:
+        callbacks.append(_PhaseTokenStreamHandler(queue, loop))
+    return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
+
+
 def _sse_event(event: str, data: Any) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
+    payload = json.dumps(data, ensure_ascii=False, cls=_NumpyEncoder)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -314,7 +419,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis", "rag"}:
+    if normalized_route not in {"chat", "analysis", "rag", "summary"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []
@@ -343,7 +448,7 @@ def _build_reasoning_trace(
             f"- Dataset attached: `{'yes' if has_dataset else 'no'}`",
             f"- Use history: `{'yes' if use_history else 'no'}`",
             f"- Tool calls: `{tool_collector.tool_calls}`",
-            f"- Duration: `{duration_ms} ms`",
+            f"- Duration: `{duration_ms / 1000:.1f}с`",
         ]
     )
     if unique_tools:
@@ -488,13 +593,22 @@ async def _execute_query(
     callbacks: list[object] | None = None,
 ) -> QueryResponse:
     state = _load_owned_session(session_id, current_user)
+    if _session_source_type(state) == "csv":
+        state = _ensure_csv_runtime_state(session_id, state)
+    selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
-    session_source = _session_source_payload(state)
+    session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
-    has_active_source = df is not None or session_db_connection_id is not None
+    has_active_source = (
+        df is not None
+        or session_db_connection_id is not None
+        or bool(session_source.get("csv_loaded"))
+    )
 
+    from backend.artifacts.execution import ExecutionStore
+    exec_store = ExecutionStore(session_id=session_id)
     text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source)
+    tool_collector = _ToolCollector(source_context=session_source, execution_store=exec_store)
     active_callbacks = list(callbacks or [])
     active_callbacks.extend([text_collector, tool_collector])
     started_at = time.perf_counter()
@@ -507,12 +621,16 @@ async def _execute_query(
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
         db_connection_id=session_db_connection_id,
+        csv_session_id=session_source.get("csv_session_id"),
+        csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
+    from backend.sessions.session_memory import SessionMemory as _SessionMemory
+    session_memory = _SessionMemory(notes=state.session_memory or "")
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -522,9 +640,12 @@ async def _execute_query(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        session_memory=session_memory,
+        skill_registry=_runner.skill_registry,
     )
 
     try:
+        runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
         with _query_trace_context_fn(
             session_id=session_id,
             user_id=current_user.id,
@@ -534,6 +655,8 @@ async def _execute_query(
             include_reasoning=payload.include_reasoning,
             query=payload.query,
             db_connection_id=session_db_connection_id,
+            csv_session_id=session_source.get("csv_session_id"),
+            csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
         ):
             with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                 response = await anyio.to_thread.run_sync(
@@ -546,7 +669,10 @@ async def _execute_query(
                     active_callbacks,
                     trace_context,
                     session_source,
+                    selected_skill_ids,
                 )
+    except SkillSelectionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except TimeoutError:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         fallback = _build_fallback_response(
@@ -583,17 +709,25 @@ async def _execute_query(
         return fallback
 
     try:
-        if runtime_runner._session_memory_buffer:  # noqa: SLF001
+        if runtime_runner._user_memory_buffer:  # noqa: SLF001
             _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
             _user_memory_service.schedule_consolidation(
                 current_user.id,
-                list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                 _mem_llm.invoke,
             )
     except Exception:  # noqa: BLE001
         pass
 
-    artifacts = [_serialize_artifact_fn(a) for a in response.artifacts]
+    try:
+        if runtime_runner._session_memory_buffer:  # noqa: SLF001
+            for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
+                _store.append_session_memory(session_id, note)
+    except Exception:  # noqa: BLE001
+        pass
+
+    from backend.artifacts.bridge import execution_to_api_payload
+    artifacts = [execution_to_api_payload(a) for a in response.artifacts]
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     effective_reasoning = _build_reasoning_trace(
         response_text=response.final_text,
@@ -605,6 +739,7 @@ async def _execute_query(
         has_dataset=has_active_source,
     )
     if persist:
+        _store.set_selected_skill_ids(session_id, selected_skill_ids)
         _store.add_chat_message(session_id, "user", payload.query)
         _store.add_chat_message(
             session_id,
@@ -665,22 +800,32 @@ async def query_stream(
     current_user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
+    if _session_source_type(state) == "csv":
+        state = _ensure_csv_runtime_state(session_id, state)
+    selected_skill_ids = _effective_selected_skill_ids(state, payload)
     df = _active_session_dataframe(state, session_id)
-    session_source = _session_source_payload(state)
+    session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
-    has_active_source = df is not None or session_db_connection_id is not None
+    has_active_source = (
+        df is not None
+        or session_db_connection_id is not None
+        or bool(session_source.get("csv_loaded"))
+    )
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
     agent_finished = asyncio.Event()
 
-    text_collector = _LLMTextCollector()
-    tool_collector = _ToolCollector(source_context=session_source)
-    progress_collector = _AgentProgressCollector()
-    phase_collector = _PhaseCollector()
-    token_collector = _TokenStreamCallbackHandler(queue, loop)
-    phase_token_handler = _PhaseTokenStreamHandler(queue, loop)
-    callbacks = [token_collector, text_collector, tool_collector, progress_collector, phase_collector, phase_token_handler]
+    from backend.artifacts.execution import ExecutionStore
+    exec_store = ExecutionStore(session_id=session_id)
+    callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker = (
+        _build_stream_callbacks(
+            queue=queue,
+            loop=loop,
+            session_source=session_source,
+            exec_store=exec_store,
+        )
+    )
     started_at = time.perf_counter()
     _auth_db.touch_session(session_id)
     trace_context = _build_trace_context_fn(
@@ -691,12 +836,16 @@ async def query_stream(
         use_history=payload.use_history,
         include_reasoning=payload.include_reasoning,
         db_connection_id=session_db_connection_id,
+        csv_session_id=session_source.get("csv_session_id"),
+        csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
     )
     runtime_settings = _effective_runtime_settings(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
+    from backend.sessions.session_memory import SessionMemory as _SessionMemory
+    session_memory = _SessionMemory(notes=state.session_memory or "")
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -706,10 +855,13 @@ async def query_stream(
         rag_service=_rag_service,
         allowed_tool_keys=allowed_tool_keys,
         user_memory=user_memory,
+        session_memory=session_memory,
+        skill_registry=_runner.skill_registry,
     )
 
     async def run_agent() -> None:
         try:
+            runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
             with _query_trace_context_fn(
                 session_id=session_id,
                 user_id=current_user.id,
@@ -719,6 +871,8 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 query=payload.query,
                 db_connection_id=session_db_connection_id,
+                csv_session_id=session_source.get("csv_session_id"),
+                csv_duckdb_loaded=bool(session_source.get("csv_loaded")),
             ):
                 with anyio.fail_after(runtime_settings.backend_query_timeout_sec):
                     response = await anyio.to_thread.run_sync(
@@ -731,47 +885,68 @@ async def query_stream(
                         callbacks,
                         trace_context,
                         session_source,
+                        selected_skill_ids,
                     )
-
             try:
-                if runtime_runner._session_memory_buffer:  # noqa: SLF001
+                if runtime_runner._user_memory_buffer:  # noqa: SLF001
                     _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
                     _user_memory_service.schedule_consolidation(
                         current_user.id,
-                        list(runtime_runner._session_memory_buffer),  # noqa: SLF001
+                        list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                         _mem_llm.invoke,
                     )
             except Exception:  # noqa: BLE001
                 pass
 
-            artifacts = [_serialize_artifact_fn(a) for a in response.artifacts]
+            try:
+                if runtime_runner._session_memory_buffer:  # noqa: SLF001
+                    for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
+                        _store.append_session_memory(session_id, note)
+            except Exception:  # noqa: BLE001
+                pass
+
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             streamed_reasoning = token_collector.collected_reasoning()
             merged_reasoning = _merge_reasoning_text(
                 response.reasoning,
                 streamed_reasoning,
             )
-            effective_reasoning = _build_reasoning_trace(
-                response_text=response.final_text,
-                response_reasoning=merged_reasoning,
-                route=response.route,
-                tool_collector=tool_collector,
-                use_history=payload.use_history,
-                duration_ms=duration_ms,
-                has_dataset=has_active_source,
-            )
-            _store.add_chat_message(session_id, "user", payload.query)
-            _store.add_chat_message(
-                session_id,
-                "ai",
-                response.final_text,
-                artifacts=artifacts,
-                reasoning=effective_reasoning,
-            )
-            _store.add_artifacts(session_id, response.artifacts)
-            _auth_db.update_session_after_reply(
-                session_id, response.final_text, auto_title=None
-            )
+            try:
+                from backend.artifacts.bridge import execution_to_api_payload
+
+                artifacts = [execution_to_api_payload(a) for a in response.artifacts]
+                effective_reasoning = _build_reasoning_trace(
+                    response_text=response.final_text,
+                    response_reasoning=merged_reasoning,
+                    route=response.route,
+                    tool_collector=tool_collector,
+                    use_history=payload.use_history,
+                    duration_ms=duration_ms,
+                    has_dataset=has_active_source,
+                )
+                _store.set_selected_skill_ids(session_id, selected_skill_ids)
+                _store.add_chat_message(session_id, "user", payload.query)
+                _store.add_chat_message(
+                    session_id,
+                    "ai",
+                    response.final_text,
+                    artifacts=artifacts,
+                    reasoning=effective_reasoning,
+                )
+                _store.add_artifacts(session_id, response.artifacts)
+                _auth_db.update_session_after_reply(
+                    session_id, response.final_text, auto_title=None
+                )
+            except Exception:
+                logger.exception(
+                    "query_stream post-processing failed; returning agent response without persistence "
+                    "session_id=%s user_id=%s",
+                    session_id,
+                    current_user.id,
+                )
+                artifacts = []
+                effective_reasoning = merged_reasoning or response.reasoning
+
             final_payload = _build_response(
                 session_id,
                 response.final_text,
@@ -782,7 +957,14 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 force_reasoning=True,
             ).model_dump()
+            # Attach execution graph to final payload.
+            gt = phase_collector.graph_tracker
+            if gt is not None and gt:
+                final_payload["execution_graph"] = gt.snapshot()
             await queue.put(("final", final_payload))
+        except SkillSelectionError as exc:
+            await queue.put(_sse_event("error", {"detail": str(exc)}))
+            return
         except TimeoutError:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             fallback_payload = _build_fallback_response(
@@ -801,6 +983,11 @@ async def query_stream(
             )
             await queue.put(("final", fallback_payload.model_dump()))
         except Exception:
+            logger.exception(
+                "query_stream failed; returning fallback response session_id=%s user_id=%s",
+                session_id,
+                current_user.id,
+            )
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             fallback_payload = _build_fallback_response(
                 session_id=session_id,
@@ -827,7 +1014,10 @@ async def query_stream(
         emitted_progress_events = 0
         emitted_tool_events = 0
         emitted_phase_events = 0
+        emitted_graph_version = 0
+        _loop_count = 0
         while True:
+            _loop_count += 1
             emitted_any = False
 
             while emitted_phase_events < len(phase_collector.events):
@@ -835,6 +1025,15 @@ async def query_stream(
                 emitted_phase_events += 1
                 await queue.put(("phase", current))
                 emitted_any = True
+
+            # Emit execution graph updates.
+            gt = phase_collector.graph_tracker
+            if gt is not None:
+                gv = phase_collector._graph_version
+                if gv > emitted_graph_version:
+                    emitted_graph_version = gv
+                    await queue.put(("execution_graph", gt.snapshot()))
+                    emitted_any = True
 
             if emit_progress:
                 while emitted_progress_events < len(progress_collector.events):
@@ -854,11 +1053,14 @@ async def query_stream(
                         emitted_any = True
 
             if agent_finished.is_set():
-                if (
-                    emitted_tool_events >= len(tool_collector.events)
-                    and emitted_progress_events >= len(progress_collector.events)
-                    and emitted_phase_events >= len(phase_collector.events)
-                ):
+                all_drained = emitted_phase_events >= len(phase_collector.events)
+                if emit_progress:
+                    all_drained = all_drained and (
+                        emitted_tool_events >= len(tool_collector.events)
+                        and emitted_progress_events >= len(progress_collector.events)
+                    )
+                if all_drained:
+                    logger.warning("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
                     break
 
             if not emitted_any:
@@ -897,5 +1099,3 @@ async def query_stream(
         await reasoning_task
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-

@@ -6,15 +6,18 @@ import unittest
 import pandas as pd
 
 from backend.agent import AgentRunner
-from backend.agent.tools.value_tool import ValueTool
+from backend.tools.impl.value_tool import ValueTool
 from backend.core import Settings
 from backend.tools import build_runtime_capability_context
+from backend.tools.sandbox import SessionSandbox
 
 
 class ValueToolUsageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.df = pd.DataFrame({"sales": [10, 20, 30]})
-        self.tool = ValueTool(self.df, execution_timeout_sec=5.0, tool_cache_size=0)
+        sandbox = SessionSandbox()
+        sandbox.bind_dataframe(self.df)
+        self.tool = ValueTool(self.df, execution_timeout_sec=5.0, tool_cache_size=0, sandbox=sandbox)
 
     def test_short_value_like_output_passes(self) -> None:
         code = """

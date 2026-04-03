@@ -29,10 +29,23 @@ export type QueryResponse = {
   metrics: QueryMetrics;
 };
 
+export type SessionSource = {
+  alias: string;
+  source_type: "csv" | "db_connection";
+  display_name: string;
+  variable_name: string;
+  file_name?: string | null;
+  connection_id?: string | null;
+  connection_name?: string | null;
+  bound_at: string;
+  schema_hint?: Record<string, string>;
+};
+
 export type SessionState = {
   session_id: string;
   title: string;
   chat_history: Array<{
+    id?: string;
     role: string;
     content: string;
     timestamp: string;
@@ -46,6 +59,8 @@ export type SessionState = {
   source_ref_id?: string | null;
   source_label?: string | null;
   source_mode?: string | null;
+  sources?: SessionSource[];
+  session_memory?: string;
 };
 
 export type SessionSourceState = {
@@ -147,6 +162,7 @@ export type UserSettings = {
   agent_max_steps: number;
   agent_step_timeout_sec: number;
   agent_inner_recursion_limit: number;
+  ui_scale: number;
 };
 
 export type RuntimeModelProfile = {
@@ -186,8 +202,33 @@ export type PhaseEvent = {
   status?: string;
 };
 
-export type ChatMessage = {
+export type GraphNode = {
   id: string;
+  type: "phase" | "tool";
+  label: string;
+  status: "pending" | "running" | "done" | "error";
+  duration_ms?: number;
+  tool_name?: string;
+  artifact_keys?: string[];
+  parent_id?: string;
+};
+
+export type GraphEdge = {
+  from: string;
+  to: string;
+  label?: string;
+};
+
+export type ExecutionGraph = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
+
+export type ChatMessage = {
+  /** Frontend-local composite ID (used as React key). */
+  id: string;
+  /** UUID assigned by the backend when the message was persisted. Used for server-side deletion. */
+  backendId?: string;
   timestamp: string;
   role: "user" | "assistant";
   content: string;
@@ -197,6 +238,7 @@ export type ChatMessage = {
   livePhases?: PhaseEvent[];
   metrics?: QueryMetrics;
   artifacts?: ArtifactPayload[];
+  executionGraph?: ExecutionGraph;
 };
 
 export type PhoenixOverviewStats = {

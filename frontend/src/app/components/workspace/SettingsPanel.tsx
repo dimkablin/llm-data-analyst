@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, Trash2, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { getUserMemory, updateUserMemory } from "../../lib/backend-api";
+import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -13,14 +13,16 @@ import { MarkdownBlock } from "../MarkdownBlock";
 
 type Props = {
   onClose: () => void;
+  sessionId: string;
   sessionTitle: string;
   datasetName: string;
   settings: UserSettings;
   modelProfile: RuntimeModelProfile | null;
   onSave: (payload: Partial<UserSettings>) => Promise<void>;
+  isStreaming?: boolean;
 };
 
-export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, modelProfile, onSave }: Props) {
+export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, settings, modelProfile, onSave, isStreaming }: Props) {
   const [draft, setDraft] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -42,7 +44,7 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
     }
   }
 
-  return (
+return (
     <div className="flex h-full flex-col bg-card/85 backdrop-blur-xl">
       <div className="flex items-center justify-between border-b border-border/40 px-6 py-5">
         <div>
@@ -66,6 +68,7 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
             Контекст сессии
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
+            <MetaRow label="Session ID" value={sessionId || "n/a"} />
             <MetaRow label="Сессия" value={sessionTitle || "Новый чат"} />
             <MetaRow label="Датасет" value={datasetName || "Не загружен"} />
             <MetaRow label="Провайдер" value={modelProfile?.provider || "backend"} />
@@ -144,7 +147,11 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
         </SectionCard>
 
         <SectionCard title="Память сессии" icon={<Brain className="h-3.5 w-3.5" />}>
-          <SessionMemoryBlock />
+          <SessionMemoryBlock sessionId={sessionId} />
+        </SectionCard>
+
+        <SectionCard title="Notebook сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
+          <SessionNotebookBlock sessionId={sessionId} isStreaming={isStreaming} />
         </SectionCard>
       </div>
 
@@ -163,10 +170,9 @@ export function SettingsPanel({ onClose, sessionTitle, datasetName, settings, mo
   );
 }
 
-function SessionMemoryBlock() {
+function SessionMemoryBlock({ sessionId }: { sessionId: string }) {
   const [notes, setNotes] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isClearing, setIsClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loadedRef = useRef(false);
 
@@ -180,25 +186,12 @@ function SessionMemoryBlock() {
     setIsLoading(true);
     setError(null);
     try {
-      const mem = await getUserMemory();
-      setNotes(mem.notes ?? "");
+      const session = await getSession(sessionId);
+      setNotes(session.session_memory ?? "");
     } catch {
       setError("Не удалось загрузить память сессии");
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function handleClear() {
-    setIsClearing(true);
-    setError(null);
-    try {
-      const updated = await updateUserMemory({ notes: "" });
-      setNotes(updated.notes ?? "");
-    } catch {
-      setError("Ошибка при очистке памяти");
-    } finally {
-      setIsClearing(false);
     }
   }
 
@@ -216,7 +209,7 @@ function SessionMemoryBlock() {
   return (
     <div className="space-y-3">
       <p className="text-[12px] text-muted-foreground leading-relaxed">
-        Заметки, которые агент накапливает в процессе диалога — предпочтения, паттерны, наблюдения. Обновляются автоматически после каждого запроса.
+        Контекст текущей сессии: описания данных, ключевые находки, промежуточные выводы. Агент заполняет автоматически в ходе анализа.
       </p>
 
       {error && (
@@ -225,7 +218,7 @@ function SessionMemoryBlock() {
 
       <div className={`relative min-h-[80px] rounded-xl border border-border/40 px-4 py-3 ${isEmpty ? "bg-muted/20" : "bg-background/30"}`}>
         {isEmpty ? (
-          <p className="text-[13px] italic text-muted-foreground">Заметок пока нет — агент заполнит их в ходе диалога.</p>
+          <p className="text-[13px] italic text-muted-foreground">Заметок пока нет — агент заполнит их в ходе анализа.</p>
         ) : (
           <MarkdownBlock
             content={notes ?? ""}
@@ -243,17 +236,135 @@ function SessionMemoryBlock() {
           <RefreshCw className="h-3 w-3" />
           Обновить
         </button>
-        {!isEmpty && (
-          <button
-            type="button"
-            onClick={() => void handleClear()}
-            disabled={isClearing}
-            className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-          >
-            <Trash2 className="h-3 w-3" />
-            {isClearing ? "Очистка…" : "Очистить"}
-          </button>
+      </div>
+    </div>
+  );
+}
+
+function NotebookCellView({ cell }: { cell: NotebookCell }) {
+  const isDataSource = cell.entry_type === "data_source_change";
+
+  if (isDataSource) {
+    return (
+      <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-blue-500/10 border-b border-blue-500/20">
+          <span className="text-[11px] font-medium text-blue-400/80">📂 Источник данных</span>
+          <span className="text-[10px] text-muted-foreground/60">{cell.timestamp}</span>
+        </div>
+        <div className="px-3 py-2 text-[12px] text-muted-foreground">{cell.result_summary}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-border/40 bg-background/20 overflow-hidden">
+      {/* Cell header */}
+      <div className="flex items-center justify-between px-3 py-1.5 bg-muted/30 border-b border-border/30">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-muted-foreground/50">In [{cell.index}]</span>
+          <span className="text-[11px] font-medium text-foreground/70">{cell.tool_name || "code"}</span>
+          {cell.language === "sql" && (
+            <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400/80 font-medium">SQL</span>
+          )}
+        </div>
+        <span className="text-[10px] text-muted-foreground/50">{cell.timestamp}</span>
+      </div>
+
+      {/* Question (only for sql_table_tool) */}
+      {cell.question && (
+        <div className="px-3 pt-2 pb-1 text-[11px] italic text-muted-foreground/70 border-b border-border/20">
+          Q: {cell.question}
+        </div>
+      )}
+
+      {/* Code block */}
+      {cell.code && (
+        <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed bg-transparent m-0">
+          <code>{cell.code}</code>
+        </pre>
+      )}
+
+      {/* Output */}
+      {cell.result_summary && (
+        <div className="flex items-start gap-2 px-3 py-1.5 border-t border-border/30 bg-emerald-500/5">
+          <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">Out[{cell.index}]</span>
+          <span className="text-[11px] text-emerald-400/80">{cell.result_summary}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; isStreaming?: boolean }) {
+  const [cells, setCells] = useState<NotebookCell[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const prevStreamingRef = useRef(isStreaming);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  // Reload when agent finishes streaming
+  useEffect(() => {
+    if (prevStreamingRef.current === true && isStreaming === false) {
+      void load();
+    }
+    prevStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  async function load() {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await getSessionNotebookCells(sessionId);
+      setCells(data);
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+    } catch {
+      setError("Не удалось загрузить notebook сессии");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-3 text-[13px] text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Загрузка…
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] text-muted-foreground leading-relaxed">
+        Лог выполнений sandbox — код, результаты и смены источников данных за текущую сессию.
+      </p>
+
+      {error && (
+        <p className="rounded-lg bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>
+      )}
+
+      <div className="relative min-h-[80px] max-h-[480px] overflow-y-auto space-y-2 pr-0.5">
+        {cells.length === 0 ? (
+          <p className="text-[13px] italic text-muted-foreground py-2">Notebook пуст — записи появятся после первого запроса с данными.</p>
+        ) : (
+          cells.map((cell) => <NotebookCellView key={cell.index} cell={cell} />)
         )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div className="flex items-center">
+        <button
+          type="button"
+          onClick={() => { void load(); }}
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Обновить
+        </button>
       </div>
     </div>
   );

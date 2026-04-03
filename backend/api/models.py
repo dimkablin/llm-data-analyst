@@ -46,6 +46,7 @@ class UserSettingsResponse(BaseModel):
     agent_max_steps: int = Field(default=20, ge=2, le=50)
     agent_step_timeout_sec: int = Field(default=45, ge=5, le=600)
     agent_inner_recursion_limit: int = Field(default=14, ge=2, le=30)
+    ui_scale: int = Field(default=100, ge=70, le=150)
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -67,6 +68,7 @@ class UserSettingsUpdateRequest(BaseModel):
     agent_max_steps: int | None = Field(default=None, ge=2, le=50)
     agent_step_timeout_sec: int | None = Field(default=None, ge=5, le=600)
     agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=30)
+    ui_scale: int | None = Field(default=None, ge=70, le=150)
 
 
 class ToolEnabledUpdateRequest(BaseModel):
@@ -224,6 +226,7 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
     use_history: bool = True
     include_reasoning: bool = False
+    selected_skill_ids: list[str] | None = None
     analysis_depth: str | None = Field(
         default=None,
         pattern="^(light|medium|deep)$",
@@ -258,6 +261,20 @@ class QueryResponse(BaseModel):
     metrics: QueryMetrics
 
 
+class SessionSourceResponse(BaseModel):
+    """Single source in the multi-source list."""
+
+    alias: str
+    source_type: str
+    display_name: str = ""
+    variable_name: str = ""
+    file_name: str | None = None
+    connection_id: str | None = None
+    connection_name: str | None = None
+    bound_at: str = ""
+    schema_hint: dict[str, str] = Field(default_factory=dict)
+
+
 class SessionStateResponse(BaseModel):
     session_id: str
     title: str = "Новый чат"
@@ -269,6 +286,17 @@ class SessionStateResponse(BaseModel):
     source_ref_id: str | None = None
     source_label: str | None = None
     source_mode: str | None = None
+    selected_skill_ids: list[str] = Field(default_factory=list)
+    sources: list[SessionSourceResponse] = Field(default_factory=list)
+    session_memory: str = ""
+
+
+class SkillResponse(BaseModel):
+    skill_id: str
+    name: str
+    description: str
+    triggers: list[str] = Field(default_factory=list)
+    source_path: str
 
 
 class PhoenixOverviewStats(BaseModel):
@@ -340,5 +368,4 @@ class UserMemoryResponse(BaseModel):
 class UserMemoryUpdateRequest(BaseModel):
     profile: str | None = None
     notes: str | None = None
-
 

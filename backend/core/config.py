@@ -131,6 +131,7 @@ class Settings:
     llm_max_tokens_default: int = int(os.getenv("LLM_MAX_TOKENS_DEFAULT", "2048"))
     llm_max_tokens_reasoning: int = int(os.getenv("LLM_MAX_TOKENS_REASONING", "4096"))
     llm_enable_thinking: bool = _get_bool("LLM_ENABLE_THINKING", True)
+    llm_num_ctx: int = int(os.getenv("LLM_NUM_CTX", "32768"))
     llm_streaming: bool = _get_bool("LLM_STREAMING", True)
     llm_streaming_force: bool = _get_bool("LLM_STREAMING_FORCE", True)
     llm_warmup_enabled: bool = _get_bool("LLM_WARMUP_ENABLED", True)
@@ -159,6 +160,7 @@ class Settings:
     agent_analysis_depth: str = (
         os.getenv("AGENT_ANALYSIS_DEPTH", "light").strip().lower()
     )
+    skills_dir: str = os.getenv("AGENT_SKILLS_DIR", "./skills")
 
     session_ttl_days: int = int(os.getenv("BACKEND_SESSION_TTL_DAYS", "7"))
     max_dataset_mb: int = int(os.getenv("BACKEND_MAX_DATASET_MB", "100"))
@@ -192,6 +194,8 @@ class Settings:
     rag_verify_ssl: bool = _get_bool("RAG_VERIFY_SSL", False)
     rag_query_mode: str = os.getenv("RAG_QUERY_MODE", "hybrid").strip().lower()
     rag_top_k: int = int(os.getenv("RAG_TOP_K", "5"))
+
+    csv_session_ttl_sec: int = int(os.getenv("CSV_SESSION_TTL_SEC", "7200"))
 
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)

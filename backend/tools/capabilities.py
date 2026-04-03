@@ -127,5 +127,3 @@ def build_runtime_capability_context(
         "unavailable_capability_keys": unavailable_capability_keys,
         "prompt_block": prompt_block,
     }
-
-
