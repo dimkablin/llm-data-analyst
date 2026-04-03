@@ -66,6 +66,8 @@ export function Account() {
   const [activeTab, setActiveTab] = useState<AccountTab>("general");
   const [settingsDraft, setSettingsDraft] = useState<UserSettings>(settings);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSavedFlash, setSettingsSavedFlash] = useState(false);
   const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">(settings.theme);
   const [accent, setAccent] = useState<AccentId>(() => getStoredAccent());
   const [language, setLanguage] = useState("Русский");
@@ -142,13 +144,18 @@ export function Account() {
   }
 
   async function handleSaveSettings(): Promise<void> {
+    setIsSavingSettings(true);
     try {
       const updated = await saveSettings(settingsDraft);
       setSettingsDraft(updated);
       setTheme(themeMode);
-      setSettingsMessage("Настройки сохранены.");
+      setSettingsMessage(null);
+      setSettingsSavedFlash(true);
+      setTimeout(() => setSettingsSavedFlash(false), 2500);
     } catch (error) {
       setSettingsMessage(summarizeError(error));
+    } finally {
+      setIsSavingSettings(false);
     }
   }
 
@@ -281,30 +288,31 @@ export function Account() {
                     </Field>
 
                     <Field label="Масштаб интерфейса">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="range"
-                            min={70}
-                            max={150}
-                            step={5}
-                            value={settingsDraft.ui_scale}
-                            onChange={(event) => setSettingsDraft((prev) => ({ ...prev, ui_scale: Number(event.target.value) }))}
-                            className="flex-1 accent-primary"
-                          />
-                          <span className="w-12 text-right text-sm font-bold tabular-nums">{settingsDraft.ui_scale}%</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                          <span>70%</span>
-                          <button
-                            type="button"
-                            onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: 100 }))}
-                            className="rounded-lg border border-border/40 px-2 py-0.5 text-[11px] font-medium transition-colors hover:bg-secondary"
-                          >
-                            Сбросить
-                          </button>
-                          <span>150%</span>
-                        </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: Math.max(70, prev.ui_scale - 5) }))}
+                          disabled={settingsDraft.ui_scale <= 70}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 bg-secondary/40 text-lg font-bold transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          −
+                        </button>
+                        <span className="w-14 text-center text-sm font-bold tabular-nums">{settingsDraft.ui_scale}%</span>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: Math.min(150, prev.ui_scale + 5) }))}
+                          disabled={settingsDraft.ui_scale >= 150}
+                          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 bg-secondary/40 text-lg font-bold transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          +
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSettingsDraft((prev) => ({ ...prev, ui_scale: 100 }))}
+                          className="ml-1 rounded-lg border border-border/40 px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary"
+                        >
+                          Сбросить
+                        </button>
                       </div>
                     </Field>
 
@@ -390,11 +398,34 @@ export function Account() {
                   </div>
 
                   <div className="flex items-center gap-4 xl:col-span-2">
-                    <button type="button" onClick={() => void handleSaveSettings()} className="inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-lg shadow-primary/20">
-                      <Save className="h-4 w-4" />
-                      Сохранить настройки
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveSettings()}
+                      disabled={isSavingSettings}
+                      className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold shadow-lg transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${
+                        settingsSavedFlash
+                          ? "bg-green-600 text-white shadow-green-500/20"
+                          : "bg-primary text-primary-foreground shadow-primary/20"
+                      }`}
+                    >
+                      {isSavingSettings ? (
+                        <>
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          Сохраняю...
+                        </>
+                      ) : settingsSavedFlash ? (
+                        <>
+                          <Check className="h-4 w-4" />
+                          Сохранено!
+                        </>
+                      ) : (
+                        <>
+                          <Save className="h-4 w-4" />
+                          Сохранить настройки
+                        </>
+                      )}
                     </button>
-                    {settingsMessage ? <p className="text-sm text-muted-foreground">{settingsMessage}</p> : null}
+                    {settingsMessage ? <p className="text-sm text-destructive">{settingsMessage}</p> : null}
                   </div>
 
                 </div>

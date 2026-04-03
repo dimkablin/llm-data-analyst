@@ -904,16 +904,18 @@ class AgentRunner:
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
 
+        system_parts: list[str] = []
+
         if system_prompt:
-            messages.append(SystemMessage(content=system_prompt))
+            system_parts.append(system_prompt)
 
         memory_block = self.user_memory.build_block()
         if memory_block:
-            messages.append(SystemMessage(content=memory_block))
+            system_parts.append(memory_block)
 
         session_memory_block = self.session_memory.build_block()
         if session_memory_block:
-            messages.append(SystemMessage(content=session_memory_block))
+            system_parts.append(session_memory_block)
 
         if use_history and history:
             max_msgs = max(0, self.settings.agent_history_max_messages)
@@ -922,7 +924,10 @@ class AgentRunner:
 
             summary = self._history_summary(older)
             if summary:
-                messages.append(SystemMessage(content=summary))
+                system_parts.append(summary)
+
+        if system_parts:
+            messages.append(SystemMessage(content="\n\n".join(system_parts)))
 
             for item in recent:
                 role = item.get("role")

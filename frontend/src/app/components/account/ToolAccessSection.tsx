@@ -72,32 +72,6 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
   }
 
   async function handleToggle(tool: ToolAvailability, nextEnabled: boolean): Promise<void> {
-    // For the merged "Веб поиск" row, toggle both underlying tools
-    if (tool.tool_key === WEB_SEARCH_KEY) {
-      const targets = grouped.integration.filter(
-        (t) => WEB_SEARCH_TOOL_KEYS.has(t.tool_key) && t.enabled_globally && t.available_globally,
-      );
-      setSavingKeys((prev) => ({ ...prev, [WEB_SEARCH_KEY]: true }));
-      try {
-        await Promise.all(
-          targets.map(async (t) => {
-            const updated = await updateUserToolEnabled(t.tool_key, nextEnabled);
-            setTools((prev) => prev.map((item) => (item.tool_key === updated.tool_key ? updated : item)));
-          }),
-        );
-        setError(null);
-      } catch (toggleError) {
-        setError(summarizeError(toggleError));
-      } finally {
-        setSavingKeys((prev) => {
-          const next = { ...prev };
-          delete next[WEB_SEARCH_KEY];
-          return next;
-        });
-      }
-      return;
-    }
-
     setSavingKeys((prev) => ({ ...prev, [tool.tool_key]: true }));
     try {
       const updated = await updateUserToolEnabled(tool.tool_key, nextEnabled);
