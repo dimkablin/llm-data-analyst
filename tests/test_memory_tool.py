@@ -17,7 +17,7 @@ class MemoryToolTests(unittest.TestCase):
         result = tool._run("User prefers monthly aggregations")  # noqa: SLF001
         self.assertEqual(len(collected), 1)
         self.assertEqual(collected[0], "User prefers monthly aggregations")
-        self.assertIn("Saved to memory", result)
+        self.assertIn("Saved to user memory", result)
 
     def test_empty_note_not_saved(self) -> None:
         collected: list[str] = []
@@ -38,8 +38,8 @@ class MemoryToolTests(unittest.TestCase):
         long_note = "x" * 200
         result = tool._run(long_note)  # noqa: SLF001
         self.assertEqual(len(collected[0]), 200)
-        self.assertTrue(result.startswith("Saved to memory: "))
-        self.assertLess(len(result), len("Saved to memory: ") + 130)
+        self.assertTrue(result.startswith("Saved to user memory: "))
+        self.assertLess(len(result), len("Saved to user memory: ") + 130)
 
     def test_multiple_calls_all_collected(self) -> None:
         collected: list[str] = []

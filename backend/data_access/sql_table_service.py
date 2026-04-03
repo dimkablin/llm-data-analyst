@@ -18,6 +18,7 @@ from backend.tools.impl.db_helpers import (
     _normalize_dataframe,
 )
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
+from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 
@@ -403,7 +404,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content="/no_think Верни только валидный JSON."),
+                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только валидный JSON.".strip()),
                 HumanMessage(content=prompt),
             ]
         )
@@ -478,9 +479,20 @@ CANDIDATES:
         sample: dict[str, Any] | None = None,
         previous_sql: str | None = None,
         feedback: str | None = None,
+        additional_candidates: list["TableCandidate"] | None = None,
     ) -> str:
         table_name = candidate.qualified_name
         columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
+
+        extra_tables_block = ""
+        if additional_candidates:
+            parts = []
+            for ac in additional_candidates:
+                ac_cols = self._quoted_columns_str(ac.columns, ac.dialect)
+                parts.append(f"- {ac.qualified_name}: {ac_cols}")
+            extra_tables_block = (
+                "\nДополнительные таблицы (можно использовать в JOIN):\n" + "\n".join(parts)
+            )
 
         if previous_sql and feedback:
             user_prompt = f"""
@@ -498,8 +510,8 @@ CANDIDATES:
 Правила:
 - верни только SQL
 - только SELECT/WITH
-- используй таблицу {table_name}
-- используй только эти колонки: {columns_str}
+- основная таблица: {table_name}
+- колонки основной таблицы: {columns_str}{extra_tables_block}
 - старайся вернуть компактный результат
 """.strip()
         else:
@@ -509,8 +521,8 @@ CANDIDATES:
 Правила:
 - верни только SQL
 - только SELECT/WITH
-- используй таблицу {table_name}
-- используй только эти колонки: {columns_str}
+- основная таблица: {table_name}
+- колонки основной таблицы: {columns_str}{extra_tables_block}
 - старайся вернуть компактный результат
 
 Вопрос:
@@ -522,7 +534,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content="/no_think Ты SQL-генератор. Верни только SQL SELECT/WITH."),
+                SystemMessage(content=f"{settings.llm_no_think_prefix} Ты SQL-генератор. Верни только SQL SELECT/WITH.".strip()),
                 HumanMessage(content=user_prompt),
             ]
         )
@@ -555,10 +567,14 @@ CANDIDATES:
         sql: str,
         sample_result: list[dict[str, Any]],
     ) -> tuple[bool, str, str]:
+        columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
         prompt = f"""
 Ты строгий ревьюер SQL ({candidate.dialect}).
 Проверь, решает ли SQL вопрос пользователя.
 Верни только JSON формата {{"ok": true/false, "reason": "...", "fix_hint": "..."}}.
+
+TABLE: {candidate.qualified_name}
+COLUMNS: {columns_str}
 
 QUESTION:
 {question}
@@ -572,7 +588,7 @@ SAMPLE_RESULT:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content="/no_think Верни только JSON."),
+                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только JSON.".strip()),
                 HumanMessage(content=prompt),
             ]
         )
@@ -593,6 +609,7 @@ SAMPLE_RESULT:
         candidate: TableCandidate,
         max_attempts: int = 3,
         sample_rows: int = 5,
+        additional_candidates: list["TableCandidate"] | None = None,
     ) -> dict[str, Any]:
         previous_sql: str | None = None
         feedback: str | None = None
@@ -607,6 +624,7 @@ SAMPLE_RESULT:
                 sample=cached_sample,
                 previous_sql=previous_sql,
                 feedback=feedback,
+                additional_candidates=additional_candidates,
             )
             sql = clean_sql(sql)
             previous_sql = sql

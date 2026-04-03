@@ -1,16 +1,10 @@
-"""Focused routing tests for AgentRunner."""
+"""Routing tests for AgentRunner._quick_route."""
 from __future__ import annotations
 
 import unittest
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
-
 from backend.core import Settings
-
-if TYPE_CHECKING:
-    from backend.agent import AgentRunner
 
 
 def _make_settings() -> Settings:
@@ -23,181 +17,72 @@ def _make_settings() -> Settings:
     return settings
 
 
-def _make_runner(
-    *,
-    search_enabled: bool = False,
-    rag_enabled: bool = False,
-) -> AgentRunner:
+def _make_runner() -> "AgentRunner":
     from backend.agent import AgentRunner
-    from backend.integrations import RAGService, SearchIntegrationConfig, SearchIntegrationService
-
-    kwargs: dict[str, object] = {}
-    if search_enabled:
-        cfg = SearchIntegrationConfig(
-            enabled=True,
-            base_url="http://search",
-            search_endpoint="/api/v1/search/",
-            fetch_endpoint="/api/v1/fetch/",
-            timeout_sec=5.0,
-            max_results_default=5,
-            fetch_top_n_default=2,
-        )
-        kwargs["search_service"] = SearchIntegrationService(cfg)
-    if rag_enabled:
-        rag_mock = MagicMock(spec=RAGService)
-        rag_mock.is_enabled = True
-        kwargs["rag_service"] = rag_mock
 
     with patch.object(AgentRunner, "_build_query_graph", return_value=MagicMock()):
-        return AgentRunner(_make_settings(), **kwargs)
+        return AgentRunner(_make_settings())
 
 
-class RouteIntentTier1Tests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.runner = _make_runner()
-
-    def test_empty_prompt_routes_to_chat(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, ""), "chat")
-
-    def test_whitespace_only_prompt_routes_to_chat(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "   \n  "), "chat")
-
-    def test_greeting_without_data_routes_to_chat(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "привет"), "chat")
-
-    def test_any_non_greeting_prompt_with_dataframe_routes_to_analysis(self) -> None:
-        df = pd.DataFrame({"a": [1, 2, 3]})
-        self.assertEqual(self.runner._route_intent(df, "покажи данные"), "analysis")
-
-    def test_greeting_with_dataframe_stays_chat(self) -> None:
-        df = pd.DataFrame({"a": [1, 2, 3]})
-        self.assertEqual(self.runner._route_intent(df, "привет"), "chat")
-
-    def test_db_source_routes_to_analysis_even_without_dataframe(self) -> None:
-        session_source = {
-            "source_type": "db_connection",
-            "source_ref_id": "conn-1",
-            "source_label": "Prod DB",
-            "source_mode": "live",
-        }
+class QuickRouteSummaryTests(unittest.TestCase):
+    def test_rezyumiruiy_routes_to_summary(self) -> None:
         self.assertEqual(
-            self.runner._route_intent(None, "сколько заказов?", session_source),
-            "analysis",
+            _make_runner()._quick_route("резюмируй итоги", has_rag=False), "summary"
         )
 
-    def test_russian_analytical_hint_routes_to_analysis(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "посчитай среднее"), "analysis")
+    def test_executive_summary_routes_to_summary(self) -> None:
+        self.assertEqual(
+            _make_runner()._quick_route("executive summary please", has_rag=False), "summary"
+        )
 
-    def test_english_plot_hint_routes_to_analysis(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "plot sales"), "analysis")
+    def test_upravlencheskaya_zapiska_routes_to_summary(self) -> None:
+        self.assertEqual(
+            _make_runner()._quick_route("сделай управленческую записку", has_rag=False),
+            "summary",
+        )
 
-    def test_no_tools_and_no_fast_path_hint_routes_to_chat(self) -> None:
-        with patch.object(self.runner, "_classify_intent") as classify_mock:
-            route = self.runner._route_intent(None, "what is linear regression?")
-        classify_mock.assert_not_called()
-        self.assertEqual(route, "chat")
+    def test_podvedi_itog_routes_to_summary(self) -> None:
+        self.assertEqual(
+            _make_runner()._quick_route("подведи итог встречи", has_rag=False), "summary"
+        )
 
 
-class RouteIntentRAGTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.runner = _make_runner(rag_enabled=True)
-
-    def test_explicit_rag_keyword_routes_to_rag(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "rag auth flow"), "rag")
+class QuickRouteRAGTests(unittest.TestCase):
+    def test_rag_keyword_routes_to_rag_when_rag_enabled(self) -> None:
+        self.assertEqual(
+            _make_runner()._quick_route("rag auth flow", has_rag=True), "rag"
+        )
 
     def test_documentation_phrase_routes_to_rag(self) -> None:
         self.assertEqual(
-            self.runner._route_intent(None, "что сказано в документации"),
-            "rag",
+            _make_runner()._quick_route("что сказано в документации", has_rag=True), "rag"
         )
 
     def test_knowledge_base_phrase_routes_to_rag(self) -> None:
         self.assertEqual(
-            self.runner._route_intent(None, "что есть в базе знаний"),
-            "rag",
+            _make_runner()._quick_route("что есть в базе знаний", has_rag=True), "rag"
         )
 
-    def test_rag_phrase_keeps_priority_even_with_dataframe(self) -> None:
-        df = pd.DataFrame({"x": [1]})
-        self.assertEqual(self.runner._route_intent(df, "rag auth flow"), "rag")
+    def test_rag_keyword_returns_none_when_rag_disabled(self) -> None:
+        self.assertIsNone(
+            _make_runner()._quick_route("rag auth flow", has_rag=False)
+        )
 
 
-class RouteIntentSearchHintTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.runner = _make_runner(search_enabled=True)
+class QuickRoutePassThroughTests(unittest.TestCase):
+    def test_greeting_returns_none(self) -> None:
+        self.assertIsNone(_make_runner()._quick_route("привет", has_rag=False))
 
-    def test_search_hint_routes_to_analysis_when_search_tool_is_available(self) -> None:
-        self.assertEqual(self.runner._route_intent(None, "latest news"), "analysis")
+    def test_analytical_prompt_returns_none(self) -> None:
+        self.assertIsNone(_make_runner()._quick_route("посчитай продажи", has_rag=False))
 
-    def test_search_hint_does_not_trigger_without_search_service(self) -> None:
-        runner_no_search = _make_runner()
-        with patch.object(runner_no_search, "_classify_intent") as classify_mock:
-            route = runner_no_search._route_intent(None, "search")
-        classify_mock.assert_not_called()
-        self.assertEqual(route, "chat")
+    def test_empty_prompt_returns_none(self) -> None:
+        self.assertIsNone(_make_runner()._quick_route("", has_rag=False))
 
-
-class RouteIntentTier2LLMTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.runner = _make_runner(search_enabled=True)
-
-    def test_ambiguous_prompt_uses_llm_classifier_when_tools_exist(self) -> None:
-        with patch.object(self.runner, "_classify_intent", return_value="analysis") as classify_mock:
-            route = self.runner._route_intent(None, "tell me about the key rate in Russia")
-        classify_mock.assert_called_once()
-        self.assertEqual(route, "analysis")
-
-    def test_classifier_chat_result_is_respected(self) -> None:
-        with patch.object(self.runner, "_classify_intent", return_value="chat"):
-            route = self.runner._route_intent(None, "how are you?")
-        self.assertEqual(route, "chat")
-
-    def test_classifier_rag_result_is_respected(self) -> None:
-        runner = _make_runner(search_enabled=True, rag_enabled=True)
-        with patch.object(runner, "_classify_intent", return_value="rag"):
-            route = runner._route_intent(None, "some ambiguous query")
-        self.assertEqual(route, "rag")
-
-
-class ClassifyIntentLogicTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.runner = _make_runner(search_enabled=True)
-
-    def _call_classifier(self, llm_reply: str) -> str:
-        fake_result = MagicMock()
-        fake_result.content = llm_reply
-        with patch.object(self.runner, "_build_llm") as build_mock:
-            llm = MagicMock()
-            llm.invoke.return_value = fake_result
-            build_mock.return_value = llm
-            return self.runner._classify_intent(
-                "test prompt",
-                has_search=True,
-                has_rag=False,
-            )
-
-    def test_classifier_accepts_analysis_reply(self) -> None:
-        self.assertEqual(self._call_classifier("analysis"), "analysis")
-
-    def test_classifier_accepts_chat_reply(self) -> None:
-        self.assertEqual(self._call_classifier("chat"), "chat")
-
-    def test_classifier_accepts_rag_reply(self) -> None:
-        self.assertEqual(self._call_classifier("rag"), "rag")
-
-    def test_classifier_ignores_reply_casing(self) -> None:
-        self.assertEqual(self._call_classifier("ANALYSIS"), "analysis")
-
-    def test_classifier_trims_whitespace(self) -> None:
-        self.assertEqual(self._call_classifier("  analysis  "), "analysis")
-
-    def test_classifier_falls_back_to_analysis_on_llm_exception(self) -> None:
-        with patch.object(self.runner, "_build_llm", side_effect=RuntimeError("oops")):
-            result = self.runner._classify_intent("test", has_search=True, has_rag=False)
-        self.assertEqual(result, "analysis")
-
-    def test_classifier_defaults_to_chat_for_unknown_reply(self) -> None:
-        self.assertEqual(self._call_classifier("banana"), "chat")
+    def test_generic_question_returns_none(self) -> None:
+        self.assertIsNone(
+            _make_runner()._quick_route("what is linear regression?", has_rag=False)
+        )
 
 
 class UserMemoryInjectionInRouterTests(unittest.TestCase):

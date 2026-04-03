@@ -400,33 +400,36 @@ export function useChatAgent({
               setStreamReasoning((prev) => (prev ? `${prev}\n\n${normalized}` : normalized));
             },
             onPhase: (phaseEvent) => {
-              if (phaseTokenBufRef.current) {
-                phaseTokenBufRef.current = "";
-              }
+              const pendingTokens = phaseTokenBufRef.current;
+              phaseTokenBufRef.current = "";
               if (phaseFlushRef.current) {
                 clearTimeout(phaseFlushRef.current);
                 phaseFlushRef.current = null;
               }
-              if (phaseEvent.id) {
-                const idx = collectedPhases.findIndex((p) => p.id === phaseEvent.id);
+              const mergedEvent =
+                phaseEvent.status === "streaming" && pendingTokens
+                  ? { ...phaseEvent, content: (phaseEvent.content ?? "") + pendingTokens }
+                  : phaseEvent;
+              if (mergedEvent.id) {
+                const idx = collectedPhases.findIndex((p) => p.id === mergedEvent.id);
                 if (idx >= 0) {
-                  collectedPhases[idx] = phaseEvent;
+                  collectedPhases[idx] = mergedEvent;
                 } else {
-                  collectedPhases.push(phaseEvent);
+                  collectedPhases.push(mergedEvent);
                 }
               } else {
-                collectedPhases.push(phaseEvent);
+                collectedPhases.push(mergedEvent);
               }
               setStreamPhases((prev) => {
-                if (phaseEvent.id) {
-                  const idx = prev.findIndex((p) => p.id === phaseEvent.id);
+                if (mergedEvent.id) {
+                  const idx = prev.findIndex((p) => p.id === mergedEvent.id);
                   if (idx >= 0) {
                     const copy = [...prev];
-                    copy[idx] = phaseEvent;
+                    copy[idx] = mergedEvent;
                     return copy;
                   }
                 }
-                return [...prev, phaseEvent];
+                return [...prev, mergedEvent];
               });
             },
             onToolStart: (event) => {
@@ -449,9 +452,6 @@ export function useChatAgent({
               setStreamGraph(graph);
             },
             onPhaseToken: (token) => {
-              if (!includeReasoning) {
-                return;
-              }
               phaseTokenBufRef.current += token;
               if (!phaseFlushRef.current) {
                 phaseFlushRef.current = setTimeout(() => {

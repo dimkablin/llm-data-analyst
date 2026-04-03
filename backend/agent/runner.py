@@ -25,7 +25,9 @@ from backend.agent.pandas_agent import (
 )
 from backend.agent.prompts import (
     agent_prompt,
+    chat_system_prompt,
     execution_agent_prompt,
+    get_detailed_data_info,
 )
 from backend.skills import SkillRegistry
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
@@ -215,7 +217,7 @@ class AgentGraphState(TypedDict, total=False):
     trace_context: dict[str, Any]
     session_source: dict[str, Any]
     selected_skill_ids: list[str]
-    route: Literal["chat", "analysis", "rag", "summary"]
+    route: Literal["rag", "summary"] | None
 
     plan: str
     step_index: int
@@ -330,9 +332,10 @@ class AgentRunner:
                 lines.append(f"Метка в интерфейсе: {label}")
         if not has_tabular:
             lines.append(
-                "В оперативной памяти агента нет загруженного табличного датасета (CSV). "
+                "Переменная `df` пустая — НЕ используй `df` для получения данных. "
                 "Для выборок из таблиц БД вызывай инструмент `sql_tool` с параметром `question` "
                 "(формулировка на естественном языке). "
+                "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри. "
                 "Если пользователь спрашивает только о том, с какой базой данных ведётся работа, "
                 "ответь по полям выше обычным текстом — для этого tool не обязателен."
             )
@@ -903,106 +906,6 @@ class AgentRunner:
         while len(self._query_cache) > max_size:
             self._query_cache.popitem(last=False)
 
-    def _route_intent(
-        self,
-        df: pd.DataFrame | None,
-        prompt: str,
-        session_source: dict[str, Any] | None = None,
-    ) -> Literal["chat", "analysis", "rag", "summary"]:
-        _probe = ToolBuildContext(
-            settings=self.settings,
-            allowed_tool_keys=self.allowed_tool_keys,
-        )
-        has_search = self._tool_registry.is_available("search_tool", _probe)
-        has_rag = self.rag_service is not None and self.rag_service.is_enabled
-        has_db_source = (
-            isinstance(session_source, dict)
-            and str(session_source.get("source_type", "")).strip().lower() == "db_connection"
-        )
-        has_data = df is not None or has_db_source
-        has_any_tool = has_search or has_rag
-
-        normalized = prompt.strip().lower()
-
-        if not normalized:
-            return "chat"
-
-        # Data is loaded → default to analysis; the LLM agent will pick tools
-        # based on skill instructions.
-        if has_data:
-            return "analysis"
-
-        # No data and no tools → chat
-        if not has_any_tool:
-            return "chat"
-
-        # Ambiguous: have tools (search/rag) but no data → LLM classifier
-        return self._classify_intent(
-            prompt,
-            has_search=has_search,
-            has_rag=has_rag,
-        )
-
-    def _classify_intent(
-        self,
-        prompt: str,
-        *,
-        has_search: bool,
-        has_rag: bool,
-    ) -> Literal["chat", "analysis", "rag", "summary"]:
-        """Analytics-specialised LLM router.
-
-        Called only when Tier-1 rules are inconclusive and at least one tool
-        is available. Single small LLM call (~0.5 s). Fallback: "analysis".
-        """
-        caps: list[str] = []
-        if has_search:
-            caps.append("- Web search (current events, news, URLs, external data)")
-        if has_rag:
-            caps.append("- Internal knowledge base search")
-
-        caps_block = "\n".join(caps) if caps else "- None"
-
-        system = (
-            "You are the intent router for a data analytics AI assistant.\n\n"
-            "The assistant can do:\n"
-            "- chat: general conversation and explanations\n"
-            "- analysis: tool-based analytics, SQL, charts, search, calculations\n"
-            "- rag: internal knowledge base lookup\n"
-            "- summary: management note, chat recap, executive summary based on history and artifacts\n\n"
-            f"Available tools:\n{caps_block}\n\n"
-            "Classify the user query into exactly one category:\n"
-            "  chat      — greeting, casual conversation, simple explanation\n"
-            "  analysis  — needs tools, calculations, charts, SQL, search, fresh info\n"
-            "  rag       — explicitly asks to search internal knowledge base\n"
-            "  summary   — asks to summarize, recap, build a management note, or produce an executive report from the chat\n\n"
-            "When in doubt:\n"
-            "- if the request is mainly summary / recap / management note / report -> summary\n"
-            "- otherwise -> analysis\n\n"
-            "Reply with exactly one word: chat, analysis, rag, or summary."
-        )
-        try:
-            llm = self._build_llm(
-                role="evaluate",
-                include_reasoning=False,
-                timeout_sec=8,
-                max_tokens_override=10,
-            )
-            result = llm.invoke([
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ])
-            text = self._content_to_text(result.content).strip().lower()
-            if "rag" in text:
-                return "rag"
-            if "summary" in text:
-                return "summary"
-            if "analysis" in text:
-                return "analysis"
-            return "chat"
-        except Exception:  # noqa: BLE001
-            return "analysis"
-
     def _tool_allowed(self, tool_key: str) -> bool:
         return is_tool_allowed(tool_key, self.allowed_tool_keys)
 
@@ -1018,12 +921,15 @@ class AgentRunner:
             trace_context,
         )
 
-        route = self._route_intent(
-            df,
-            prompt,
-            session_source=normalized_session_source,
+        # Don't intercept non-analytical messages (greetings, chat, summary).
+        if self._quick_route(prompt, has_rag=False) == "summary":
+            return None
+        _normalized = prompt.strip().lower()
+        _chat_markers = (
+            "привет", "здравствуй", "добрый", "hello", "hi ", "hey ",
+            "спасибо", "thank you", "thanks", "кто ты", "что ты умеешь",
         )
-        if route != "analysis":
+        if len(_normalized) < 120 and any(m in _normalized for m in _chat_markers):
             return None
 
         mode = detect_data_access_mode(
@@ -1210,34 +1116,6 @@ class AgentRunner:
 
         return normalized
 
-    @staticmethod
-    def _safe_dataset_fallback(df: pd.DataFrame, prompt: str) -> str | None:
-        normalized = prompt.strip().lower()
-        if not normalized:
-            return None
-
-        if "столбц" in normalized or "колонк" in normalized:
-            columns = list(map(str, df.columns))
-            preview = ", ".join(columns[:20])
-            suffix = "" if len(columns) <= 20 else ", ..."
-            return f"В датасете {len(columns)} столбцов. Первые: {preview}{suffix}."
-
-        if (
-            "сколько" in normalized
-            and any(token in normalized for token in ("строк", "запис", "пассажир"))
-        ):
-            return f"В датасете {len(df)} строк."
-
-        if "пропуск" in normalized or "missing" in normalized:
-            missing = df.isna().sum().sort_values(ascending=False)
-            top = [(str(k), int(v)) for k, v in missing.items() if int(v) > 0][:8]
-            if not top:
-                return "В датасете нет пропусков."
-            parts = ", ".join(f"{name}: {count}" for name, count in top)
-            return f"Топ пропусков по столбцам: {parts}."
-
-        return None
-
     def _fallback_text(
         self,
         prompt: str,
@@ -1245,10 +1123,6 @@ class AgentRunner:
         stop_reason: str | None = None,
     ) -> str:
         if df is not None:
-            dataset_fallback = self._safe_dataset_fallback(df, prompt)
-            if dataset_fallback:
-                return dataset_fallback
-
             if stop_reason == "max_steps_reached":
                 return (
                     "Я выполнил несколько шагов анализа, но не получил надежный артефакт для финального вывода. "
@@ -1288,9 +1162,9 @@ class AgentRunner:
         "- Для простых запросов (показать данные, структура) → 1 шаг.\n"
         "- Для графиков → обязательно `plotly_tool`.\n"
         "- Не путай `value_tool` (метрики из df) с `search_tool` (веб-поиск).\n"
-        "- Если источники данных НЕ прикреплены (активный режим данных = `none`) "
+        "- Если в контексте написано «Источники данных: НЕ прикреплены» "
         "и запрос требует табличных данных — НЕ планируй tool-вызовы для анализа данных. "
-        "Ответь пользователю, что источники данных не прикреплены и нужно загрузить CSV или подключить БД.\n"
+        "Ответь пользователю, что нужно загрузить CSV или подключить БД.\n"
     )
 
     def _think_system_prompt(
@@ -1298,7 +1172,6 @@ class AgentRunner:
         capability_context: dict[str, Any] | None = None,
         selected_skill_ids: list[str] | None = None,
         tool_descriptions: str = "",
-        available_tool_keys: set[str] | None = None,
     ) -> str:
         depth_instruction = self._depth_profile.get("think_instruction", "")
         depth_label = self.settings.agent_analysis_depth.upper()
@@ -1310,13 +1183,6 @@ class AgentRunner:
         )
         if tool_descriptions:
             prompt += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{tool_descriptions}\n"
-        # Auto-selected tool skill instructions
-        if available_tool_keys:
-            tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
-                available_tool_keys
-            )
-            if tool_skills_block:
-                prompt += f"\n{tool_skills_block}\n"
         capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
         if capability_block:
             prompt += f"\n{capability_block}\n"
@@ -1333,94 +1199,61 @@ class AgentRunner:
 
     _EVALUATE_PROMPT_TEMPLATE = (
         "Вопрос пользователя: {question}\n"
+        "План выполнения: {plan}\n"
         "Полученные артефакты: {artifact_summary}\n"
-        "Runtime capabilities: {capability_summary}\n"
+        "Доступные возможности runtime: {capability_summary}\n"
         "Использованные инструменты (включая неудачные): {used_tools}\n"
         "Текст ответа: {response_text}\n\n"
         "Ответь строго в формате JSON:\n"
         '{{"pass": true/false, "reason": "краткое обоснование"}}\n\n'
-        "Критерии оценки (pass=true если выполнено хотя бы одно:\n"
+        "Критерии оценки (pass=true если выполнено хотя бы одно):\n"
         "1. Ответ прямо и по существу отвечает на вопрос пользователя.\n"
         "2. Для простых вопросов (метаданные, структура, количество строк/столбцов) "
         "достаточно корректного текстового ответа без артефактов.\n"
         "3. Для аналитических вопросов ответ подкреплён артефактами (table/plot/value) "
         "или содержит конкретные числа/факты из данных.\n"
         "4. Если capability недоступен или вернул ошибку — честное объяснение ограничения допустимо.\n"
+        "5. Если план предполагал конкретные инструменты — проверь, что они были вызваны.\n"
         "pass=false только если: ответ пустой, полностью нерелевантен вопросу, "
         "содержит только технические ошибки, или LLM придумала данные не вызвав инструмент.\n"
         "Только JSON, без пояснений."
     )
 
-    def _compose_step_prompt(
-        self,
-        *,
-        user_prompt: str,
-        plan: str,
-        refinement_feedback: str,
-        step_index: int,
-        max_steps: int,
-        capability_context: dict[str, Any] | None = None,
-    ) -> str:
-        blocks = [
-            user_prompt.strip(),
-            "",
-            "[ROLE: PLAN]",
-            plan.strip(),
-            "",
-            "[ROLE: ACT]",
-            (
-                "Следуй плану из секции PLAN. "
-                "Используй tool-вызовы для получения данных. "
-                "Передавай в tool только чистый Python-код (без markdown-блоков и без ```)."
-            ),
-            "",
-            "[ROLE: CONTRACT]",
-            (
-                "tool_result должен строго соответствовать JSON-схеме: "
-                '{"schema_version":"1.0","artifact_type":"<plot|table|value>","items":{...}}'
-            ),
-            "",
-            "[ROLE: STEP]",
-            (
-                f"Текущий шаг: {step_index}/{max_steps}. "
-                f"Уровень анализа: {self.settings.agent_analysis_depth}. "
-                "Верхний лимит итераций — только страховка; остановись раньше, если ответ уже достаточен "
-                "или данных/инструментов не хватает — тогда кратко опиши ограничение."
-            ),
+    @staticmethod
+    def _execution_runtime_section(
+        source_mode: str,
+        tool_list: str,
+        today: str,
+        tool_descriptions: str,
+    ) -> list[str]:
+        """Runtime context: date, data mode, available tools."""
+        lines = [
+            f"Сегодня: {today}.",
+            f"Режим данных: `{source_mode}`.",
+            f"Доступные tools в этом запуске: {tool_list}.",
         ]
+        if tool_descriptions:
+            lines += ["Описание доступных tools:", tool_descriptions]
+        return lines
 
-        capability_block = str((capability_context or {}).get("prompt_block", "")).strip()
-        if capability_block:
-            blocks.extend(["", capability_block])
+    @staticmethod
+    def _execution_step_section(step_index: int, max_steps: int, depth: str) -> str:
+        """Current step counter and analysis depth."""
+        return f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {depth}."
 
-        if refinement_feedback.strip():
-            blocks.extend([
-                "",
-                "[ROLE: REFINEMENT]",
-                f"Предыдущая попытка не прошла оценку: {refinement_feedback.strip()}",
-                "Скорректируй подход с учётом этой обратной связи.",
-            ])
+    @staticmethod
+    def _execution_plan_section(plan: str) -> str | None:
+        """Plan orientation from the THINK phase."""
+        return f"Ориентир плана: {plan.strip()}" if plan.strip() else None
 
-        finalize_block = [
-            "",
-            "[ROLE: FINALIZE]",
-            "ВАЖНО: НЕ повторяй и НЕ пересказывай план из секции [ROLE: PLAN].",
-            "Напиши ПРЯМОЙ ОТВЕТ на вопрос пользователя — по фактам из tool-результатов "
-            "и по явным сведениям о данных в system prompt (подключение к БД, структура датасета), "
-            "если их достаточно для ответа.",
-            "• Если search_tool вернул сниппеты или выборку страниц — процитируй ключевые факты из текста.",
-            "• Если pandas/plotly/sql вернули данные — интерпретируй числа и тренды в тексте.",
-            "• Финальный ответ = конкретные факты и выводы, а НЕ описание процесса анализа.",
-        ]
-        if str((capability_context or {}).get("source_mode", "")).strip() == "db":
-            finalize_block.append(
-                "• Режим БД: если в system prompt указаны имя подключения и тип СУБД, а вопрос только "
-                "о том, с какой базой вы работаете — ответь по этим полям текстом; tool не обязателен. "
-                "Для вопросов по содержимому таблиц используй `sql_tool` и опирайся на его результат."
-            )
-        blocks.extend(finalize_block)
-
-        return "\n".join(blocks).strip()
+    @staticmethod
+    def _execution_refinement_section(feedback: str) -> str | None:
+        """Feedback from the previous failed attempt."""
+        return (
+            f"Исправь предыдущую неудачную попытку: {feedback.strip()}"
+            if feedback.strip()
+            else None
+        )
 
     def _build_execution_system_prompt(
         self,
@@ -1441,48 +1274,35 @@ class AgentRunner:
             if str(item).strip()
         ]
         tool_list = ", ".join(f"`{item}`" for item in available_tools) if available_tools else "нет"
-
         today = date.today().strftime("%Y-%m-%d")
-        blocks = [
-            execution_agent_prompt.strip(),
-            f"Сегодня: {today}.",
-            f"Режим данных: `{source_mode}`.",
-            f"Доступные tools в этом запуске: {tool_list}.",
-        ]
-        if source_mode == "db":
-            blocks.append(
-                "ВАЖНО (режим БД): переменная `df` пустая — НЕ используй `df` для получения данных. "
-                "Для любых запросов к таблицам используй `sql_tool`. "
-                "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри."
-            )
-        if tool_descriptions:
-            blocks.extend(["Описание доступных tools:", tool_descriptions])
 
-        blocks.append(
-            f"Текущий шаг: {step_index}/{max_steps}. Уровень анализа: {self.settings.agent_analysis_depth}."
+        sections: list[str] = [execution_agent_prompt.strip()]
+        sections.extend(
+            self._execution_runtime_section(source_mode, tool_list, today, tool_descriptions)
         )
-        if plan.strip():
-            blocks.append(f"Ориентир плана: {plan.strip()}")
-        if refinement_feedback.strip():
-            blocks.append(
-                "Исправь предыдущую неудачную попытку: "
-                f"{refinement_feedback.strip()}"
-            )
+        sections.append(
+            self._execution_step_section(step_index, max_steps, self.settings.agent_analysis_depth)
+        )
+        for optional in (
+            self._execution_plan_section(plan),
+            self._execution_refinement_section(refinement_feedback),
+        ):
+            if optional:
+                sections.append(optional)
+
         # Sandbox context: available variables + session notebook.
         if sandbox:
             sandbox_block = sandbox.describe_for_prompt()
             if sandbox_block:
-                blocks.append(sandbox_block)
+                sections.append(sandbox_block)
 
         # Brief tool descriptions — LLM must call get_tool_instructions(tool_name)
         # before first use of each tool to get full instructions and examples.
-        tool_skills_block = self.skill_registry.build_tool_skills_brief_block(
-            set(available_tools)
-        )
+        tool_skills_block = self.skill_registry.build_tool_skills_brief_block(set(available_tools))
         if tool_skills_block:
-            blocks.append(tool_skills_block)
+            sections.append(tool_skills_block)
 
-        return "\n".join(blocks).strip()
+        return "\n".join(sections).strip()
 
     def _collect_text_and_reasoning(
         self,
@@ -1870,12 +1690,22 @@ class AgentRunner:
             '"name": "value_tool"',
             '"name": "pandas_tool"',
             '"name": "memory_tool"',
+            '"name": "sql_tool"',
+            '"name": "plotly_tool"',
+            '"name": "database_tool"',
+            '"name": "search_tool"',
+            '"name": "forecast_tool"',
             '"artifact_type": "value"',
             '"artifact_type": "table"',
             "tool_result",
             "value_tool(",
             "pandas_tool(",
             "memory_tool(",
+            "sql_tool(",
+            "plotly_tool(",
+            "database_tool(",
+            "search_tool(",
+            "forecast_tool(",
         )
         return any(marker in text for marker in trace_markers)
 
@@ -2203,8 +2033,6 @@ class AgentRunner:
     def _build_query_graph(self):
         graph = StateGraph(AgentGraphState)
 
-        graph.add_node("route", self._route_node)
-        graph.add_node("chat", self._chat_node)
         graph.add_node("rag", self._rag_node)
         graph.add_node("summary", self._summary_node)
         graph.add_node("think", self._think_node)
@@ -2213,25 +2041,14 @@ class AgentRunner:
         graph.add_node("decide", self._decide_node)
         graph.add_node("finalize", self._finalize_node)
 
-        graph.add_edge(START, "route")
-        graph.add_conditional_edges(
-            "route",
-            self._route_edge,
-            {
-                "chat": "chat",
-                "analysis": "think",
-                "rag": "rag",
-                "summary": "summary",
-            },
-        )
-        graph.add_edge("chat", "finalize")
+        graph.add_edge(START, "think")
         graph.add_edge("rag", "finalize")
         graph.add_edge("summary", "finalize")
 
         graph.add_conditional_edges(
             "think",
             self._think_edge,
-            {"act": "act", "finalize": "finalize"},
+            {"act": "act", "rag": "rag", "summary": "summary", "finalize": "finalize"},
         )
         graph.add_conditional_edges(
             "act",
@@ -2248,22 +2065,15 @@ class AgentRunner:
         graph.add_edge("finalize", END)
         return graph.compile()
 
-    def _route_node(
-        self, state: AgentGraphState
-    ) -> dict[str, Literal["chat", "analysis", "rag", "summary"]]:
-        route = self._route_intent(
-            state.get("df"),
-            state.get("prompt", ""),
-            state.get("session_source"),
-        )
-        return {"route": route}
-
     @staticmethod
-    def _route_edge(state: AgentGraphState) -> Literal["chat", "analysis", "rag", "summary"]:
-        return state.get("route", "chat")
-
-    @staticmethod
-    def _think_edge(state: AgentGraphState) -> Literal["act", "finalize"]:
+    def _think_edge(
+        state: AgentGraphState,
+    ) -> Literal["act", "rag", "summary", "finalize"]:
+        route = state.get("route")
+        if route == "rag":
+            return "rag"
+        if route == "summary":
+            return "summary"
         return "finalize" if state.get("llm_unreachable") else "act"
 
     @staticmethod
@@ -2272,31 +2082,6 @@ class AgentRunner:
         if response is not None and getattr(response, "llm_unreachable", False):
             return "finalize"
         return "evaluate"
-
-    def _chat_node(self, state: AgentGraphState) -> dict[str, AgentResponse]:
-        prompt = state.get("prompt", "")
-        df = state.get("df")
-        try:
-            response = self.chat(
-                prompt=prompt,
-                history=state.get("history", []),
-                use_history=state.get("use_history", True),
-                include_reasoning=state.get("include_reasoning", False),
-                callbacks=state.get("callbacks", []),
-                trace_context=state.get("trace_context"),
-            )
-        except Exception:
-            response = AgentResponse(
-                final_text=self._fallback_text(prompt, df),
-                reasoning=None,
-                artifacts=[],
-                route="chat",
-            )
-        return {
-            "response": response,
-            "done": True,
-            "stop_reason": "chat_route",
-        }
 
     def _rag_node(self, state: AgentGraphState) -> dict[str, Any]:
         prompt = state.get("prompt", "")
@@ -2480,11 +2265,42 @@ class AgentRunner:
             "stop_reason": "summary_ready",
         }
 
+    @staticmethod
+    def _quick_route(
+        prompt: str,
+        *,
+        has_rag: bool,
+    ) -> Literal["rag", "summary"] | None:
+        """Lightweight keyword pre-check for rag/summary. No LLM call.
+        Everything else (chat, analysis) is handled implicitly by the act LLM."""
+        normalized = prompt.strip().lower()
+        _summary_markers = (
+            "управленческ", "итоги анализа",
+            "резюмируй", "подведи итог", "executive summary", "сделай отчёт",
+            "сводка по результатам", "ключевые выводы из чата",
+        )
+        if any(m in normalized for m in _summary_markers):
+            return "summary"
+        if has_rag:
+            _rag_markers = (
+                "rag ", " rag", "документац", "база знаний", "в базе знаний",
+                "knowledge base", "в документации", "из документации",
+            )
+            if any(m in normalized for m in _rag_markers):
+                return "rag"
+        return None
+
     def _think_node(self, state: AgentGraphState) -> dict[str, Any]:
         df = state.get("df")
         prompt = state.get("prompt", "")
         callbacks = state.get("callbacks", [])
         refinement_feedback = state.get("refinement_feedback", "")
+
+        # Fast keyword routing for rag/summary — no LLM call required.
+        has_rag = self.rag_service is not None and self.rag_service.is_enabled
+        quick = self._quick_route(prompt, has_rag=has_rag)
+        if quick is not None:
+            return {"route": quick, "done": False}
         tool_db_runtime = self._resolve_tool_db_runtime_config(
             state.get("session_source"),
             state.get("trace_context")
@@ -2526,12 +2342,8 @@ class AgentRunner:
         data_context = ""
         if df is not None:
             try:
-                # Compact data info for planning — full stats go to act phase
-                cols = list(df.columns)
-                dtypes = {c: str(df[c].dtype) for c in cols[:20]}
-                data_context = (
-                    f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов.\n"
-                    f"Столбцы и типы: {dtypes}"
+                data_context = get_detailed_data_info(
+                    df, max_columns=self.settings.agent_prompt_max_columns
                 )
             except Exception:
                 data_context = f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
@@ -2667,7 +2479,25 @@ class AgentRunner:
         df = state.get("df")
         tools = state.get("tools", [])
         if df is None and not tools:
-            return self._chat_node(state)
+            # No data and no tools — delegate to the plain chat LLM.
+            prompt = state.get("prompt", "")
+            try:
+                response = self.chat(
+                    prompt=prompt,
+                    history=state.get("history", []),
+                    use_history=state.get("use_history", True),
+                    include_reasoning=state.get("include_reasoning", False),
+                    callbacks=state.get("callbacks", []),
+                    trace_context=state.get("trace_context"),
+                )
+            except Exception:
+                response = AgentResponse(
+                    final_text=self._fallback_text(prompt, df),
+                    reasoning=None,
+                    artifacts=[],
+                    route="chat",
+                )
+            return {"response": response, "done": True, "stop_reason": "chat_route"}
 
         step_index = int(state.get("step_index", 0)) + 1
         plan = state.get("plan", "")
@@ -2709,6 +2539,9 @@ class AgentRunner:
             max_steps=max_steps,
         )
 
+        tool_collector = next((cb for cb in callbacks if isinstance(cb, ToolCollector)), None)
+        tool_events_offset = len(tool_collector.events) if tool_collector else 0
+
         started_at = time.perf_counter()
         try:
             response = self._analysis_step(
@@ -2745,7 +2578,18 @@ class AgentRunner:
             ).strip()
 
         tool_summary_lines: list[str] = []
-        if response.tool_names:
+        if tool_collector is not None:
+            step_tool_events = tool_collector.events[tool_events_offset:]
+            for ev in step_tool_events:
+                if ev.get("phase") == "start":
+                    name = ev.get("tool_name", "")
+                    inp = (ev.get("input_preview") or "").strip()
+                    if inp:
+                        tool_summary_lines.append(f"**{name}**: {inp[:400]}")
+                elif ev.get("phase") == "end" and ev.get("code_preview"):
+                    code = ev["code_preview"].strip()
+                    tool_summary_lines.append(f"```sql\n{code[:800]}\n```")
+        if not tool_summary_lines and response.tool_names:
             tool_summary_lines.append(f"Инструменты: {', '.join(response.tool_names)}")
         if response.artifacts:
             types = []
@@ -2829,6 +2673,24 @@ class AgentRunner:
                 )
                 return {"eval_passed": False, "eval_reason": reason}
 
+        # Structural check: visualization prompt requires a plot artifact.
+        # Runs regardless of agent_evaluate_enabled so the agent retries if needed.
+        _plot_keywords = ("график", "диаграмм", "plot", "chart", "визуализ", "гистограмм", "scatter")
+        _prompt_lower = prompt.strip().lower()
+        _needs_plot = any(kw in _prompt_lower for kw in _plot_keywords)
+        _has_plot = self._response_has_artifact_type(response, "plot")
+        _plot_available = (
+            "plotly_tool" in (capability_context.get("available_tool_keys") or [])
+            or self._tool_allowed("plotly_tool")
+        )
+        if _needs_plot and not _has_plot and _plot_available and step_index < max_steps:
+            reason = "Запрос требует plot-артефакт, но получена только таблица или значение. Вызови `plotly_tool`."
+            self._emit_phase_event(
+                callbacks, phase="evaluate", title="Оценка результата",
+                content=reason, step_index=step_index, max_steps=max_steps, status="fail",
+            )
+            return {"eval_passed": False, "eval_reason": reason}
+
         depth_eval = self._depth_profile.get("evaluate_enabled", True)
         if not self.settings.agent_evaluate_enabled or not depth_eval:
             self._emit_phase_event(
@@ -2844,6 +2706,7 @@ class AgentRunner:
         used_tools_text = ", ".join(sorted(set(response.tool_names))) if response.tool_names else "нет"
         evaluate_prompt = self._EVALUATE_PROMPT_TEMPLATE.format(
             question=prompt.strip(),
+            plan=self._truncate(state.get("plan", "нет"), 400),
             artifact_summary=artifact_summary,
             capability_summary=str(capability_context.get("prompt_block", "нет")),
             used_tools=used_tools_text,
@@ -3097,7 +2960,6 @@ class AgentRunner:
                     or response.final_text.strip().startswith(GENERIC_ARTIFACT_SUMMARY_PREFIX)
                     or self._response_too_generic(prompt, response.final_text)
                     or prompt.strip().endswith("?")
-                    or len(response.final_text.strip()) < 260
                     or _looks_like_plan
                     or _used_search  # always synthesize when search was used
                 )
@@ -3175,7 +3037,7 @@ class AgentRunner:
         trace_context: dict[str, Any] | None = None,
     ) -> AgentResponse:
         llm = self._build_llm(role="chat", include_reasoning=include_reasoning)
-        prompt_messages = self._build_messages(prompt, history, use_history, system_prompt=agent_prompt)
+        prompt_messages = self._build_messages(prompt, history, use_history, system_prompt=chat_system_prompt)
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -3258,8 +3120,8 @@ class AgentRunner:
             return data_tools_disabled
 
         # Set recursion_limit well above the max supersteps the outer graph can produce.
-        # Each outer cycle = 4 supersteps (think+act+evaluate+decide) + 2 bookends (route, finalize).
-        # Worst case: visualization boost gives max_steps=5 → 5*4+2 = 22 supersteps.
+        # Each outer cycle = 4 supersteps (think+act+evaluate+decide) + 1 bookend (finalize).
+        # Worst case: visualization boost gives max_steps=5 → 5*4+1 = 21 supersteps.
         # Use depth_max_steps_cap * 6 + 20 to handle all depth profiles safely.
         _outer_recursion_limit = max(50, self._depth_max_steps_cap() * 6 + 20)
         try:
@@ -3283,7 +3145,7 @@ class AgentRunner:
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,
                 artifacts=[],
-                route=self._route_intent(df, prompt, session_source=session_source),
+                route="analysis",
             )
             if cache_allowed:
                 self._cache_set(cache_key, fallback)
@@ -3295,7 +3157,7 @@ class AgentRunner:
                 final_text=self._fallback_text(prompt, df),
                 reasoning=None,
                 artifacts=[],
-                route=self._route_intent(df, prompt, session_source=session_source),
+                route="analysis",
             )
 
         if cache_allowed:

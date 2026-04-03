@@ -13,6 +13,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.artifacts.artifact_meta import extract_artifact_hints
+from backend.core.config import settings
 from backend.core.redaction import sanitize_error_text
 
 if TYPE_CHECKING:
@@ -472,7 +473,7 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
 
         try:
             resp = llm.invoke([
-                SystemMessage(content="/no_think Fix code. Return Python only."),
+                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),
                 HumanMessage(content=prompt),
             ])
             fixed = str(resp.content or "").strip()

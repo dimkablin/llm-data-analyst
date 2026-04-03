@@ -160,6 +160,7 @@ class Settings:
     agent_analysis_depth: str = (
         os.getenv("AGENT_ANALYSIS_DEPTH", "light").strip().lower()
     )
+    llm_no_think_prefix: str = os.getenv("LLM_NO_THINK_PREFIX", "/no_think").strip()
     skills_dir: str = os.getenv("AGENT_SKILLS_DIR", "./skills")
 
     session_ttl_days: int = int(os.getenv("BACKEND_SESSION_TTL_DAYS", "7"))

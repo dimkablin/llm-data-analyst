@@ -1064,7 +1064,7 @@ async def query_stream(
                     break
 
             if not emitted_any:
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.02)
 
     async def event_generator():
         yield _sse_event("start", {"session_id": session_id})

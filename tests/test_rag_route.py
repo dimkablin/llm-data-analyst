@@ -50,13 +50,12 @@ class RAGRouteTests(unittest.TestCase):
             allowed_tool_keys=allowed_tool_keys,
         )
 
-    def test_route_intent_uses_rag_for_documentation_request(self) -> None:
+    def test_quick_route_uses_rag_for_documentation_request(self) -> None:
         runner = self._build_runner(allowed_tool_keys={"rag_tool"})
 
-        route = runner._route_intent(
-            None,
+        route = runner._quick_route(
             "что сказано в документации про auth flow?",
-            session_source=None,
+            has_rag=True,
         )
 
         self.assertEqual(route, "rag")
