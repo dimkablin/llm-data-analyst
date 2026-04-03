@@ -128,7 +128,11 @@ export function Workspace() {
 
   const loadSession = useCallback(
     async (nextSessionId: string) => {
-      reset();
+      const preserveActive =
+        isStreamingRef.current && streamingSessionIdRef.current === nextSessionId;
+      if (!preserveActive) {
+        reset();
+      }
       const session = await getSession(nextSessionId);
       applySessionState(session, nextSessionId);
     },
