@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.artifacts.artifact_meta import extract_artifact_hints
@@ -453,7 +453,7 @@ class BaseExecTool(BaseTool):
             llm_kwargs["extra_body"] = {
                 "chat_template_kwargs": {"enable_thinking": False}
             }
-        llm = ChatOpenAI(**llm_kwargs)
+        llm = ThinkingAwareChatOpenAI(**llm_kwargs)
 
         # Extract the first ~400 chars of the tool description to give the LLM scope context.
         scope_hint = (self.description or "")[:400].strip()

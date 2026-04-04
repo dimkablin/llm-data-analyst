@@ -4,7 +4,7 @@ import pandas as pd
 from langchain_core.callbacks import CallbackManager
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 
 from backend.agent.agent_callback import ReasoningCallbackHandler, ToolCallbackHandler
 from backend.artifacts.artifact import Artifact, artifact_factory
@@ -97,7 +97,7 @@ class Agent:
             llm_kwargs["extra_body"] = {
                 "chat_template_kwargs": {"enable_thinking": llm_enable_thinking}
             }
-        self.llm = ChatOpenAI(**llm_kwargs)
+        self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
         self.agent = create_pandas_dataframe_agent(
             llm=self.llm,
             df=df.copy(),

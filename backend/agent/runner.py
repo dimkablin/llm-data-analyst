@@ -15,7 +15,7 @@ from typing import Any, Literal, TypedDict
 
 import pandas as pd
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 from backend.agent.pandas_agent import (
@@ -40,7 +40,6 @@ from backend.agent.callbacks import (
     TokenStreamCallbackHandler,
     ToolCollector,
     extract_thinking,
-    strip_thinking,
 )
 from backend.core.config import Settings
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
@@ -348,7 +347,7 @@ class AgentRunner:
         include_reasoning: bool,
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
-    ) -> ChatOpenAI:
+    ) -> ThinkingAwareChatOpenAI:
         enable_thinking = self.settings.llm_enable_thinking and include_reasoning
         if role in ("evaluate", "plan", "tool"):
             enable_thinking = False
@@ -403,7 +402,7 @@ class AgentRunner:
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        return ChatOpenAI(**kwargs)
+        return ThinkingAwareChatOpenAI(**kwargs)
 
     @staticmethod
     def _content_to_text(content: Any) -> str:
@@ -715,8 +714,8 @@ class AgentRunner:
             )
 
             output_text = self._content_to_text(getattr(response, "content", ""))
-            final_text = strip_thinking(output_text).strip()
-            reasoning = extract_thinking(output_text) or None
+            final_text = output_text.strip()
+            reasoning = response.additional_kwargs.get("reasoning") or None
 
             if not final_text:
                 final_text = (
@@ -1324,7 +1323,7 @@ class AgentRunner:
             reasoning = text_collector.messages[-1].get("reasoning") or None
 
         if not final_text:
-            final_text = strip_thinking(output_text)
+            final_text = output_text
         if reasoning is None:
             reasoning = extract_thinking(output_text) or None
         return final_text.strip(), reasoning
@@ -2431,8 +2430,8 @@ class AgentRunner:
                 fallback_provider=self.settings.llm_provider,
             )
             raw_content = self._content_to_text(getattr(response, "content", ""))
-            plan = strip_thinking(raw_content).strip()
-            reasoning = extract_thinking(raw_content)
+            plan = raw_content.strip()
+            reasoning = response.additional_kwargs.get("reasoning", "")
             if not plan:
                 plan = reasoning or "Анализировать данные по запросу пользователя."
         except Exception as exc:
@@ -2740,8 +2739,7 @@ class AgentRunner:
                 fallback_model=self.settings.llm_model,
                 fallback_provider=self.settings.llm_provider,
             )
-            raw_text = self._content_to_text(getattr(llm_response, "content", ""))
-            raw_text = strip_thinking(raw_text).strip()
+            raw_text = self._content_to_text(getattr(llm_response, "content", "")).strip()
 
             json_match = re.search(r"\{[^}]+\}", raw_text)
             if json_match:
@@ -3063,9 +3061,9 @@ class AgentRunner:
             final_text = text_collector.messages[-1].get("text", "")
             reasoning = text_collector.messages[-1].get("reasoning") or None
         if not final_text:
-            final_text = strip_thinking(output_text)
+            final_text = output_text
         if reasoning is None:
-            reasoning = extract_thinking(output_text) or None
+            reasoning = response.additional_kwargs.get("reasoning") or None
 
         if not final_text.strip():
             final_text = "Я получил запрос, но не смог сформировать содержательный ответ."

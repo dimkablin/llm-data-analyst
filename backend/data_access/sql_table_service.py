@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 
 from backend.tools.impl.db_helpers import (
     DBAnalyticsHelper,
@@ -201,7 +201,7 @@ class SQLTableService:
             llm_kwargs["extra_body"] = {
                 "chat_template_kwargs": {"enable_thinking": llm_enable_thinking}
             }
-        self.llm = ChatOpenAI(**llm_kwargs)
+        self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
 
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
