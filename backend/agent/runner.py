@@ -1937,6 +1937,19 @@ class AgentRunner:
             if isinstance(depth_inner_limit, int)
             else self.settings.agent_inner_recursion_limit
         )
+
+        # Build messages first so that memory/history-summary SystemMessage
+        # content can be merged into act_prefix before the agent is created.
+        # This ensures create_agent receives a single unified system prompt
+        # instead of two separate ones, which models like qwen reject.
+        prompt_messages = self._build_messages(prompt, history, use_history)
+        extra_system = next(
+            (m.content for m in prompt_messages if isinstance(m, SystemMessage)), None
+        )
+        if extra_system:
+            act_prefix = f"{act_prefix}\n\n{extra_system}".strip()
+        agent_messages = [m for m in prompt_messages if not isinstance(m, SystemMessage)]
+
         agent = create_pandas_dataframe_agent(
             llm=llm,
             df=df.copy(),
@@ -1953,8 +1966,6 @@ class AgentRunner:
             number_of_head_rows=min(2, max(1, self.settings.agent_prompt_head_rows)),
             data_info_max_columns=min(10, max(6, self.settings.agent_prompt_max_columns)),
         )
-
-        prompt_messages = self._build_messages(prompt, history, use_history)
         # Use depth-profile override if available, else global setting.
         # Minimum 4 to allow at least: LLM call → tool → LLM response.
         recursion_limit = max(
@@ -1971,7 +1982,7 @@ class AgentRunner:
 
         try:
             response_payload = agent.invoke(
-                {"messages": normalize_agent_messages(prompt_messages)},
+                {"messages": normalize_agent_messages(agent_messages)},
                 config=runtime_config,
             )
             final_text, reasoning = self._collect_text_and_reasoning(
