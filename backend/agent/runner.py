@@ -2601,6 +2601,32 @@ class AgentRunner:
             sandbox=sandbox,
         )
 
+        # Add explicit data context so the LLM knows what dataset/DB is attached.
+        # This mirrors what the old _think_node LLM plan call used to expose.
+        data_context_parts: list[str] = []
+        if df is not None:
+            try:
+                data_context_parts.append(
+                    get_detailed_data_info(
+                        df, max_columns=self.settings.agent_prompt_max_columns
+                    )
+                )
+            except Exception:
+                data_context_parts.append(
+                    f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
+                )
+        db_block = self._db_session_prompt_block(
+            session_source=state.get("session_source"),
+            runtime=tool_db_runtime,
+            df=df,
+        )
+        if db_block:
+            data_context_parts.append(db_block)
+        if data_context_parts:
+            execution_system_prompt = (
+                execution_system_prompt + "\n\n" + "\n\n".join(data_context_parts)
+            )
+
         self._emit_phase_event(
             callbacks,
             phase="act",
