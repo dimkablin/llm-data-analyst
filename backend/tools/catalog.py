@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,8 +23,8 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="sql_tool",
         tool_label="SQL tool",
         display_name_ru="SQL по таблицам",
-        description="Natural-language questions over attached DB and/or CSV-in-DuckDB: table pick, safe SELECT, tabular artifact.",
-        description_ru="Вопросы на естественном языке по привязанной БД и/или CSV в DuckDB: выбор таблицы, безопасный SELECT, табличный артефакт.",
+        description="Natural-language questions over attached DB and/or CSV-in-DuckDB: table pick, safe SELECT, tabular artifact.",  # noqa: E501
+        description_ru="Вопросы на естественном языке по привязанной БД и/или CSV в DuckDB: выбор таблицы, безопасный SELECT, табличный артефакт.",  # noqa: E501
         capabilities=("read_only_sql", "table_artifact", "nl_to_sql"),
         requires_session_data=True,
         kind="builtin",
@@ -32,8 +33,8 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="database_tool",
         tool_label="Database Tool",
         display_name_ru="Структура БД",
-        description="Lightweight DB catalog queries: list tables, describe columns, preview rows, list schemas. No LLM-generated SQL.",
-        description_ru="Быстрый просмотр структуры БД: список таблиц, колонки, превью строк, схемы. Без генерации SQL.",
+        description="Lightweight DB catalog queries: list tables, describe columns, preview rows, list schemas. No LLM-generated SQL.",  # noqa: E501
+        description_ru="Быстрый просмотр структуры БД: список таблиц, колонки, превью строк, схемы. Без генерации SQL.",  # noqa: E501
         capabilities=("db_catalog", "table_artifact", "db_preview"),
         requires_session_data=True,
         kind="builtin",
@@ -52,7 +53,7 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="plotly_tool",
         tool_label="Plotly Tool",
         display_name_ru="Графики",
-        description="Chart creation and plot artifacts from tabular data (CSV dataframe or SQL query result).",
+        description="Chart creation and plot artifacts from tabular data (CSV dataframe or SQL query result).",  # noqa: E501
         description_ru="Построение графиков по табличным данным (CSV датафрейм или результат SQL-запроса).",
         capabilities=("chart", "plotly", "chart_artifact"),
         requires_session_data=True,

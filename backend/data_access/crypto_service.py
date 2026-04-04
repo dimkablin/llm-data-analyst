@@ -17,7 +17,7 @@ def _validate_key(raw_key: str) -> bytes:
     encoded = raw_key.encode("utf-8")
     try:
         urlsafe_b64decode(encoded)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise SecretCryptoError("Invalid DB connections encryption key format.") from exc
     return encoded
 
@@ -66,7 +66,7 @@ class SecretCryptoService:
 
         try:
             payload = json.loads(raw)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise SecretCryptoError("Stored DB connection secret payload is invalid.") from exc
         if not isinstance(payload, dict):
             raise SecretCryptoError("Stored DB connection secret payload must be an object.")

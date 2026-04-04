@@ -14,7 +14,6 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-
 _TABLE_RE = re.compile(r"[^A-Za-z0-9_]+")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_TTL_SEC = int(os.getenv("CSV_SESSION_TTL_SEC", "7200"))
@@ -238,19 +237,18 @@ class CSVSessionRuntime:
         finally:
             con.close()
 
-        result: list[dict[str, Any]] = []
-        for row in rows.to_dict(orient="records"):
-            result.append(
-                {
-                    "schema": "main",
-                    "table_name": table_name,
-                    "column_name": row["name"],
-                    "data_type": row["type"],
-                    "is_nullable": not bool(row["notnull"]),
-                    "ordinal_position": int(row["cid"]) + 1,
-                    "default_expression": row.get("dflt_value"),
-                }
-            )
+        result: list[dict[str, Any]] = [
+            {
+                "schema": "main",
+                "table_name": table_name,
+                "column_name": row["name"],
+                "data_type": row["type"],
+                "is_nullable": not bool(row["notnull"]),
+                "ordinal_position": int(row["cid"]) + 1,
+                "default_expression": row.get("dflt_value"),
+            }
+            for row in rows.to_dict(orient="records")
+        ]
         return result
 
     def query_dataframe(self, session_id: str, sql: str) -> pd.DataFrame:

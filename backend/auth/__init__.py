@@ -13,17 +13,17 @@ from backend.auth.auth_db import (
 from backend.auth.user_memory import MEM_NOTES, MEM_PROFILE, UserMemory, UserMemoryService
 
 __all__ = [
+    "ANALYSIS_DEPTH_MAX_OUTER_STEPS",
+    "ANALYSIS_DEPTH_VALUES",
+    "ANSWER_STYLE_VALUES",
+    "MEM_NOTES",
+    "MEM_PROFILE",
+    "THEME_VALUES",
+    "USERNAME_RE",
     "AuthDB",
     "AuthUser",
-    "UserSettings",
     "DBConnectionRecord",
-    "USERNAME_RE",
-    "THEME_VALUES",
-    "ANSWER_STYLE_VALUES",
-    "ANALYSIS_DEPTH_VALUES",
-    "ANALYSIS_DEPTH_MAX_OUTER_STEPS",
     "UserMemory",
     "UserMemoryService",
-    "MEM_PROFILE",
-    "MEM_NOTES",
+    "UserSettings",
 ]

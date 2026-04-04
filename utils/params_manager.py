@@ -1,11 +1,10 @@
-from typing import Callable
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import streamlit as st
-from dotenv import load_dotenv
-
 from agent.artifact import ArtifactStore
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -272,7 +271,7 @@ class AppParamsManager:
         Автоматически генерирует sidebar по описанию параметров.
         """
         categories = {}
-        for key, meta in self.params.items():
+        for meta in self.params.values():
             if meta.visible:
                 categories.setdefault(meta.category, []).append(meta)
         for category, params in categories.items():

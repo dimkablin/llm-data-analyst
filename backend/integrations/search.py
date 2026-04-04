@@ -3,8 +3,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -59,7 +60,7 @@ class SearchIntegrationConfig:
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
-    ) -> "SearchIntegrationConfig":
+    ) -> SearchIntegrationConfig:
         source_env = env or os.environ
         base_url = _clean_str(source_env.get("SEARCH_BACKEND_URL")) or ""
         search_endpoint = _clean_str(source_env.get("SEARCH_ENDPOINT")) or "/api/v1/search/"
@@ -202,7 +203,7 @@ class SearchIntegrationService:
         self._transport = transport or _default_transport
 
     @classmethod
-    def from_env(cls) -> "SearchIntegrationService":
+    def from_env(cls) -> SearchIntegrationService:
         return cls(SearchIntegrationConfig.from_env())
 
     @property

@@ -4,18 +4,18 @@ import pandas as pd
 from langchain_core.callbacks import CallbackManager
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
 
 from backend.agent.agent_callback import ReasoningCallbackHandler, ToolCallbackHandler
-from backend.artifacts.artifact import Artifact, artifact_factory
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.agent.pandas_agent import (
     create_pandas_dataframe_agent,
     extract_agent_output_text,
     normalize_agent_messages,
 )
 from backend.agent.prompts import agent_prompt
-from backend.tools.impl import PandasTool, PlotlyTool, SQLTool, ValueTool
+from backend.artifacts.artifact import Artifact, artifact_factory
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
+from backend.tools.impl import PandasTool, PlotlyTool, SQLTool, ValueTool
 from utils.params_manager import params_manager
 
 
@@ -222,7 +222,7 @@ class Agent:
                     )
                 ]
         except Exception as e:
-            error_msg = f"❌ Ошибка при анализе: {str(e)}"
+            error_msg = f"❌ Ошибка при анализе: {e!s}"
             artifacts = [artifact_factory(type="error", data=error_msg)]
         return artifacts
 

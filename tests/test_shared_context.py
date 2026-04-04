@@ -154,6 +154,7 @@ class SkillsIntegrationTests(unittest.TestCase):
 
     def test_skills_dir_loads_without_error(self) -> None:
         from pathlib import Path
+
         from backend.skills import SkillRegistry
 
         skills_dir = Path(__file__).parent.parent / "skills"
@@ -166,6 +167,7 @@ class SkillsIntegrationTests(unittest.TestCase):
 
     def test_sql_tool_skill_describes_data_flow(self) -> None:
         from pathlib import Path
+
         from backend.skills import SkillRegistry
 
         skills_dir = Path(__file__).parent.parent / "skills"
@@ -176,6 +178,7 @@ class SkillsIntegrationTests(unittest.TestCase):
 
     def test_tool_skills_prompt_block_includes_plotly_instructions(self) -> None:
         from pathlib import Path
+
         from backend.skills import SkillRegistry
 
         skills_dir = Path(__file__).parent.parent / "skills"

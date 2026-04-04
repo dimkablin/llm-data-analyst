@@ -64,7 +64,7 @@ def render_sidebar() -> None:
                     "Таблица (или SQL-запрос)", value="", key="db_table"
                 )
                 if st.button(
-                    "🔗 Загрузить из БД", key="load_db_btn", use_container_width=True, help="НАХОДИТСЯ В РАЗРАБОТКЕ, ИСПОЛЬЗУЙТЕ НА СВОЙ СТРАХ И РИСК.",
+                    "🔗 Загрузить из БД", key="load_db_btn", use_container_width=True, help="НАХОДИТСЯ В РАЗРАБОТКЕ, ИСПОЛЬЗУЙТЕ НА СВОЙ СТРАХ И РИСК.",  # noqa: E501
                 ):
                     data = load_db_data(host, port, user, password, database, table)
         if data is not None:
@@ -117,7 +117,7 @@ def render_sidebar() -> None:
         if artifact_store and len(artifact_store.get_chat_history()) > 0:
             exporter = ChatExporter(artifact_store)
             artifacts_data = [
-                exporter._serialize_artifact(a)
+                exporter._serialize_artifact(a)  # noqa: SLF001
                 for a in artifact_store.get_chat_history()
             ]
             chat_html = generate_chat_html_report(artifacts_data)
@@ -155,7 +155,7 @@ def render_sidebar() -> None:
                 artifact_store, max_cols=params_manager.get("max_dashboard_cols")
             )
             artifacts_data = [
-                exporter._serialize_artifact(a)
+                exporter._serialize_artifact(a)  # noqa: SLF001
                 for a in artifact_store.get_dashboard_items()
             ]
             dashboard_html = generate_dashboard_html_report(
@@ -183,7 +183,7 @@ def render_sidebar() -> None:
             max_value=params_manager.params["llm_temperature"].max_value,
             value=params_manager.get("llm_temperature"),
             step=params_manager.params["llm_temperature"].step,
-            help="Значение температуры для LLM при рассуждениях.  \n- Низкие значения → более предсказуемые ответы.  \n- Высокие значения → более креативные.",
+            help="Значение температуры для LLM при рассуждениях.  \n- Низкие значения → более предсказуемые ответы.  \n- Высокие значения → более креативные.",  # noqa: E501
             key="llm_temperature",
         )
         st.slider(
@@ -192,7 +192,7 @@ def render_sidebar() -> None:
             max_value=params_manager.params["llm_max_iterations"].max_value,
             value=params_manager.get("llm_max_iterations"),
             step=params_manager.params["llm_max_iterations"].step,
-            help="Максимальное количество шагов рассуждения и действия.  \n- Низкие значения → быстрые ответы, не глубокие рассуждения больше шанс ошибок.  \n- Высокие значения → медленнее ответы, глубже рассуждения, меньше шансов на ошибки.",
+            help="Максимальное количество шагов рассуждения и действия.  \n- Низкие значения → быстрые ответы, не глубокие рассуждения больше шанс ошибок.  \n- Высокие значения → медленнее ответы, глубже рассуждения, меньше шансов на ошибки.",  # noqa: E501
             key="llm_max_iterations",
         )
         st.slider(
@@ -209,7 +209,7 @@ def render_sidebar() -> None:
             options=["Нет", "Да"],
             index=1 if params_manager.get("llm_enable_thinking") else 0,
             key="llm_enable_thinking_radio",
-            help="Если включено, агент будет использовать режим рассуждения (thinking) в LLM (llm_enable_thinking).",
+            help="Если включено, агент будет использовать режим рассуждения (thinking) в LLM (llm_enable_thinking).",  # noqa: E501
         )
         if (llm_enable_thinking_radio == "Да") != params_manager.get(
             "llm_enable_thinking"
@@ -223,7 +223,7 @@ def render_sidebar() -> None:
                 params_manager.get("llm_use_history")
             ),
             key="llm_history_mode_radio",
-            help="НАХОДИТСЯ В РАЗРАБОТКЕ, ИСПОЛЬЗУЙТЕ НА СВОЙ СТРАХ И РИСК.  \nИспользование истории сообщений.  \n- Да → LLM будет видеть весь диалог.  \n- Нет → только последнее сообщение пользователя.",
+            help="НАХОДИТСЯ В РАЗРАБОТКЕ, ИСПОЛЬЗУЙТЕ НА СВОЙ СТРАХ И РИСК.  \nИспользование истории сообщений.  \n- Да → LLM будет видеть весь диалог.  \n- Нет → только последнее сообщение пользователя.",  # noqa: E501
         )
         if llm_history_mode != params_manager.get("llm_use_history"):
             params_manager.set("llm_use_history", llm_history_mode)
@@ -239,7 +239,7 @@ def render_sidebar() -> None:
             btn_text,
             use_container_width=True,
             key="toggle_profiling_btn_sidebar",
-            help="Выполнить автоматический анализ и визуализацию структуры данных.  \n- Позволяет быстро увидеть основные характеристики и распределения признаков.  \n- Профайлинг строится с помощью ydata-profiling.",
+            help="Выполнить автоматический анализ и визуализацию структуры данных.  \n- Позволяет быстро увидеть основные характеристики и распределения признаков.  \n- Профайлинг строится с помощью ydata-profiling.",  # noqa: E501
         )
         if st.session_state.get("toggle_profiling_btn_sidebar"):
             params_manager.set(

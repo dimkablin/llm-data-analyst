@@ -4,7 +4,6 @@ import copy
 import json
 from typing import Any
 
-
 PROVENANCE_SCHEMA_VERSION = "1.0"
 RECIPE_SCHEMA_VERSION = "1.0"
 RESERVED_ARTIFACT_HINT_KEYS = ("meta", "recipe", "source", "provenance")

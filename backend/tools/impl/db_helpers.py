@@ -4,7 +4,8 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as datetime_time
+from datetime import date, datetime
+from datetime import time as datetime_time
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
@@ -13,14 +14,13 @@ from uuid import UUID
 
 import pandas as pd
 
-from backend.tools.impl.base_tool import BaseExecTool
 from backend.artifacts.artifact_meta import (
     build_db_metadata_recipe_step,
     build_sql_recipe_step,
 )
 from backend.data_access.db_connectors import ResolvedDBConnection, build_connection_adapter
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
-
+from backend.tools.impl.base_tool import BaseExecTool
 
 BASE_FORBIDDEN_CODE_PATTERNS: tuple[tuple[str, str], ...] = tuple(
     BaseExecTool.model_fields["forbidden_code_patterns"].default
@@ -341,8 +341,8 @@ class DBAnalyticsHelper:
             "executed_sql": executed_sql,
             "max_rows": max_rows,
             "requested_limit": requested_limit,
-            "returned_rows": int(len(safe_rows)),
-            "column_count": int(len(safe_rows.columns)),
+            "returned_rows": len(safe_rows),
+            "column_count": len(safe_rows.columns),
             "truncated": bool(truncated),
             "execution_time_ms": int(execution_time_ms),
             "warnings": list(warnings or []),
@@ -397,7 +397,7 @@ class DBAnalyticsHelper:
         port = kwargs.get("port") or (8443 if secure else 8123)
         params = urlencode(
             {
-                "database": database if database is not None else (self._configured_schema() or kwargs.get("database") or ""),
+                "database": database if database is not None else (self._configured_schema() or kwargs.get("database") or ""),  # noqa: E501
                 "user": kwargs.get("username") or "",
                 "password": kwargs.get("password") or "",
                 "default_format": "JSON",
@@ -479,7 +479,7 @@ class DBAnalyticsHelper:
         adapter = self._catalog_adapter()
         combined = adapter.list_tables_with_columns(target_schema)
         result: list[dict[str, Any]] = []
-        for _tbl_name, (cat_table, cat_columns) in combined.items():
+        for (cat_table, cat_columns) in combined.values():
             result.append(
                 {
                     "schema": cat_table.schema,

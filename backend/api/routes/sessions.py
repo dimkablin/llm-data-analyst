@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from backend.auth.auth_db import AuthUser, AuthDB
-from backend.sessions.session_store import SessionStore, SessionState
+
 from backend.api.deps import get_current_user
 from backend.api.models import (
     CreateSessionResponse,
@@ -16,7 +16,9 @@ from backend.api.models import (
     SessionSummaryResponse,
     SessionTitleUpdateRequest,
 )
+from backend.auth.auth_db import AuthDB, AuthUser
 from backend.notebook.manifest_store import ManifestStore
+from backend.sessions.session_store import SessionState, SessionStore
 
 router = APIRouter(tags=["Сессии"])
 
@@ -93,7 +95,7 @@ def _dataset_hint_for_title(
 
 @router.get("/sessions", response_model=list[SessionSummaryResponse])
 def list_sessions(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[SessionSummaryResponse]:
     rows = _auth_db.list_sessions(current_user.id)
     return [SessionSummaryResponse(**row) for row in rows]
@@ -101,8 +103,8 @@ def list_sessions(
 
 @router.post("/sessions", response_model=CreateSessionResponse)
 def create_session(
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
     enable_auto_title: bool = False,
-    current_user: AuthUser = Depends(get_current_user),
 ) -> CreateSessionResponse:
     state = _store.create_session()
     _auth_db.register_session(
@@ -115,7 +117,7 @@ def create_session(
 
 @router.delete("/sessions", response_model=MessageResponse)
 def delete_all_sessions(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
     """Delete every session that belongs to the current user."""
     session_ids = _auth_db.delete_all_sessions(current_user.id)
@@ -127,7 +129,7 @@ def delete_all_sessions(
 @router.delete("/sessions/{session_id}", response_model=MessageResponse)
 def delete_session(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
     if not _auth_db.delete_session(session_id, current_user.id):
         raise HTTPException(status_code=404, detail="Session not found")
@@ -139,7 +141,7 @@ def delete_session(
 def update_session_title(
     session_id: str,
     payload: SessionTitleUpdateRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSummaryResponse:
     if not _auth_db.is_session_owner(session_id, current_user.id):
         raise HTTPException(status_code=404, detail="Session not found")
@@ -157,7 +159,7 @@ def update_session_title(
 @router.post("/sessions/{session_id}/title/generate", response_model=SessionSummaryResponse)
 def generate_session_title(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSummaryResponse:
     state = _load_owned_session(session_id, current_user)
     meta = _auth_db.get_session_metadata(session_id, current_user.id)
@@ -216,7 +218,7 @@ def generate_session_title(
 @router.get("/sessions/{session_id}", response_model=SessionStateResponse)
 def get_session(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionStateResponse:
     state = _load_owned_session(session_id, current_user)
     meta = _auth_db.get_session_metadata(session_id, current_user.id)
@@ -263,7 +265,7 @@ def get_session(
 def delete_last_session_messages(
     session_id: str,
     message_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
     """Delete the message identified by *message_id* and all subsequent messages.
 
@@ -279,12 +281,12 @@ def delete_last_session_messages(
 @router.get("/sessions/{session_id}/notebook")
 def get_session_notebook(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> PlainTextResponse:
     """Return the session notebook markdown (persisted by sandbox)."""
     if not _auth_db.is_session_owner(session_id, current_user.id):
         raise HTTPException(status_code=404, detail="Session not found")
-    notebook_path = _store._session_dir(session_id) / "notebook.md"
+    notebook_path = _store._session_dir(session_id) / "notebook.md"  # noqa: SLF001
     if not notebook_path.exists():
         return PlainTextResponse("", media_type="text/markdown")
     content = notebook_path.read_text(encoding="utf-8")
@@ -294,7 +296,7 @@ def get_session_notebook(
 @router.get("/sessions/{session_id}/notebook/cells")
 def get_session_notebook_cells(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[dict]:
     """Return the session notebook as a structured list of cells (JSON)."""
     from backend.tools.sandbox_manager import SandboxManager

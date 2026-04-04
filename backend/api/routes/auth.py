@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
-from backend.auth.auth_db import AuthUser, AuthDB
-from backend.api.deps import get_current_user, _require_token
+
+from backend.api.deps import _require_token, get_current_user
 from backend.api.models import (
     AuthChangePasswordRequest,
     AuthLoginRequest,
@@ -17,6 +19,7 @@ from backend.api.models import (
     UserSettingsResponse,
     UserSettingsUpdateRequest,
 )
+from backend.auth.auth_db import AuthDB, AuthUser
 
 router = APIRouter(tags=["Аутентификация"])
 
@@ -77,9 +80,9 @@ def auth_register(payload: AuthRegisterRequest) -> AuthResponse:
     try:
         user = _auth_db.create_user(payload.username, payload.password, is_admin=False)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
-        raise HTTPException(status_code=409, detail="Username already exists")
+        raise HTTPException(status_code=409, detail="Username already exists") from None
 
     token = _auth_db.create_access_token(user.id)
     return AuthResponse(access_token=token, user=_to_user_response(user))
@@ -95,14 +98,14 @@ def auth_login(payload: AuthLoginRequest) -> AuthResponse:
 
 
 @router.get("/auth/me", response_model=AuthUserResponse)
-def auth_me(current_user: AuthUser = Depends(get_current_user)) -> AuthUserResponse:
+def auth_me(current_user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUserResponse:
     return _to_user_response(current_user)
 
 
 @router.post("/auth/change-password", response_model=MessageResponse)
 def auth_change_password(
     payload: AuthChangePasswordRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
     try:
         _auth_db.update_password_with_current(
@@ -111,13 +114,13 @@ def auth_change_password(
             payload.new_password,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return MessageResponse(message="Password updated")
 
 
 @router.get("/auth/settings", response_model=UserSettingsResponse)
 def auth_get_settings(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> UserSettingsResponse:
     return _to_settings_response(current_user.id)
 
@@ -125,7 +128,7 @@ def auth_get_settings(
 @router.patch("/auth/settings", response_model=UserSettingsResponse)
 def auth_update_settings(
     payload: UserSettingsUpdateRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> UserSettingsResponse:
     try:
         updated = _auth_db.update_user_settings(
@@ -145,7 +148,7 @@ def auth_update_settings(
             ui_scale=payload.ui_scale,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return UserSettingsResponse(
         theme=updated.theme,
         default_include_reasoning=updated.default_include_reasoning,
@@ -165,7 +168,7 @@ def auth_update_settings(
 
 @router.get("/auth/memory", response_model=UserMemoryResponse)
 def auth_get_memory(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> UserMemoryResponse:
     mem = _user_memory_service.load(current_user.id)
     return UserMemoryResponse(profile=mem.profile, notes=mem.notes)
@@ -174,7 +177,7 @@ def auth_get_memory(
 @router.patch("/auth/memory", response_model=UserMemoryResponse)
 def auth_update_memory(
     payload: UserMemoryUpdateRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> UserMemoryResponse:
     if payload.profile is not None:
         _user_memory_service.set_profile(current_user.id, payload.profile)
@@ -186,7 +189,7 @@ def auth_update_memory(
 
 @router.get("/auth/tools", response_model=list[ToolAvailabilityResponse])
 def auth_get_tools(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[ToolAvailabilityResponse]:
     return _tool_catalog_response_fn(current_user.id)
 
@@ -195,7 +198,7 @@ def auth_get_tools(
 def auth_update_tool(
     tool_key: str,
     payload: ToolEnabledUpdateRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> ToolAvailabilityResponse:
     clean_tool_key = str(tool_key or "").strip()
     if clean_tool_key not in _known_tool_keys:
@@ -209,7 +212,7 @@ def auth_update_tool(
 
 
 @router.post("/auth/logout", response_model=MessageResponse)
-def auth_logout(token: str = Depends(_require_token)) -> MessageResponse:
+def auth_logout(token: Annotated[str, Depends(_require_token)]) -> MessageResponse:
     _auth_db.revoke_token(token)
     return MessageResponse(message="Logged out")
 

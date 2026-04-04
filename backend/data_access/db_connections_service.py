@@ -10,10 +10,9 @@ from fastapi import HTTPException, status
 
 from backend.auth.auth_db import AuthDB, DBConnectionRecord
 from backend.core.config import Settings
+from backend.core.redaction import sanitize_error_text
 from backend.data_access.crypto_service import SecretCryptoError, SecretCryptoService
 from backend.data_access.db_connectors import ResolvedDBConnection, build_connection_adapter
-from backend.core.redaction import sanitize_error_text
-
 
 SUPPORTED_DB_TYPES = {"postgres", "postgresql", "clickhouse"}
 
@@ -229,7 +228,9 @@ class DBConnectionsService:
                 options_json=normalized_options,
             )
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists.") from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists."
+            ) from exc
 
         if encrypted_secret_blob is not None:
             self.auth_db.set_db_connection_secret(created.id, encrypted_secret_blob)
@@ -274,7 +275,9 @@ class DBConnectionsService:
                 options_json_set=options_json_set,
             )
         except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists.") from exc
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists."
+            ) from exc
         if updated is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found.")
 
@@ -317,7 +320,7 @@ class DBConnectionsService:
             adapter.test_connection()
         except HTTPException:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             sanitized = sanitize_error_text(str(exc))
             updated = self.auth_db.update_db_connection_test_status(
                 user_id,
@@ -326,7 +329,9 @@ class DBConnectionsService:
                 error=sanitized,
             )
             if updated is None:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found."
+                ) from None
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=sanitized) from exc
 
         updated = self.auth_db.update_db_connection_test_status(

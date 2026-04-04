@@ -10,24 +10,25 @@ a common base class — duck typing is enough.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool
 
+from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
+from backend.integrations.forecast import ForecastIntegrationService
+from backend.integrations.search import SearchIntegrationService
+from backend.tools.context import ToolBuildContext
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
+from backend.tools.impl.database_tool import DatabaseTool
 from backend.tools.impl.forecast_tool import ForecastTool
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.search_tool import SearchTool
-from backend.tools.impl.database_tool import DatabaseTool
 from backend.tools.impl.sql_tool import SQLTool
 from backend.tools.impl.value_tool import ValueTool
-from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
-from backend.integrations.forecast import ForecastIntegrationService
-from backend.integrations.search import SearchIntegrationService
-from backend.tools.context import ToolBuildContext
 from backend.tools.policy import is_tool_allowed
 
 
@@ -234,10 +235,10 @@ class GetToolInstructionsToolFactory:
     def __init__(self, skill_registry: Any) -> None:
         self._skill_registry = skill_registry
 
-    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+    def is_available(self, ctx: ToolBuildContext) -> bool:
         return True
 
-    def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:  # noqa: ARG002
+    def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:
         return GetToolInstructionsTool(self._skill_registry)
 
 
@@ -249,10 +250,10 @@ class MemoryToolFactory:
     def __init__(self, on_note: Callable[[str], None]) -> None:
         self._on_note = on_note
 
-    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+    def is_available(self, ctx: ToolBuildContext) -> bool:
         return True
 
-    def build(self, ctx: ToolBuildContext) -> MemoryTool:  # noqa: ARG002
+    def build(self, ctx: ToolBuildContext) -> MemoryTool:
         return MemoryTool(on_note=self._on_note)
 
 
@@ -264,10 +265,10 @@ class SessionNoteToolFactory:
     def __init__(self, on_note: Callable[[str], None]) -> None:
         self._on_note = on_note
 
-    def is_available(self, ctx: ToolBuildContext) -> bool:  # noqa: ARG002
+    def is_available(self, ctx: ToolBuildContext) -> bool:
         return True
 
-    def build(self, ctx: ToolBuildContext) -> SessionNoteTool:  # noqa: ARG002
+    def build(self, ctx: ToolBuildContext) -> SessionNoteTool:
         return SessionNoteTool(on_note=self._on_note)
 
 

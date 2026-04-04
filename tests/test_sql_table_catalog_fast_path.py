@@ -3,9 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from backend.tools.impl.db_helpers import DBAnalyticsHelper
 from backend.data_access import RuntimeDBConnectionConfig
 from backend.data_access.sql_table_service import SQLTableService
+from backend.tools.impl.db_helpers import DBAnalyticsHelper
 
 
 def _runtime() -> RuntimeDBConnectionConfig:

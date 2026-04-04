@@ -4,17 +4,17 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from backend.tools.impl.factory import MemoryToolFactory
-from backend.tools.impl.memory_tool import MemoryTool
 from backend.core import Settings
 from backend.tools import ToolBuildContext, ToolRegistry
+from backend.tools.impl.factory import MemoryToolFactory
+from backend.tools.impl.memory_tool import MemoryTool
 
 
 class MemoryToolTests(unittest.TestCase):
     def test_save_note_calls_callback(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
-        result = tool._run("User prefers monthly aggregations")  # noqa: SLF001
+        result = tool._run("User prefers monthly aggregations")
         self.assertEqual(len(collected), 1)
         self.assertEqual(collected[0], "User prefers monthly aggregations")
         self.assertIn("Saved to user memory", result)
@@ -22,21 +22,21 @@ class MemoryToolTests(unittest.TestCase):
     def test_empty_note_not_saved(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
-        result = tool._run("   ")  # noqa: SLF001
+        result = tool._run("   ")
         self.assertEqual(len(collected), 0)
         self.assertIn("empty", result)
 
     def test_note_stripped_before_callback(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
-        tool._run("  some note  ")  # noqa: SLF001
+        tool._run("  some note  ")
         self.assertEqual(collected[0], "some note")
 
     def test_long_note_truncated_in_confirmation(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
         long_note = "x" * 200
-        result = tool._run(long_note)  # noqa: SLF001
+        result = tool._run(long_note)
         self.assertEqual(len(collected[0]), 200)
         self.assertTrue(result.startswith("Saved to user memory: "))
         self.assertLess(len(result), len("Saved to user memory: ") + 130)
@@ -44,9 +44,9 @@ class MemoryToolTests(unittest.TestCase):
     def test_multiple_calls_all_collected(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
-        tool._run("Note 1")  # noqa: SLF001
-        tool._run("Note 2")  # noqa: SLF001
-        tool._run("Note 3")  # noqa: SLF001
+        tool._run("Note 1")
+        tool._run("Note 2")
+        tool._run("Note 3")
         self.assertEqual(len(collected), 3)
         self.assertIn("Note 2", collected)
 
@@ -72,7 +72,7 @@ class MemoryToolFactoryTests(unittest.TestCase):
         collected: list[str] = []
         factory = MemoryToolFactory(on_note=collected.append)
         tool = factory.build(self._make_ctx())
-        tool._run("wired note")  # noqa: SLF001
+        tool._run("wired note")
         self.assertIn("wired note", collected)
 
     def test_key_is_memory_tool(self) -> None:
@@ -105,7 +105,7 @@ class MemoryToolRegistryTests(unittest.TestCase):
         ctx = self._make_ctx()
         tools = registry.build_tools(ctx)
         mem_tool = next(t for t in tools if t.name == "memory")
-        mem_tool._run("registry callback test")  # noqa: SLF001
+        mem_tool._run("registry callback test")
         self.assertIn("registry callback test", collected)
 
 

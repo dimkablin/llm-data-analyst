@@ -3,10 +3,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -69,7 +70,7 @@ class ForecastConfig:
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
-    ) -> "ForecastConfig":
+    ) -> ForecastConfig:
         source_env = env or os.environ
         base_url = _clean_str(source_env.get("FORECAST_BACKEND_URL")) or ""
         enabled_default = bool(base_url)
@@ -175,7 +176,7 @@ class ForecastIntegrationService:
         self._transport = transport or _default_transport
 
     @classmethod
-    def from_env(cls) -> "ForecastIntegrationService":
+    def from_env(cls) -> ForecastIntegrationService:
         return cls(ForecastConfig.from_env())
 
     @property

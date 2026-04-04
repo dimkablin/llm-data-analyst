@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Type
+from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
@@ -25,7 +25,7 @@ class SQLTool(BaseTool):
         "Основной инструмент табличной аналитики по БД и/или CSV в DuckDB-сессии. "
         "Выбирает таблицу, генерирует безопасный SELECT и возвращает результат как табличный артефакт."
     )
-    args_schema: Type[BaseModel] = SQLToolArgs
+    args_schema: type[BaseModel] = SQLToolArgs
     response_format: str = "content_and_artifact"
 
     _service: SQLTableService = PrivateAttr()

@@ -8,20 +8,19 @@ from typing import Any
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
 
-from backend.tools.impl.db_helpers import (
-    DBAnalyticsHelper,
-    MAX_RESULT_CELLS,
-    _assert_read_only_sql,
-    _normalize_analytic_sql,
-    _normalize_dataframe,
-)
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
-
+from backend.tools.impl.db_helpers import (
+    MAX_RESULT_CELLS,
+    DBAnalyticsHelper,
+    _assert_read_only_sql,
+    _normalize_analytic_sql,
+    _normalize_dataframe,
+)
 
 _SQL_START = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
 # Questions that only ask for table names from the catalog (no analytic SQL / LLM).
@@ -479,7 +478,7 @@ CANDIDATES:
         sample: dict[str, Any] | None = None,
         previous_sql: str | None = None,
         feedback: str | None = None,
-        additional_candidates: list["TableCandidate"] | None = None,
+        additional_candidates: list[TableCandidate] | None = None,
     ) -> str:
         table_name = candidate.qualified_name
         columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
@@ -534,7 +533,9 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Ты SQL-генератор. Верни только SQL SELECT/WITH.".strip()),
+                SystemMessage(
+                    content=f"{settings.llm_no_think_prefix} Ты SQL-генератор. Верни только SQL SELECT/WITH.".strip()  # noqa: E501
+                ),
                 HumanMessage(content=user_prompt),
             ]
         )
@@ -548,7 +549,8 @@ CANDIDATES:
         if s.count("SELECT") != 1:
             return False
         # Simple SELECT ... FROM ... with optional WHERE/ORDER BY/LIMIT/GROUP BY/HAVING (no JOINs)
-        if re.match(r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET|GROUP\s+BY|HAVING)\s+.*)?\s*;?\s*$", s):
+        _trivial_pattern = r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET|GROUP\s+BY|HAVING)\s+.*)?\s*;?\s*$"  # noqa: E501
+        if re.match(_trivial_pattern, s):
             if "JOIN" not in s:
                 return True
         # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...) [optional GROUP BY]
@@ -609,7 +611,7 @@ SAMPLE_RESULT:
         candidate: TableCandidate,
         max_attempts: int = 3,
         sample_rows: int = 5,
-        additional_candidates: list["TableCandidate"] | None = None,
+        additional_candidates: list[TableCandidate] | None = None,
     ) -> dict[str, Any]:
         previous_sql: str | None = None
         feedback: str | None = None
@@ -718,8 +720,8 @@ SAMPLE_RESULT:
             "executed_sql": executed_sql,
             "max_rows": self.max_rows,
             "requested_limit": validation["requested_limit"],
-            "returned_rows": int(len(safe_rows)),
-            "column_count": int(len(safe_rows.columns)),
+            "returned_rows": len(safe_rows),
+            "column_count": len(safe_rows.columns),
             "truncated": bool(truncated),
             "execution_time_ms": int(execution_time_ms),
             "warnings": list(warnings),

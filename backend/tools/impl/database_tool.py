@@ -6,7 +6,7 @@ For complex analytical SQL queries, use ``sql_tool`` instead.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Type
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 from langchain_core.tools import BaseTool
@@ -53,7 +53,7 @@ class DatabaseTool(BaseTool):
         "превью строк, список схем. Не требует SQL — прямые вызовы к каталогу БД. "
         "Используй для разведки данных перед аналитическими запросами."
     )
-    args_schema: Type[BaseModel] = DatabaseToolArgs
+    args_schema: type[BaseModel] = DatabaseToolArgs
     response_format: str = "content_and_artifact"
 
     _db_runtime_config: RuntimeDBConnectionConfig = PrivateAttr()
@@ -128,7 +128,7 @@ class DatabaseTool(BaseTool):
 
         found_schemas = sorted({r.get("schema", "") for r in rows if r.get("schema")})
         schema_info = f" (схемы: {', '.join(found_schemas)})" if found_schemas else ""
-        table_names = sorted({r.get("table_name") or r.get("name", "") for r in rows if r.get("table_name") or r.get("name")})
+        table_names = sorted({r.get("table_name") or r.get("name", "") for r in rows if r.get("table_name") or r.get("name")})  # noqa: E501
         tables_list = ", ".join(f"`{t}`" for t in table_names) if table_names else "—"
         text = (
             f"✅ Найдено {len(rows)} таблиц{schema_info}: {tables_list}. "

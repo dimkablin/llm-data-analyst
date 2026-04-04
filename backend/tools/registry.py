@@ -13,9 +13,8 @@ and reuse it across graph invocations.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
-
-from typing import Callable
 
 from backend.tools.catalog import ALL_TOOL_SPECS, ToolCatalogSpec
 from backend.tools.impl.factory import (
@@ -24,10 +23,10 @@ from backend.tools.impl.factory import (
     ForecastToolFactory,
     GetToolInstructionsToolFactory,
     MemoryToolFactory,
-    SessionNoteToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
     SearchToolFactory,
+    SessionNoteToolFactory,
     SQLToolFactory,
     ToolFactory,
     ValueToolFactory,

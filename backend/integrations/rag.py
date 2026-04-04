@@ -4,8 +4,9 @@ import copy
 import json
 import os
 import ssl
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -46,7 +47,7 @@ def _ssl_context_for_url(url: str, *, verify_ssl: bool) -> ssl.SSLContext | None
         return None
     if verify_ssl:
         return ssl.create_default_context()
-    return ssl._create_unverified_context()
+    return ssl._create_unverified_context()  # noqa: SLF001
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class RAGConfig:
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
-    ) -> "RAGConfig":
+    ) -> RAGConfig:
         source_env = env or os.environ
         base_url = (
             _clean_str(source_env.get("RAG_URL"))
@@ -227,7 +228,7 @@ class RAGService:
         self._stream_transport = stream_transport or _default_stream_transport
 
     @classmethod
-    def from_env(cls) -> "RAGService":
+    def from_env(cls) -> RAGService:
         return cls(RAGConfig.from_env())
 
     @property

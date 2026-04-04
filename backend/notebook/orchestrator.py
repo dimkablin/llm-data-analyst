@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from backend.notebook.models import (
     CellOutput,
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ── Edit operation types ─────────────────────────────────────────────────────
 
 
-class CellOp(str, Enum):
+class CellOp(StrEnum):
     INSERT = "insert"
     UPDATE = "update"
     DELETE = "delete"
@@ -113,7 +113,7 @@ class NotebookOrchestrator:
             if edit.op == CellOp.EXECUTE:
                 return self._do_execute(notebook, edit)
             return EditResult(ok=False, notebook=notebook, error=f"Unknown op: {edit.op}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("Notebook edit failed: %s", edit.op)
             return EditResult(ok=False, notebook=notebook, error=str(exc))
 

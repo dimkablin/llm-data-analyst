@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from statistics import median
-from typing import Any
+from typing import Any, ClassVar
 from urllib.parse import urlencode, urlparse, urlunparse
 from urllib.request import urlopen
 
@@ -207,7 +207,7 @@ class PhoenixRunSnapshot:
 
 
 class PhoenixObservabilityService:
-    REQUEST_KINDS = {"query", "stream", "evaluate"}
+    REQUEST_KINDS: ClassVar[set[str]] = {"query", "stream", "evaluate"}
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -512,7 +512,7 @@ class PhoenixObservabilityService:
         if len(values) == 1:
             return values[0]
         ordered = sorted(values)
-        index = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * percentile))))
+        index = max(0, min(len(ordered) - 1, round((len(ordered) - 1) * percentile)))
         return ordered[index]
 
     def _build_stats(self, runs: list[PhoenixRunSnapshot]) -> PhoenixOverviewStats:
@@ -555,7 +555,7 @@ class PhoenixObservabilityService:
     def _build_token_rows(runs: list[PhoenixRunSnapshot]) -> list[PhoenixTokenUsageRow]:
         rows: list[PhoenixTokenUsageRow] = []
         for run in runs:
-            rows.append(
+            rows.append(  # noqa: PERF401
                 PhoenixTokenUsageRow(
                     trace_id=run.trace_id,
                     session_id=run.session_id,
@@ -575,7 +575,7 @@ class PhoenixObservabilityService:
     def _build_trace_rows(runs: list[PhoenixRunSnapshot]) -> list[PhoenixTraceRow]:
         rows: list[PhoenixTraceRow] = []
         for run in runs[:10]:
-            rows.append(
+            rows.append(  # noqa: PERF401
                 PhoenixTraceRow(
                     trace_id=run.trace_id,
                     session_id=run.session_id,

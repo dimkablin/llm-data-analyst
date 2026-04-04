@@ -14,10 +14,10 @@ LangChain ``BaseTool`` instances backed by simple in-memory callbacks.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from langchain_core.tools import BaseTool
-
 
 # ── User Memory Tool ──────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ class MemoryTool(BaseTool):
         super().__init__(**kwargs)
         object.__setattr__(self, "_memo_cb", on_note)
 
-    def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:  # noqa: ARG002
+    def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:
         note = text.strip()
         if not note:
             return "Nothing saved — the note was empty."
@@ -58,7 +58,7 @@ class MemoryTool(BaseTool):
         cb(note)
         return f"Saved to user memory: {note[:120]}{'…' if len(note) > 120 else ''}"
 
-    async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:  # noqa: ARG002
+    async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:
         return self._run(text)
 
 
@@ -94,7 +94,7 @@ class SessionNoteTool(BaseTool):
         super().__init__(**kwargs)
         object.__setattr__(self, "_memo_cb", on_note)
 
-    def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:  # noqa: ARG002
+    def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:
         note = text.strip()
         if not note:
             return "Nothing saved — the note was empty."
@@ -102,5 +102,5 @@ class SessionNoteTool(BaseTool):
         cb(note)
         return f"Saved to session notes: {note[:120]}{'…' if len(note) > 120 else ''}"
 
-    async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:  # noqa: ARG002
+    async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:
         return self._run(text)

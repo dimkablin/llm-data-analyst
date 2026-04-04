@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
-
 
 # ── Cell metadata (LLM-to-LLM breadcrumbs) ──────────────────────────────────
 
@@ -362,4 +361,4 @@ def _str_to_source_lines(source: str) -> list[str]:
 
 
 def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -37,14 +37,14 @@ from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_runtime_service import DBRuntimeService
-from backend.notebook.kernel_manager import KernelManager
-from backend.notebook.manifest_store import ManifestStore
-from backend.notebook.orchestrator import NotebookOrchestrator
-from backend.notebook.store import NotebookStore
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
+from backend.notebook.kernel_manager import KernelManager
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import NotebookOrchestrator
+from backend.notebook.store import NotebookStore
 from backend.observability.phoenix import (
     build_trace_context,
     initialize_phoenix,

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import logging
 import socket
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
-from typing import Any, Iterator
 
 from backend.core.config import settings
-
 
 logger = logging.getLogger(__name__)
 _init_lock = threading.Lock()
@@ -78,7 +78,12 @@ def _first_text_value(payload: Any, *keys: str) -> str | None:
     return None
 
 
-def extract_llm_usage(response: Any, *, fallback_model: str | None = None, fallback_provider: str | None = None) -> LLMUsageSnapshot | None:
+def extract_llm_usage(
+    response: Any,
+    *,
+    fallback_model: str | None = None,
+    fallback_provider: str | None = None,
+) -> LLMUsageSnapshot | None:
     usage_metadata = getattr(response, "usage_metadata", None)
     response_metadata = getattr(response, "response_metadata", None)
 

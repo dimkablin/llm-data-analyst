@@ -7,14 +7,13 @@ import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
-
 
 _DF_CACHE_MAX_SIZE = 20
 
@@ -66,10 +65,10 @@ class SessionStore:
         return self._session_dir(session_id) / "data.parquet"
 
     def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def _cleanup_expired(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for session_dir in self.root_dir.iterdir():
             if not session_dir.is_dir():
                 continue
@@ -80,7 +79,7 @@ class SessionStore:
                 state = json.loads(state_path.read_text())
                 last_access = datetime.fromisoformat(state.get("last_access"))
                 if last_access.tzinfo is None:
-                    last_access = last_access.replace(tzinfo=timezone.utc)
+                    last_access = last_access.replace(tzinfo=UTC)
             except Exception:
                 continue
             if now - last_access > self.ttl:
@@ -250,7 +249,11 @@ class SessionStore:
         session_id: str,
         selected_skill_ids: list[str] | None,
     ) -> None:
-        normalized = [str(skill_id).strip() for skill_id in (selected_skill_ids or []) if str(skill_id).strip()]
+        normalized = [
+            str(skill_id).strip()
+            for skill_id in (selected_skill_ids or [])
+            if str(skill_id).strip()
+        ]
         deduped = list(dict.fromkeys(normalized))
         with self._get_session_lock(session_id):
             state = self._load_state(session_id)

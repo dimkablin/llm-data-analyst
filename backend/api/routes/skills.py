@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends
 
 from backend.api.deps import get_current_user
@@ -17,7 +19,7 @@ def setup(runner) -> None:
 
 
 @router.get("/skills", response_model=list[SkillResponse])
-def list_skills(current_user: AuthUser = Depends(get_current_user)) -> list[SkillResponse]:
+def list_skills(current_user: Annotated[AuthUser, Depends(get_current_user)]) -> list[SkillResponse]:
     _ = current_user
     return [
         SkillResponse(

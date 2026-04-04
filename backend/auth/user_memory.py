@@ -70,8 +70,9 @@ class UserMemory:
 class UserMemoryService:
     """Thin wrapper around `AuthDB` for user memory read/write."""
 
-    def __init__(self, db: "AuthDB") -> None:
+    def __init__(self, db: AuthDB) -> None:
         self._db = db
+        self._background_tasks: set[asyncio.Task] = set()
 
     # ── Read ────────────────────────────────────────────────────────────────
 
@@ -114,10 +115,12 @@ class UserMemoryService:
         except RuntimeError:
             logger.warning("user_memory: no running event loop, skipping consolidation")
             return
-        loop.create_task(
+        task = loop.create_task(
             self._consolidate_async(user_id, new_notes, llm_invoke),
             name=f"memory_consolidate_u{user_id}",
         )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _consolidate_async(
         self,
@@ -142,7 +145,7 @@ class UserMemoryService:
             merged = _extract_text(result)
             if merged.strip():
                 self._db.set_user_memory(user_id, MEM_NOTES, merged.strip())
-        except Exception:  # noqa: BLE001  # broad catch needed: any LLM or DB error must not crash the background task
+        except Exception:  # broad catch needed: any LLM or DB error must not crash the background task
             logger.exception("user_memory: consolidation failed for user %d", user_id)
 
 

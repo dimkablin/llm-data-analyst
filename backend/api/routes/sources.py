@@ -1,18 +1,9 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
-from backend.auth.auth_db import AuthUser, AuthDB
-from backend.sessions.session_store import SessionStore, SessionState
-from backend.data_access.csv_session_runtime import CSVSessionRuntime
-from backend.notebook.manifest_store import ManifestStore
-from backend.notebook.orchestrator import NotebookOrchestrator, NotebookEdit, CellOp
-from backend.notebook.session_source import (
-    SessionSource,
-    alias_to_variable_name,
-    make_source_alias,
-)
-from backend.notebook.cell_builder import build_source_binding_cell
-from backend.core.config import settings
+
 from backend.api.deps import get_current_user
 from backend.api.models import (
     SessionBindDBConnectionSourceRequest,
@@ -20,6 +11,18 @@ from backend.api.models import (
     SessionSourceStateResponse,
     SourceDescriptorResponse,
 )
+from backend.auth.auth_db import AuthDB, AuthUser
+from backend.core.config import settings
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.notebook.cell_builder import build_source_binding_cell
+from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.orchestrator import CellOp, NotebookEdit, NotebookOrchestrator
+from backend.notebook.session_source import (
+    SessionSource,
+    alias_to_variable_name,
+    make_source_alias,
+)
+from backend.sessions.session_store import SessionState, SessionStore
 
 router = APIRouter(tags=["Источники"])
 
@@ -128,7 +131,7 @@ def _to_session_source_response(state: SessionState) -> SessionSourceStateRespon
 
 @router.get("/sources", response_model=list[SourceDescriptorResponse])
 def list_available_sources(
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[SourceDescriptorResponse]:
     _ = current_user
     return [SourceDescriptorResponse(**item) for item in _integration_source_descriptors_fn()]
@@ -141,7 +144,7 @@ def list_available_sources(
 def bind_session_db_connection_source(
     session_id: str,
     payload: SessionBindDBConnectionSourceRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSourceStateResponse:
     _load_owned_session(session_id, current_user)
     connection = _db_connections_service.get_connection(
@@ -174,7 +177,7 @@ def bind_session_db_connection_source(
 )
 def clear_session_source(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSourceStateResponse:
     _load_owned_session(session_id, current_user)
     _store.set_source(
@@ -194,7 +197,7 @@ def clear_session_source(
 )
 def bind_session_csv_source(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSourceStateResponse:
     state = _load_owned_session(session_id, current_user)
     if not state.df_path or not state.dataset_name:
@@ -217,7 +220,7 @@ def bind_session_csv_source(
 )
 def list_session_sources(
     session_id: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[SessionSourceResponse]:
     """List all sources bound to a session."""
     _load_owned_session(session_id, current_user)
@@ -245,7 +248,7 @@ def list_session_sources(
 def remove_session_source(
     session_id: str,
     alias: str,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[SessionSourceResponse]:
     """Remove a specific source from a session by alias."""
     _load_owned_session(session_id, current_user)

@@ -1,5 +1,5 @@
 import re
-from typing import Callable
+from collections.abc import Callable
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage

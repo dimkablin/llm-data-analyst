@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from backend.auth.auth_db import AuthUser, AuthDB
-from backend.sessions.session_store import SessionStore, SessionState
+
+from backend.api.deps import get_current_user
+from backend.api.models import UploadResponse
+from backend.auth.auth_db import AuthDB, AuthUser
+from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
-from backend.api.deps import get_current_user
-from backend.api.models import UploadResponse
-from backend.core.config import settings
+from backend.sessions.session_store import SessionState, SessionStore
 
 router = APIRouter(tags=["Данные"])
 
@@ -47,8 +50,8 @@ def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState
 @router.post("/sessions/{session_id}/data", response_model=UploadResponse)
 async def upload_data(
     session_id: str,
-    file: UploadFile = File(...),
-    current_user: AuthUser = Depends(get_current_user),
+    file: Annotated[UploadFile, File()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> UploadResponse:
     _load_owned_session(session_id, current_user)
 
@@ -65,7 +68,7 @@ async def upload_data(
             ttl_seconds=settings.csv_session_ttl_sec,
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}")
+        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}") from exc
 
     # Legacy single-source persistence.
     _store.save_dataframe(session_id, df)

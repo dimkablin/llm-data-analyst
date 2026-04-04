@@ -17,7 +17,6 @@ from typing import Any, Literal
 
 from backend.notebook.models import utcnow_iso
 
-
 # ── SessionSource ────────────────────────────────────────────────────────────
 
 

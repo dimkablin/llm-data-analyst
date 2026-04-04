@@ -5,9 +5,8 @@ from abc import ABC, abstractmethod
 import plotly.graph_objects as go
 import plotly.io as pio
 import streamlit as st
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
 from agent.artifact import Artifact, ArtifactStore
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 pio.templates.default = "plotly"
 

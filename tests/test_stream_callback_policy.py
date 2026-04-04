@@ -7,7 +7,7 @@ from backend.api.routes import query
 
 
 class _BaseStub:
-    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+    def __init__(self, *args, **kwargs) -> None:
         self.args = args
         self.kwargs = kwargs
 
@@ -27,7 +27,7 @@ class _AgentProgressCollectorStub(_BaseStub):
 class _PhaseCollectorStub(_BaseStub):
     events: list[dict[str, str]]
 
-    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.events = []
 

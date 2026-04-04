@@ -16,12 +16,12 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 
-class ExecArtifactType(str, Enum):
+class ExecArtifactType(StrEnum):
     DATAFRAME = "dataframe"
     SCALAR = "scalar"
     PLOT = "plot"
@@ -75,7 +75,7 @@ class ExecutionArtifact:
     content_hash: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     version: int = 1
     reusable: bool = True

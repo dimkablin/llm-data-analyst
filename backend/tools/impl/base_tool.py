@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Any
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import extract_artifact_hints
 from backend.core.config import settings
 from backend.core.redaction import sanitize_error_text
@@ -473,7 +473,7 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
 
         try:
             resp = llm.invoke([
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),
+                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),  # noqa: E501
                 HumanMessage(content=prompt),
             ])
             fixed = str(resp.content or "").strip()

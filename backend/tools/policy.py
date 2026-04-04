@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 DATAFRAME_BASE_TOOL_KEYS: frozenset[str] = frozenset(
     {"pandas_tool", "value_tool", "plotly_tool"}

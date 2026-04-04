@@ -4,9 +4,9 @@ import unittest
 
 import pandas as pd
 
-from backend.tools.impl.search_tool import SearchTool
 from backend.artifacts import build_artifact_meta
 from backend.integrations import SearchIntegrationConfig, SearchIntegrationService
+from backend.tools.impl.search_tool import SearchTool
 
 
 class SearchIntegrationTests(unittest.TestCase):

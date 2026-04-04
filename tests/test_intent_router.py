@@ -17,7 +17,7 @@ def _make_settings() -> Settings:
     return settings
 
 
-def _make_runner() -> "AgentRunner":
+def _make_runner():
     from backend.agent import AgentRunner
 
     with patch.object(AgentRunner, "_build_query_graph", return_value=MagicMock()):
@@ -105,8 +105,9 @@ class UserMemoryInjectionInRouterTests(unittest.TestCase):
         self.assertNotIn("User memory", prompt)
 
     def test_memory_block_is_included_in_built_messages(self) -> None:
-        from backend.auth import UserMemory
         from langchain_core.messages import SystemMessage
+
+        from backend.auth import UserMemory
 
         runner = _make_runner()
         runner.user_memory = UserMemory(profile="Data lead", notes="")

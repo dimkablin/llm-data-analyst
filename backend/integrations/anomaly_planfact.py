@@ -3,10 +3,11 @@ from __future__ import annotations
 import copy
 import json
 import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -60,7 +61,7 @@ class AnomalyPlanfactConfig:
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
-    ) -> "AnomalyPlanfactConfig":
+    ) -> AnomalyPlanfactConfig:
         source_env = env or os.environ
         base_url = _clean_str(source_env.get("ANOMALY_PLANFACT_BACKEND_URL")) or ""
         enabled_default = bool(base_url)
@@ -179,7 +180,7 @@ class AnomalyPlanfactIntegrationService:
         self._transport = transport or _default_transport
 
     @classmethod
-    def from_env(cls) -> "AnomalyPlanfactIntegrationService":
+    def from_env(cls) -> AnomalyPlanfactIntegrationService:
         return cls(AnomalyPlanfactConfig.from_env())
 
     @property

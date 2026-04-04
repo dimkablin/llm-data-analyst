@@ -12,12 +12,12 @@ from .models import (
     SkillSummary,
     SkillValidationError,
 )
-from .registry import NullSkillMatcher, NullSkillRanker, NoOpSkillFilter, SkillRegistry
+from .registry import NoOpSkillFilter, NullSkillMatcher, NullSkillRanker, SkillRegistry
 
 __all__ = [
+    "NoOpSkillFilter",
     "NullSkillMatcher",
     "NullSkillRanker",
-    "NoOpSkillFilter",
     "Skill",
     "SkillError",
     "SkillExample",

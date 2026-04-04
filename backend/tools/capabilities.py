@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
-
+from collections.abc import Iterable
+from typing import Any
 
 _CAPABILITY_SPECS: tuple[dict[str, Any], ...] = (
     {
@@ -114,7 +114,7 @@ def build_runtime_capability_context(
             f"- Недоступные capabilities: {unavailable_caps_text}",
             (
                 "- Нельзя обещать действия, требующие недоступного capability. "
-                "Если нужный capability недоступен, честно сообщи об ограничении и предложи ближайшую доступную альтернативу."
+                "Если нужный capability недоступен, честно сообщи об ограничении и предложи ближайшую доступную альтернативу."  # noqa: E501
             ),
         ]
     )

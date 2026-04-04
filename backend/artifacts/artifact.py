@@ -2,7 +2,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import ClassVar, List, Optional
+from typing import ClassVar
 
 import markdown2
 import pandas as pd
@@ -148,7 +148,7 @@ class TableArtifact(Artifact):
 
     def generate_history_message(
         self, max_table_rows: int = 5, **kwargs
-    ) -> Optional[BaseMessage]:
+    ) -> BaseMessage | None:
         table_md = self.normalized.head(max_table_rows).to_markdown()
         content = f"Первые {max_table_rows} строчек таблицы '{self.text}':\n{table_md}"
         return AIMessage(content=content)
@@ -177,7 +177,7 @@ class PlotArtifact(Artifact):
         )
         return fig
 
-    def generate_history_message(self, **kwargs) -> Optional[BaseMessage]:
+    def generate_history_message(self, **kwargs) -> BaseMessage | None:
         """
         Генерирует описание графика для истории LLM.
 
@@ -259,8 +259,8 @@ class ArtifactStore:
     """
 
     def __init__(self) -> None:
-        self.artifacts: List[Artifact] = []
-        self.dashboard_items: List[str] = []
+        self.artifacts: list[Artifact] = []
+        self.dashboard_items: list[str] = []
 
     def add(self, artifact: Artifact) -> None:
         """
@@ -271,7 +271,7 @@ class ArtifactStore:
         """
         self.artifacts.append(artifact)
 
-    def get_chat_history(self) -> List[Artifact]:
+    def get_chat_history(self) -> list[Artifact]:
         """
         Возвращает историю чата (все артефакты).
 
@@ -280,7 +280,7 @@ class ArtifactStore:
         """
         return [a for a in self.artifacts]
 
-    def get_dashboard_items(self) -> List[Artifact]:
+    def get_dashboard_items(self) -> list[Artifact]:
         """
         Возвращает артефакты, добавленные на дашборд.
 

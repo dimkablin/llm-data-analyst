@@ -3,29 +3,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-
-
-from backend.agent.graph_tracker import ExecutionGraphTracker
-from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
 import re
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Annotated, Any
 
 import anyio
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from backend.auth.auth_db import AuthUser, AuthDB
-from backend.sessions.session_store import SessionStore, SessionState
-from backend.data_access.csv_session_runtime import CSVSessionRuntime
-from backend.core.config import settings
+
+from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
     QueryRequest,
     QueryResponse,
 )
+from backend.auth.auth_db import AuthDB, AuthUser
+from backend.core.config import settings
+from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.sessions.session_store import SessionState, SessionStore
 from backend.skills import SkillSelectionError
 
 router = APIRouter(tags=["Запросы и агент"])
@@ -240,7 +239,11 @@ def _effective_selected_skill_ids(
     if payload.selected_skill_ids is None:
         selected_skill_ids = list(state.selected_skill_ids or [])
     else:
-        selected_skill_ids = [str(skill_id).strip() for skill_id in payload.selected_skill_ids if str(skill_id).strip()]
+        selected_skill_ids = [
+            str(skill_id).strip()
+            for skill_id in payload.selected_skill_ids
+            if str(skill_id).strip()
+        ]
     return list(dict.fromkeys(selected_skill_ids))
 
 
@@ -283,7 +286,7 @@ def _build_stream_callbacks(
     graph_tracker = ExecutionGraphTracker()
     phase_collector.graph_tracker = graph_tracker
     tool_collector.graph_tracker = graph_tracker
-    tool_collector._phase_collector_ref = phase_collector
+    tool_collector._phase_collector_ref = phase_collector  # noqa: SLF001
     token_collector = _TokenStreamCallbackHandler(queue, loop)
     callbacks: list[Any] = [
         token_collector,
@@ -710,20 +713,22 @@ async def _execute_query(
 
     try:
         if runtime_runner._user_memory_buffer:  # noqa: SLF001
-            _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
+            _mem_llm = runtime_runner._build_llm(  # noqa: SLF001
+                role="chat", include_reasoning=False, max_tokens_override=800
+            )
             _user_memory_service.schedule_consolidation(
                 current_user.id,
                 list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                 _mem_llm.invoke,
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     try:
         if runtime_runner._session_memory_buffer:  # noqa: SLF001
             for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                 _store.append_session_memory(session_id, note)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     from backend.artifacts.bridge import execution_to_api_payload
@@ -769,7 +774,7 @@ async def _execute_query(
 async def query(
     session_id: str,
     payload: QueryRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> QueryResponse:
     return await _execute_query(
         session_id,
@@ -783,7 +788,7 @@ async def query(
 async def evaluate(
     session_id: str,
     payload: QueryRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> QueryResponse:
     return await _execute_query(
         session_id,
@@ -797,7 +802,7 @@ async def evaluate(
 async def query_stream(
     session_id: str,
     payload: QueryRequest,
-    current_user: AuthUser = Depends(get_current_user),
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> StreamingResponse:
     state = _load_owned_session(session_id, current_user)
     if _session_source_type(state) == "csv":
@@ -818,7 +823,7 @@ async def query_stream(
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
-    callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker = (
+    callbacks, token_collector, tool_collector, progress_collector, phase_collector, _graph_tracker = (
         _build_stream_callbacks(
             queue=queue,
             loop=loop,
@@ -889,20 +894,22 @@ async def query_stream(
                     )
             try:
                 if runtime_runner._user_memory_buffer:  # noqa: SLF001
-                    _mem_llm = runtime_runner._build_llm(role="chat", include_reasoning=False, max_tokens_override=800)  # noqa: SLF001
+                    _mem_llm = runtime_runner._build_llm(  # noqa: SLF001
+                role="chat", include_reasoning=False, max_tokens_override=800
+            )
                     _user_memory_service.schedule_consolidation(
                         current_user.id,
                         list(runtime_runner._user_memory_buffer),  # noqa: SLF001
                         _mem_llm.invoke,
                     )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
             try:
                 if runtime_runner._session_memory_buffer:  # noqa: SLF001
                     for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                         _store.append_session_memory(session_id, note)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
             duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1029,7 +1036,7 @@ async def query_stream(
             # Emit execution graph updates.
             gt = phase_collector.graph_tracker
             if gt is not None:
-                gv = phase_collector._graph_version
+                gv = phase_collector._graph_version  # noqa: SLF001
                 if gv > emitted_graph_version:
                     emitted_graph_version = gv
                     await queue.put(("execution_graph", gt.snapshot()))

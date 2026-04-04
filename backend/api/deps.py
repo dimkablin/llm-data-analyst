@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from fastapi import Depends, Header, HTTPException
+
 from backend.auth.auth_db import AuthUser
 
 # This will be set by api/app.py during initialization

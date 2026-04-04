@@ -7,7 +7,6 @@ from pandas.api.types import (
     is_numeric_dtype,
 )
 
-
 agent_prompt = """
 Ты — специализированный агент аналитики данных, веб-поиска и общего чата.
 

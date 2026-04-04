@@ -385,7 +385,7 @@ class ClickHouseConnectionAdapter(BaseConnectionAdapter):
                     schema=str(row.get("database") or schema),
                     name=name,
                     table_type=table_type,
-                    qualified_name=f"{str(row.get('database') or schema)}.{name}",
+                    qualified_name=f"{row.get('database') or schema!s}.{name}",
                 )
             )
         return normalized
@@ -482,7 +482,9 @@ class ClickHouseConnectionAdapter(BaseConnectionAdapter):
                         data_type=raw_type,
                         is_nullable=True if raw_type.startswith("Nullable(") else False,
                         ordinal_position=int(row["position"]) if row.get("position") is not None else None,
-                        default_expression=str(default_expression) if default_expression is not None else None,
+                        default_expression=(
+                            str(default_expression) if default_expression is not None else None
+                        ),
                     )
                 )
         return result

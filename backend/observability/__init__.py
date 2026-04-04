@@ -12,10 +12,10 @@ from backend.observability.service import PhoenixObservabilityService
 
 __all__ = [
     "LLMUsageSnapshot",
+    "PhoenixObservabilityService",
     "build_trace_context",
     "extract_llm_usage",
     "initialize_phoenix",
     "query_trace_context",
     "record_llm_usage_on_active_span",
-    "PhoenixObservabilityService",
 ]

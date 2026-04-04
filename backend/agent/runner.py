@@ -7,31 +7,16 @@ import json
 import logging
 import re
 import time
-from datetime import date
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import pandas as pd
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
-from backend.agent.pandas_agent import (
-    create_pandas_dataframe_agent,
-    extract_agent_output_text,
-    normalize_agent_messages,
-)
-from backend.agent.prompts import (
-    agent_prompt,
-    chat_system_prompt,
-    execution_agent_prompt,
-    get_detailed_data_info,
-)
-from backend.skills import SkillRegistry
-from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
-from backend.tools.capabilities import build_runtime_capability_context
 from backend.agent.callbacks import (
     AgentProgressCollector,
     LLMTextCollector,
@@ -41,14 +26,30 @@ from backend.agent.callbacks import (
     ToolCollector,
     extract_thinking,
 )
+from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.pandas_agent import (
+    create_pandas_dataframe_agent,
+    extract_agent_output_text,
+    normalize_agent_messages,
+)
+from backend.agent.prompts import (
+    chat_system_prompt,
+    execution_agent_prompt,
+    get_detailed_data_info,
+)
+from backend.artifacts.execution import artifact_type_label
+from backend.auth.user_memory import UserMemory
 from backend.core.config import Settings
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
+from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
-from backend.observability.phoenix import record_llm_usage_on_active_span
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
+from backend.observability.phoenix import record_llm_usage_on_active_span
+from backend.sessions.session_memory import SessionMemory
+from backend.skills import SkillRegistry
+from backend.tools.capabilities import build_runtime_capability_context
 from backend.tools.context import ToolBuildContext
-from backend.tools.sandbox_manager import SandboxManager
 from backend.tools.policy import (
     detect_data_access_mode,
     has_enabled_data_tools,
@@ -57,9 +58,7 @@ from backend.tools.policy import (
     supports_artifact_optional_output,
 )
 from backend.tools.registry import ToolRegistry
-from backend.artifacts.execution import artifact_type_label
-from backend.auth.user_memory import UserMemory
-from backend.sessions.session_memory import SessionMemory
+from backend.tools.sandbox_manager import SandboxManager
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +146,7 @@ GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефак
 
 _LLM_UNAVAILABLE_USER_TEXT = (
     "Языковая модель сейчас недоступна: нет соединения с LLM-сервером или сработал таймаут. "
-    "Проверьте, что Ollama (или другой провайдер) запущен и что LLM_MODEL_API_URL доступен из контейнера backend."
+    "Проверьте, что Ollama (или другой провайдер) запущен и что LLM_MODEL_API_URL доступен из контейнера backend."  # noqa: E501
 )
 
 DEPTH_PROFILES: dict[str, dict[str, Any]] = {
@@ -163,7 +162,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
             "Остановись мысленно на минимально достаточной цепочке инструментов.\n"
             "Предпочитай value_tool для коротких метрик, pandas_tool для компактных таблиц.\n"
             "Не подменяй внешние search-задачи value-артефактом, если search_tool доступен.\n"
-            "Внешний лимит итераций высокий — не обязан исчерпывать его; заверши, когда вопрос закрыт или данных мало."
+            "Внешний лимит итераций высокий — не обязан исчерпывать его; заверши, когда вопрос закрыт или данных мало."  # noqa: E501
         ),
     },
     "medium": {
@@ -173,7 +172,7 @@ DEPTH_PROFILES: dict[str, dict[str, Any]] = {
             "Стиль: сбалансированный.\n"
             "Планируй столько шагов, сколько нужно для уверенного ответа; избегай лишних повторов.\n"
             "Фильтры, агрегации и графики — по мере необходимости, не «для галочки».\n"
-            "Если после пары шагов результат уже ясен — не размножай шаги; при нехватке данных явно зафиксируй ограничение."
+            "Если после пары шагов результат уже ясен — не размножай шаги; при нехватке данных явно зафиксируй ограничение."  # noqa: E501
         ),
     },
     "deep": {
@@ -616,7 +615,7 @@ class AgentRunner:
                         block_lines.append(self._artifact_table_to_text(data))
                     else:
                         block_lines.append(
-                            "Построен график. Если отдельные данные графика недоступны, ориентируйся на чат и связанные таблицы."
+                            "Построен график. Если отдельные данные графика недоступны, ориентируйся на чат и связанные таблицы."  # noqa: E501
                         )
                 else:
                     block_lines.append(self._artifact_table_to_text(data))
@@ -677,7 +676,7 @@ class AgentRunner:
             "- Опирайся только на чат и артефакты из входа.\n"
             "- Не добавляй даты, сроки, дедлайны и периоды в пункты 3 и 5.\n"
             "- В 'Основные выводы' можно дать несколько пунктов, если в чате несколько важных тем.\n"
-            "- В 'Рекомендации' пиши только практические рекомендации в формате 'действие — ответственный — KPI'.\n"
+            "- В 'Рекомендации' пиши только практические рекомендации в формате 'действие — ответственный — KPI'.\n"  # noqa: E501
             "- В 'Заключение' обязательно отрази сильные стороны, зоны роста и цель на период.\n"
             "- В 'Следующие шаги' пиши только 'что сделать — кто отвечает', без дат и сроков.\n"
             "- Если таблица маленькая, используй её целиком как основание для выводов.\n"
@@ -722,7 +721,7 @@ class AgentRunner:
                     "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
                     "1. Цель анализа\nНедостаточно данных для формулировки цели.\n\n"
                     "2. Основные выводы\nНе удалось извлечь подтверждённые выводы.\n\n"
-                    "3. Рекомендации\n- уточнить контекст запроса — пользователь — наличие уточнённой постановки\n\n"
+                    "3. Рекомендации\n- уточнить контекст запроса — пользователь — наличие уточнённой постановки\n\n"  # noqa: E501
                     "4. Заключение\nСильные стороны: запрос на структурированный итог сформулирован. "
                     "Зоны роста: недостаточно данных. Цель на период: уточнить входные материалы.\n\n"
                     "5. Следующие шаги\n- уточнить, по какой части переписки нужен отчёт — пользователь"
@@ -742,9 +741,9 @@ class AgentRunner:
                     "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
                     "1. Цель анализа\nНе удалось сформировать.\n\n"
                     "2. Основные выводы\nОшибка генерации summary.\n\n"
-                    "3. Рекомендации\n- повторить запрос в более узкой формулировке — пользователь — получен корректный отчёт\n\n"
+                    "3. Рекомендации\n- повторить запрос в более узкой формулировке — пользователь — получен корректный отчёт\n\n"  # noqa: E501
                     "4. Заключение\nСильные стороны: структура отчёта задана. "
-                    "Зоны роста: произошла ошибка генерации. Цель на период: успешно сформировать итоговый отчёт.\n\n"
+                    "Зоны роста: произошла ошибка генерации. Цель на период: успешно сформировать итоговый отчёт.\n\n"  # noqa: E501
                     "5. Следующие шаги\n- повторить формирование управленческой записки — пользователь"
                 ),
                 reasoning=f"summary failed: {exc}",
@@ -839,14 +838,13 @@ class AgentRunner:
 
         max_msgs = max(0, self.settings.agent_history_max_messages)
         recent = history[-max_msgs:] if max_msgs > 0 else []
-        normalized: list[dict[str, Any]] = []
-        for item in recent:
-            normalized.append(
-                {
-                    "role": str(item.get("role", "assistant")),
-                    "content": self._truncate(str(item.get("content", "")), 220),
-                }
-            )
+        normalized: list[dict[str, Any]] = [
+            {
+                "role": str(item.get("role", "assistant")),
+                "content": self._truncate(str(item.get("content", "")), 220),
+            }
+            for item in recent
+        ]
 
         payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
@@ -1124,12 +1122,12 @@ class AgentRunner:
         if df is not None:
             if stop_reason == "max_steps_reached":
                 return (
-                    "Я выполнил несколько шагов анализа, но не получил надежный артефакт для финального вывода. "
+                    "Я выполнил несколько шагов анализа, но не получил надежный артефакт для финального вывода. "  # noqa: E501
                     "Уточните запрос или сузьте задачу (например, один график или одну метрику)."
                 )
             if stop_reason == "eval_failed":
                 return (
-                    "Я получил промежуточный результат, но оценка не подтвердила, что выводы полностью опираются "
+                    "Я получил промежуточный результат, но оценка не подтвердила, что выводы полностью опираются "  # noqa: E501
                     "на артефакты. Повторите запрос в более узкой формулировке."
                 )
             if stop_reason == "act_recursion_limit":
@@ -1282,12 +1280,14 @@ class AgentRunner:
         sections.append(
             self._execution_step_section(step_index, max_steps, self.settings.agent_analysis_depth)
         )
-        for optional in (
-            self._execution_plan_section(plan),
-            self._execution_refinement_section(refinement_feedback),
-        ):
-            if optional:
-                sections.append(optional)
+        sections.extend(
+            opt
+            for opt in (
+                self._execution_plan_section(plan),
+                self._execution_refinement_section(refinement_feedback),
+            )
+            if opt
+        )
 
         # Sandbox context: available variables + session notebook.
         if sandbox:
@@ -1463,7 +1463,10 @@ class AgentRunner:
         lines: list[str] = []
         for artifact in artifacts[:max_items]:
             artifact_type = artifact_type_label(getattr(artifact, "artifact_type", "")) or "artifact"
-            name = str(getattr(artifact, "name", "") or getattr(artifact, "text", "")).strip() or artifact_type
+            name = (
+                str(getattr(artifact, "name", "") or getattr(artifact, "text", "")).strip()
+                or artifact_type
+            )
             data = getattr(artifact, "data", None)
 
             if artifact_type in ("value", "scalar") and isinstance(data, dict):
@@ -1492,7 +1495,7 @@ class AgentRunner:
                 if layout is not None:
                     raw_title = getattr(layout, "title", None)
                     if hasattr(raw_title, "text"):
-                        raw_title = getattr(raw_title, "text")
+                        raw_title = raw_title.text
                     if isinstance(raw_title, str):
                         title_text = raw_title.strip()
                 if title_text:
@@ -1512,9 +1515,10 @@ class AgentRunner:
             return []
 
         keys = sorted(value_payload.keys())
-        lines: list[str] = []
-        for key in keys[:max_items]:
-            lines.append(f"- {key}: {self._format_metric_value(value_payload[key])}")
+        lines: list[str] = [
+            f"- {key}: {self._format_metric_value(value_payload[key])}"
+            for key in keys[:max_items]
+        ]
         return lines
 
     def _table_observation_lines(self, artifacts: list, max_items: int = 4) -> list[str]:
@@ -1542,7 +1546,7 @@ class AgentRunner:
                 lines.append(f"- `{name}`: значение {max_value} для `{max_label}`.")
             else:
                 lines.append(
-                    f"- `{name}`: максимум у `{max_label}` = {max_value}, минимум у `{min_label}` = {min_value}."
+                    f"- `{name}`: максимум у `{max_label}` = {max_value}, минимум у `{min_label}` = {min_value}."  # noqa: E501
                 )
             if len(lines) >= max_items:
                 break
@@ -1619,7 +1623,7 @@ class AgentRunner:
         )
         if not observation_lines:
             observation_lines = [
-                f"- Построено артефактов: {len(artifacts)} (table={table_count}, plot={plot_count}, value={value_count})."
+                f"- Построено артефактов: {len(artifacts)} (table={table_count}, plot={plot_count}, value={value_count})."  # noqa: E501
             ]
 
         conclusion = (
@@ -1748,10 +1752,9 @@ class AgentRunner:
 
     @staticmethod
     def _collect_progress_collectors(callbacks: list) -> list[AgentProgressCollector]:
-        result: list[AgentProgressCollector] = []
-        for cb in callbacks:
-            if isinstance(cb, AgentProgressCollector):
-                result.append(cb)
+        result: list[AgentProgressCollector] = [
+            cb for cb in callbacks if isinstance(cb, AgentProgressCollector)
+        ]
         return result
 
     @staticmethod
@@ -1805,7 +1808,7 @@ class AgentRunner:
                     gt.phase_start(phase, si)
                 elif status in ("done", "pass", "fail", "error"):
                     gt.phase_end(phase, si, status="done" if status in ("done", "pass") else "error")
-                collector._graph_version += 1
+                collector._graph_version += 1  # noqa: SLF001
 
     @staticmethod
     def _silent_callbacks(callbacks: list) -> list:
@@ -2370,7 +2373,7 @@ class AgentRunner:
             data_context = (
                 "Источники данных: НЕ прикреплены. "
                 "Нет загруженного датафрейма (CSV) и нет подключённой базы данных.\n"
-                "Если запрос пользователя требует работы с данными — НЕ планируй tool-вызовы для анализа данных. "
+                "Если запрос пользователя требует работы с данными — НЕ планируй tool-вызовы для анализа данных. "  # noqa: E501
                 "Сообщи пользователю, что сначала нужно загрузить CSV-файл или подключить базу данных."
             )
 
@@ -2602,9 +2605,7 @@ class AgentRunner:
         if not tool_summary_lines and response.tool_names:
             tool_summary_lines.append(f"Инструменты: {', '.join(response.tool_names)}")
         if response.artifacts:
-            types = []
-            for a in response.artifacts:
-                types.append(artifact_type_label(getattr(a, "artifact_type", "")))
+            types = [artifact_type_label(getattr(a, "artifact_type", "")) for a in response.artifacts]
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
         self._emit_phase_event(
@@ -2676,7 +2677,7 @@ class AgentRunner:
         if response.tool_calls == 0 and not has_confirmed_output:
             plan = state.get("plan", "")
             if plan and any(t in plan for t in ("_tool", "tool_")):
-                reason = "План предполагал вызов инструмента, но ни один не был вызван. ОБЯЗАТЕЛЬНО вызови инструмент из плана."
+                reason = "План предполагал вызов инструмента, но ни один не был вызван. ОБЯЗАТЕЛЬНО вызови инструмент из плана."  # noqa: E501
                 self._emit_phase_event(
                     callbacks, phase="evaluate", title="Оценка результата",
                     content=reason, step_index=step_index, max_steps=max_steps, status="fail",
@@ -2694,7 +2695,7 @@ class AgentRunner:
             or self._tool_allowed("plotly_tool")
         )
         if _needs_plot and not _has_plot and _plot_available and step_index < max_steps:
-            reason = "Запрос требует plot-артефакт, но получена только таблица или значение. Вызови `plotly_tool`."
+            reason = "Запрос требует plot-артефакт, но получена только таблица или значение. Вызови `plotly_tool`."  # noqa: E501
             self._emit_phase_event(
                 callbacks, phase="evaluate", title="Оценка результата",
                 content=reason, step_index=step_index, max_steps=max_steps, status="fail",
@@ -2741,7 +2742,7 @@ class AgentRunner:
                 runtime_config["metadata"] = metadata
 
             llm_response = llm.invoke(
-                [SystemMessage(content="Ты оцениваешь, насколько ответ агента соответствует запросу пользователя. Отвечай только JSON."),
+                [SystemMessage(content="Ты оцениваешь, насколько ответ агента соответствует запросу пользователя. Отвечай только JSON."),  # noqa: E501
                  HumanMessage(content=evaluate_prompt)],
                 config=runtime_config,
             )
@@ -3100,7 +3101,9 @@ class AgentRunner:
         session_source: dict[str, Any] | None = None,
         selected_skill_ids: list[str] | None = None,
     ) -> AgentResponse:
-        resolved_skill_ids = [skill.skill_id for skill in self.skill_registry.resolve_selection(selected_skill_ids)]
+        resolved_skill_ids = [
+            skill.skill_id for skill in self.skill_registry.resolve_selection(selected_skill_ids)
+        ]
         request_kind = str((trace_context or {}).get("request_kind", "")).strip().lower()
         cache_allowed = self.settings.agent_cache_enabled and request_kind != "stream"
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import UTC, datetime
 from typing import Any
-from datetime import datetime, timezone
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
@@ -15,7 +15,6 @@ from backend.artifacts.execution import (
     ExecutionArtifact,
     ExecutionStore,
 )
-
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
 
@@ -136,7 +135,7 @@ class ToolCollector(BaseCallbackHandler):
             "phase": "start",
             "tool_name": tool_name or "unknown",
             "input_preview": input_str[:360],
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         self.events.append(event)
         self._push_event("tool_start", {
@@ -146,7 +145,7 @@ class ToolCollector(BaseCallbackHandler):
         if self.graph_tracker is not None:
             self.graph_tracker.tool_start(event["tool_name"], self._step_index)
             if self._phase_collector_ref is not None:
-                self._phase_collector_ref._graph_version += 1
+                self._phase_collector_ref._graph_version += 1  # noqa: SLF001
 
     def on_tool_error(self, error: BaseException | str, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
@@ -166,7 +165,7 @@ class ToolCollector(BaseCallbackHandler):
                     "phase": "end",
                     "tool_name": tool_name or "unknown",
                     "status": "empty_output",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
             return
@@ -183,7 +182,7 @@ class ToolCollector(BaseCallbackHandler):
         event_payload: dict[str, Any] = {
             "phase": "end",
             "tool_name": str(tool_name or "unknown"),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "status": "ok",
             "artifact_keys": [],
         }
@@ -260,7 +259,7 @@ class ToolCollector(BaseCallbackHandler):
                 artifact_keys=event_payload.get("artifact_keys"),
             )
             if self._phase_collector_ref is not None:
-                self._phase_collector_ref._graph_version += 1
+                self._phase_collector_ref._graph_version += 1  # noqa: SLF001
 
     @staticmethod
     def _normalize_output(output: object) -> object:
@@ -308,7 +307,7 @@ class AgentProgressCollector(BaseCallbackHandler):
             "phase": str(phase or "").strip() or "info",
             "title": str(title or "").strip() or "Обновление",
             "details": str(details or "").strip(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         if isinstance(step_index, int):
             payload["step_index"] = step_index
@@ -349,7 +348,7 @@ class PhaseCollector(BaseCallbackHandler):
             "phase": str(phase or "").strip() or "info",
             "title": str(title or "").strip(),
             "content": str(content or "").strip(),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         if isinstance(step_index, int):
             payload["step_index"] = step_index

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from backend.auth import AuthDB, MEM_NOTES, MEM_PROFILE, UserMemory, UserMemoryService
+from backend.auth import MEM_NOTES, MEM_PROFILE, AuthDB, UserMemory, UserMemoryService
 
 
 def _make_db(tmpdir: str) -> AuthDB:
@@ -178,9 +178,9 @@ class UserMemoryConsolidationTests(unittest.TestCase):
         merged_result.content = "- Old note\n- New insight"
 
         async def _run():
-            def llm_invoke(msgs):  # noqa: ARG001
+            def llm_invoke(msgs):
                 return merged_result
-            await self._svc._consolidate_async(  # noqa: SLF001
+            await self._svc._consolidate_async(
                 self._user.id,
                 ["New insight"],
                 llm_invoke,
@@ -197,9 +197,9 @@ class UserMemoryConsolidationTests(unittest.TestCase):
         self._svc.set_notes(self._user.id, "- Safe note")
 
         async def _run():
-            def bad_llm(msgs):  # noqa: ARG001
+            def bad_llm(msgs):
                 raise RuntimeError("LLM down")
-            await self._svc._consolidate_async(  # noqa: SLF001
+            await self._svc._consolidate_async(
                 self._user.id,
                 ["Something new"],
                 bad_llm,

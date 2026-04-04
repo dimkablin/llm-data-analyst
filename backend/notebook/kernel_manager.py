@@ -214,7 +214,7 @@ class KernelManager:
                     # DB connections are resolved lazily by tools — just mark as available.
                     sandbox.put(source.variable_name, {"connection_id": source.connection_id})
                     logger.debug("Source %s registered: %s", source.alias, source.variable_name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"Source {source.alias}: {exc}")
 
     def _replay_cells(
@@ -242,7 +242,7 @@ class KernelManager:
                     timeout_sec=30.0,
                 )
                 replayed += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"Cell {cell.id}: {exc}")
                 # Continue — dependent cells may fail gracefully.
         return replayed

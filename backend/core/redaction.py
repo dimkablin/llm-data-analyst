@@ -4,7 +4,6 @@ import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-
 _SENSITIVE_PARTS = ("password", "secret", "token", "key", "passwd", "pwd")
 _KEY_VALUE_RE = re.compile(
     r"(?i)\b(password|secret|token|api[_-]?key|passwd|pwd)\b\s*[:=]\s*([^\s,;]+)"
@@ -49,7 +48,7 @@ def sanitize_error_text(text: str) -> str:
                 sanitized = urlunsplit(
                     (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             return "Sensitive details were removed."
 
     return sanitized

@@ -44,6 +44,54 @@ isort = "^6.0.1"
 pytest = "^9.0.2"
 ruff = "^0.15.7"
 
+[tool.ruff]
+line-length = 110
+exclude = [".backend_old", ".search_service", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "COM",      # trailing commas
+    "PERF",     # performance
+    "RUF",      # ruff-specific
+    "N",        # pep8-naming
+    "SLF",      # private member access
+    "BLE",      # blind exception catch
+    "FAST",     # fastapi
+]
+ignore = [
+    # Docstrings — отдельная задача, слишком много мест
+    "D100", "D101", "D102", "D103", "D104", "D105", "D107",
+    "D200", "D205", "D212", "D400", "D401", "D413",
+    # Русский текст в строках — intentional
+    "RUF001", "RUF002", "RUF003",
+    # Широкие исключения в route-файлах — intentional, закрыто per-file
+    "BLE001",
+    # B008: Depends() в default-аргументах — стандарт FastAPI (FAST002 покрывает это)
+    "B008",
+    # Разное опциональное
+    "COM812",   # trailing comma в однострочных — пусть formatter решает
+    "N806",     # uppercase variable names — иногда нужно (df, SQL-алиасы)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# tests: assert и private-доступ нормальны, строки в тестах могут быть длинными
+"tests/*" = ["SLF001", "E501"]
+"backend/api/routes/*" = ["BLE001"]
+# RUF012: Pydantic BaseTool fields look like mutable class attrs but aren't
+"backend/tools/impl/*" = ["RUF012"]
+# N803: setup() receives class references as args — uppercase names are intentional
+"backend/api/routes/query.py" = ["N803"]
+# E501: LLM prompt strings cannot be broken mid-sentence
+"backend/agent/prompts.py" = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["Depends", "Security", "Query", "Header", "Cookie", "Body", "Form", "File"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

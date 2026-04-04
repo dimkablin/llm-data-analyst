@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from backend.tools.impl.db_helpers import DBDemoHelper
 from backend.data_access import RuntimeDBConnectionConfig
+from backend.tools.impl.db_helpers import DBDemoHelper
 
 
 def _runtime() -> RuntimeDBConnectionConfig:

@@ -11,7 +11,7 @@ import builtins
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -141,8 +141,8 @@ class SessionSandbox:
 
     def _init_scope(self) -> None:
         """Populate scope with standard libs and safe builtins."""
-        import pandas as _pd
         import numpy as _np
+        import pandas as _pd
 
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
         self._scope.update({"pd": _pd, "np": _np, "df": df_entry})
@@ -474,7 +474,7 @@ class SessionSandbox:
 # Helpers
 # ------------------------------------------------------------------
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def normalize_code(code: str) -> str:

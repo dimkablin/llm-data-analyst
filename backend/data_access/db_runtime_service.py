@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, urlencode
 
+from backend.core.redaction import sanitize_error_text
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_connectors import (
     CatalogColumn,
@@ -12,7 +13,6 @@ from backend.data_access.db_connectors import (
     ResolvedDBConnection,
     build_connection_adapter,
 )
-from backend.core.redaction import sanitize_error_text
 
 
 @dataclass(frozen=True)
@@ -215,7 +215,7 @@ class DBRuntimeService:
         _, adapter = self._build_adapter(user_id=user_id, connection_id=connection_id)
         try:
             schemas = adapter.list_schemas()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(sanitize_error_text(str(exc))) from exc
         return self._normalize_schema_items(schemas)
 
@@ -232,7 +232,7 @@ class DBRuntimeService:
         _, adapter = self._build_adapter(user_id=user_id, connection_id=connection_id)
         try:
             tables = adapter.list_tables(clean_schema)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(sanitize_error_text(str(exc))) from exc
         return self._normalize_table_items(tables)
 
@@ -253,7 +253,7 @@ class DBRuntimeService:
         _, adapter = self._build_adapter(user_id=user_id, connection_id=connection_id)
         try:
             columns = adapter.describe_table(clean_schema, clean_table)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(sanitize_error_text(str(exc))) from exc
         return self._normalize_column_items(columns)
 

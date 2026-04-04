@@ -13,6 +13,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from backend.notebook.cell_builder import (
+    build_cell_from_tool_result,
+    build_preamble_cell,
+    build_source_binding_cell,
+)
+from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.models import (
     CellMetadata,
     CellOutput,
@@ -20,7 +26,6 @@ from backend.notebook.models import (
     NotebookDocument,
     utcnow_iso,
 )
-from backend.notebook.store import NotebookStore
 from backend.notebook.orchestrator import (
     CellOp,
     NotebookEdit,
@@ -32,13 +37,7 @@ from backend.notebook.session_source import (
     alias_to_variable_name,
     make_source_alias,
 )
-from backend.notebook.manifest_store import ManifestStore
-from backend.notebook.cell_builder import (
-    build_cell_from_tool_result,
-    build_preamble_cell,
-    build_source_binding_cell,
-)
-
+from backend.notebook.store import NotebookStore
 
 # ── 1. NotebookDocument model tests ─────────────────────────────────────────
 

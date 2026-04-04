@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import unittest
 
+from backend.artifacts import build_artifact_meta
 from backend.integrations import (
     AnomalyPlanfactConfig,
     AnomalyPlanfactIntegrationError,
     AnomalyPlanfactIntegrationService,
 )
-from backend.artifacts import build_artifact_meta
 
 
 class AnomalyPlanfactIntegrationTests(unittest.TestCase):

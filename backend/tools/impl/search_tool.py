@@ -10,12 +10,12 @@ import pandas as pd
 from pydantic import PrivateAttr
 
 from backend.agent.prompts import search_tool_prompt
-from backend.tools.impl.base_tool import BaseExecTool
 from backend.integrations.search import (
     FetchedPage,
     SearchIntegrationError,
     SearchIntegrationService,
 )
+from backend.tools.impl.base_tool import BaseExecTool
 
 
 @dataclass
@@ -277,7 +277,7 @@ class SearchTool(BaseExecTool):
             except SearchIntegrationError as exc:
                 message = str(exc).strip() or "Search failed."
                 return message, {self.artifact_name: None, "text": message}
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 message = f"Search error: {exc}"
                 return message, {self.artifact_name: None, "text": message}
 
@@ -289,7 +289,7 @@ class SearchTool(BaseExecTool):
             except SearchIntegrationError as exc:
                 message = str(exc).strip() or "Search failed."
                 return message, {self.artifact_name: None, "text": message}
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 message = f"Search error: {exc}"
                 return message, {self.artifact_name: None, "text": message}
 

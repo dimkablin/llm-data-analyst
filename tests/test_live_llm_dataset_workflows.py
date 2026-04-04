@@ -9,7 +9,6 @@ import pandas as pd
 import pytest
 from dotenv import load_dotenv
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LIVE_LLM_TESTS_ENABLED = os.getenv("LIVE_LLM_TESTS", "").strip().lower() in {
     "1",

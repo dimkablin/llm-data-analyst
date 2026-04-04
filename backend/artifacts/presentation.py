@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from backend.artifacts.execution import (
@@ -22,7 +22,7 @@ from backend.artifacts.execution import (
 )
 
 
-class PresentationType(str, Enum):
+class PresentationType(StrEnum):
     TABLE = "table"
     CHART = "chart"
     VALUE = "value"
@@ -43,7 +43,7 @@ class PresentationArtifact:
     source_execution_ids: list[str] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
 

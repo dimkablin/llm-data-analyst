@@ -7,11 +7,10 @@ import json
 import re
 import secrets
 import sqlite3
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import uuid
-
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 THEME_VALUES = {"light", "dark"}
@@ -81,7 +80,7 @@ class AuthDB:
 
     @staticmethod
     def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -291,7 +290,7 @@ class AuthDB:
             )
             conn.execute(
                 "UPDATE user_settings SET updated_at = ? WHERE updated_at = ''",
-                (datetime.now(timezone.utc).isoformat(),),
+                (datetime.now(UTC).isoformat(),),
             )
         if "llm_temperature_chat" not in existing_columns:
             conn.execute(
@@ -513,7 +512,7 @@ class AuthDB:
         token_hash = self._hash_token(token)
         created_at = self._now_iso()
         expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=self.token_ttl_days)
+            datetime.now(UTC) + timedelta(days=self.token_ttl_days)
         ).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -897,7 +896,8 @@ class AuthDB:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO chat_sessions(
-                    session_id, user_id, title, created_at, last_access, has_dataset, last_message_preview, title_is_custom, allow_auto_title
+                    session_id, user_id, title, created_at, last_access,
+                    has_dataset, last_message_preview, title_is_custom, allow_auto_title
                 )
                 VALUES (
                     ?,
@@ -1066,22 +1066,21 @@ class AuthDB:
                 (user_id,),
             ).fetchall()
 
-        result: list[dict[str, object]] = []
-        for row in rows:
-            result.append(
-                {
-                    "session_id": str(row["session_id"]),
-                    "title": str(row["title"] or "Новый чат"),
-                    "created_at": str(row["created_at"]),
-                    "last_access": str(row["last_access"]),
-                    "has_dataset": bool(row["has_dataset"]),
-                    "last_message_preview": (
-                        str(row["last_message_preview"])
-                        if row["last_message_preview"] is not None
-                        else None
-                    ),
-                }
-            )
+        result: list[dict[str, object]] = [
+            {
+                "session_id": str(row["session_id"]),
+                "title": str(row["title"] or "Новый чат"),
+                "created_at": str(row["created_at"]),
+                "last_access": str(row["last_access"]),
+                "has_dataset": bool(row["has_dataset"]),
+                "last_message_preview": (
+                    str(row["last_message_preview"])
+                    if row["last_message_preview"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        ]
         return result
 
     def get_session_metadata(

@@ -13,7 +13,6 @@ from backend.artifacts.execution import (
 )
 from backend.artifacts.presentation import to_presentation
 
-
 _EXEC_TO_API_TYPE: dict[ExecArtifactType, str] = {
     ExecArtifactType.DATAFRAME: "table",
     ExecArtifactType.SQL_RESULT: "table",

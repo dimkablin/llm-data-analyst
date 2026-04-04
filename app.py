@@ -1,6 +1,7 @@
 import streamlit as st
-from dotenv import load_dotenv
 from agent.agent import Agent
+from dotenv import load_dotenv
+
 from components.chat import render_chat
 from components.dashboard import render_dashboard
 from components.profiling import render_profiling
@@ -20,7 +21,7 @@ def load_css(file_path: str) -> str:
     Returns:
         str: Содержимое CSS-файла.
     """
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         return f.read()
 
 

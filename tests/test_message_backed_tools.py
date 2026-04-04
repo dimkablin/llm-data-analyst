@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
 from backend.agent import AgentResponse, AgentRunner
 from backend.core import Settings
