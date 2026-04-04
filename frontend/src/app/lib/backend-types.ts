@@ -162,6 +162,7 @@ export type UserSettings = {
   agent_max_steps: number;
   agent_step_timeout_sec: number;
   agent_inner_recursion_limit: number;
+  agent_react_enabled: boolean;
   ui_scale: number;
 };
 

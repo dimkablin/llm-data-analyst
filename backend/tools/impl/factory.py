@@ -25,7 +25,9 @@ from backend.tools.impl.forecast_tool import ForecastTool
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
+from backend.tools.impl.planner_tool import PlannerTool
 from backend.tools.impl.plotly_tool import PlotlyTool
+from backend.tools.impl.review_tool import ReviewTool
 from backend.tools.impl.search_tool import SearchTool
 from backend.tools.impl.sql_tool import SQLTool
 from backend.tools.impl.value_tool import ValueTool
@@ -224,6 +226,38 @@ class ValueToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+        )
+
+
+class PlannerToolFactory:
+    """Always available; generates analysis plans via internal LLM call."""
+
+    key = "planner_tool"
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        return is_tool_allowed("planner_tool", ctx.allowed_tool_keys)
+
+    def build(self, ctx: ToolBuildContext) -> PlannerTool:
+        return PlannerTool(
+            llm_model=ctx.settings.llm_model,
+            llm_base_url=ctx.settings.llm_base_url,
+            llm_api_key=ctx.settings.llm_api_key,
+        )
+
+
+class ReviewToolFactory:
+    """Always available; hybrid quality check for agent answers."""
+
+    key = "review_tool"
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        return is_tool_allowed("review_tool", ctx.allowed_tool_keys)
+
+    def build(self, ctx: ToolBuildContext) -> ReviewTool:
+        return ReviewTool(
+            llm_model=ctx.settings.llm_model,
+            llm_base_url=ctx.settings.llm_base_url,
+            llm_api_key=ctx.settings.llm_api_key,
         )
 
 

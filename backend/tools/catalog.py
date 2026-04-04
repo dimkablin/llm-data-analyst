@@ -20,6 +20,26 @@ class ToolCatalogSpec:
 
 BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
     ToolCatalogSpec(
+        tool_key="planner_tool",
+        tool_label="Planner",
+        display_name_ru="Планировщик",
+        description="On-demand analysis plan generation for complex multi-step queries.",
+        description_ru="Составление плана анализа для сложных многошаговых запросов.",
+        capabilities=("planning",),
+        requires_session_data=False,
+        kind="builtin",
+    ),
+    ToolCatalogSpec(
+        tool_key="review_tool",
+        tool_label="Reviewer",
+        display_name_ru="Проверка ответа",
+        description="Hybrid quality check for agent answers: heuristics + optional LLM review.",
+        description_ru="Гибридная проверка качества: эвристики + LLM-ревью для сложных запросов.",
+        capabilities=("quality_check",),
+        requires_session_data=False,
+        kind="builtin",
+    ),
+    ToolCatalogSpec(
         tool_key="sql_tool",
         tool_label="SQL tool",
         display_name_ru="SQL по таблицам",

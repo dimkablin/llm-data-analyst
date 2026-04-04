@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 import pandas as pd
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from backend.agent.callbacks import (
@@ -1274,6 +1274,12 @@ class AgentRunner:
         today = date.today().strftime("%Y-%m-%d")
 
         sections: list[str] = [execution_agent_prompt.strip()]
+        # When ReAct is active, prevent double-think conflict with reasoning models.
+        if self.settings.agent_react_enabled:
+            sections.append(
+                "ВАЖНО: НЕ используй теги <think>. "
+                "Все рассуждения пиши напрямую в текст ответа или в поле Thought."
+            )
         sections.extend(
             self._execution_runtime_section(source_mode, tool_list, today, tool_descriptions)
         )
@@ -2043,6 +2049,146 @@ class AgentRunner:
             tool_names=tool_names,
         )
 
+    def _direct_tool_loop(
+        self,
+        *,
+        prompt: str,
+        history: list[dict[str, Any]],
+        use_history: bool,
+        include_reasoning: bool,
+        tools: list,
+        execution_system_prompt: str,
+        callbacks: list,
+        max_iterations: int,
+        trace_context: dict[str, Any] | None = None,
+    ) -> AgentResponse:
+        """Direct tool-calling loop using bind_tools — no ReAct Thought/Action format.
+
+        The LLM decides which tools to call via its native tool_use protocol.
+        No conflict with <think> tags from reasoning models.
+        """
+        self._reset_text_collectors(callbacks)
+        llm = self._build_llm(
+            role="tool",
+            include_reasoning=include_reasoning,
+            timeout_sec=min(
+                self.settings.agent_step_timeout_sec,
+                self.settings.backend_query_timeout_sec,
+            ),
+        )
+        bound_llm = llm.bind_tools(tools)
+
+        messages: list[BaseMessage] = self._build_messages(
+            prompt, history, use_history, system_prompt=execution_system_prompt,
+        )
+
+        tool_map = {
+            str(getattr(t, "name", "")).strip(): t
+            for t in tools
+            if str(getattr(t, "name", "")).strip()
+        }
+
+        all_tool_names: list[str] = []
+        total_tool_calls = 0
+        final_text = ""
+        reasoning = None
+
+        runtime_config: dict[str, Any] = {"callbacks": callbacks}
+        metadata = self._build_runtime_metadata(trace_context)
+        if metadata:
+            runtime_config["metadata"] = metadata
+
+        for iteration in range(max(1, max_iterations)):
+            try:
+                response = bound_llm.invoke(messages, config=runtime_config)
+                record_llm_usage_on_active_span(
+                    response,
+                    fallback_model=self.settings.llm_model,
+                    fallback_provider=self.settings.llm_provider,
+                )
+            except Exception as exc:
+                if _is_llm_transport_failure(exc):
+                    _log_llm_invoke_failure("direct_tool_loop LLM invoke", exc, self.settings)
+                    artifacts, tc, tn = self._collect_tool_stats(callbacks)
+                    return AgentResponse(
+                        final_text=self._artifacts_recovery_text(artifacts) or _LLM_UNAVAILABLE_USER_TEXT,
+                        reasoning=str(exc),
+                        artifacts=artifacts,
+                        route="analysis",
+                        tool_calls=total_tool_calls + tc,
+                        tool_names=all_tool_names + tn,
+                        llm_unreachable=True,
+                    )
+                raise
+
+            # Extract reasoning from ThinkingAwareChatOpenAI
+            if reasoning is None:
+                reasoning = response.additional_kwargs.get("reasoning") or None
+
+            # Check for tool calls
+            tool_calls = getattr(response, "tool_calls", None) or []
+            if not tool_calls:
+                # No tool calls — LLM is done. Extract final text.
+                final_text = self._content_to_text(getattr(response, "content", ""))
+                break
+
+            # Append the AI message with tool calls to context
+            messages.append(response)
+
+            # Execute each tool call
+            for tc in tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args", {})
+                tool_call_id = tc.get("id", "")
+                total_tool_calls += 1
+                if tool_name not in all_tool_names:
+                    all_tool_names.append(tool_name)
+
+                tool = tool_map.get(tool_name)
+                if tool is None:
+                    result_text = f"Unknown tool: {tool_name}"
+                else:
+                    try:
+                        result = tool.invoke(tool_args, config=runtime_config)
+                        # BaseTool returns (content, artifact) tuple or string
+                        if isinstance(result, tuple):
+                            result_text = str(result[0]) if result[0] else str(result[1])
+                        else:
+                            result_text = str(result)
+                    except Exception as tool_exc:
+                        result_text = f"Tool error: {tool_exc}"
+
+                messages.append(ToolMessage(
+                    content=result_text,
+                    tool_call_id=tool_call_id,
+                ))
+        else:
+            # Loop exhausted without LLM stopping — extract what we have
+            text_collector = next(
+                (cb for cb in callbacks if isinstance(cb, LLMTextCollector)), None
+            )
+            if text_collector and text_collector.messages:
+                final_text = text_collector.messages[-1].get("text", "")
+
+        # Collect artifacts from ToolCollector
+        artifacts, tc_count, tn_list = self._collect_tool_stats(callbacks)
+        total_tool_calls += tc_count
+        for name in tn_list:
+            if name not in all_tool_names:
+                all_tool_names.append(name)
+
+        if not final_text and artifacts:
+            final_text = self._artifacts_recovery_text(artifacts)
+
+        return AgentResponse(
+            final_text=final_text.strip(),
+            reasoning=reasoning,
+            artifacts=artifacts,
+            route="analysis",
+            tool_calls=total_tool_calls,
+            tool_names=all_tool_names,
+        )
+
     def _build_query_graph(self):
         graph = StateGraph(AgentGraphState)
 
@@ -2050,8 +2196,6 @@ class AgentRunner:
         graph.add_node("summary", self._summary_node)
         graph.add_node("think", self._think_node)
         graph.add_node("act", self._act_node)
-        graph.add_node("evaluate", self._evaluate_node)
-        graph.add_node("decide", self._decide_node)
         graph.add_node("finalize", self._finalize_node)
 
         graph.add_edge(START, "think")
@@ -2063,17 +2207,8 @@ class AgentRunner:
             self._think_edge,
             {"act": "act", "rag": "rag", "summary": "summary", "finalize": "finalize"},
         )
-        graph.add_conditional_edges(
-            "act",
-            self._act_edge,
-            {"evaluate": "evaluate", "finalize": "finalize"},
-        )
-        graph.add_edge("evaluate", "decide")
-        graph.add_conditional_edges(
-            "decide",
-            self._decide_edge,
-            {"think": "think", "finalize": "finalize"},
-        )
+        # Agent runs once, then goes directly to finalize (no evaluate/decide loop).
+        graph.add_edge("act", "finalize")
 
         graph.add_edge("finalize", END)
         return graph.compile()
@@ -2083,6 +2218,8 @@ class AgentRunner:
         state: AgentGraphState,
     ) -> Literal["act", "rag", "summary", "finalize"]:
         route = state.get("route")
+        if route == "chat":
+            return "finalize"
         if route == "rag":
             return "rag"
         if route == "summary":
@@ -2283,9 +2420,9 @@ class AgentRunner:
         prompt: str,
         *,
         has_rag: bool,
-    ) -> Literal["rag", "summary"] | None:
-        """Lightweight keyword pre-check for rag/summary. No LLM call.
-        Everything else (chat, analysis) is handled implicitly by the act LLM."""
+        has_data: bool = False,
+    ) -> Literal["chat", "rag", "summary"] | None:
+        """Lightweight keyword pre-check for chat/rag/summary. No LLM call."""
         normalized = prompt.strip().lower()
         _summary_markers = (
             "управленческ", "итоги анализа",
@@ -2301,35 +2438,75 @@ class AgentRunner:
             )
             if any(m in normalized for m in _rag_markers):
                 return "rag"
+        if AgentRunner._is_chat_message(normalized, has_data=has_data):
+            return "chat"
         return None
 
+    @staticmethod
+    def _is_chat_message(normalized_prompt: str, *, has_data: bool = False) -> bool:
+        """Detect greetings and simple chat messages that don't need tools."""
+        _CHAT_GREETINGS = (
+            "привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро",
+            "hello", "hi", "hey", "хай", "ку", "приветствую",
+            "спасибо", "благодарю", "thank", "пожалуйста",
+            "пока", "до свидания", "bye", "good bye",
+            "как дела", "как ты", "как поживаешь",
+        )
+        _CHAT_ABOUT_SELF = (
+            "кто ты", "что ты умеешь", "расскажи о себе", "ты кто",
+            "что можешь", "что умеешь", "помоги", "help",
+            "что ты такое", "как тебя зовут", "твоё имя",
+        )
+        prompt = normalized_prompt.strip()
+        if not prompt:
+            return True
+        # Short greetings
+        if any(prompt.startswith(g) or prompt == g for g in _CHAT_GREETINGS):
+            return True
+        # Questions about the assistant
+        if any(m in prompt for m in _CHAT_ABOUT_SELF):
+            return True
+        # Very short messages without data context are likely chat
+        if len(prompt) < 12 and not has_data:
+            return True
+        return False
+
     def _think_node(self, state: AgentGraphState) -> dict[str, Any]:
+        """Router node — lightweight keyword routing, tool building, NO LLM call.
+
+        Routes to: chat, rag, summary, or agent (analysis).
+        Planning is delegated to planner_tool when the LLM decides it is needed.
+        """
         df = state.get("df")
         prompt = state.get("prompt", "")
         callbacks = state.get("callbacks", [])
-        refinement_feedback = state.get("refinement_feedback", "")
 
-        # Fast keyword routing for rag/summary — no LLM call required.
+        # ── Fast keyword routing (no LLM call) ──────────────────────────
         has_rag = self.rag_service is not None and self.rag_service.is_enabled
-        quick = self._quick_route(prompt, has_rag=has_rag)
-        if quick is not None:
-            return {"route": quick, "done": False}
         tool_db_runtime = self._resolve_tool_db_runtime_config(
             state.get("session_source"),
-            state.get("trace_context")
+            state.get("trace_context"),
         )
         csv_loaded, csv_session_id = self._resolve_csv_runtime_state(
             state.get("session_source"),
             state.get("trace_context"),
         )
+        has_data = bool(
+            df is not None
+            or tool_db_runtime is not None
+            or (csv_loaded and str(csv_session_id or "").strip())
+        )
 
+        quick = self._quick_route(prompt, has_rag=has_rag, has_data=has_data)
+        if quick == "chat":
+            return {"route": "chat", "done": False}
+        if quick is not None:
+            return {"route": quick, "done": False}
+
+        # ── Build tools and context for the agent node ───────────────────
         csv_duckdb_mode = bool(csv_loaded and str(csv_session_id or "").strip())
-
-        # В режиме CSV-in-DuckDB pandas/value-инструменты не предлагаем:
-        # анализ должен идти через sql_tool.
         tool_df = None if csv_duckdb_mode else df
 
-        # Get or create a persistent sandbox for this session.
         trace_ctx = state.get("trace_context") or {}
         session_id = trace_ctx.get("session_id", "default")
         sandbox = SandboxManager.get_instance().get_or_create(session_id)
@@ -2352,31 +2529,6 @@ class AgentRunner:
 
         max_steps = self._effective_outer_max_steps(prompt=prompt)
 
-        data_context = ""
-        if df is not None:
-            try:
-                data_context = get_detailed_data_info(
-                    df, max_columns=self.settings.agent_prompt_max_columns
-                )
-            except Exception:
-                data_context = f"Датасет: {df.shape[0]} строк, {df.shape[1]} столбцов."
-
-        db_block = self._db_session_prompt_block(
-            session_source=state.get("session_source"),
-            runtime=tool_db_runtime,
-            df=df,
-        )
-        if db_block:
-            data_context = f"{data_context}\n\n{db_block}".strip() if data_context else db_block
-
-        if not data_context.strip():
-            data_context = (
-                "Источники данных: НЕ прикреплены. "
-                "Нет загруженного датафрейма (CSV) и нет подключённой базы данных.\n"
-                "Если запрос пользователя требует работы с данными — НЕ планируй tool-вызовы для анализа данных. "  # noqa: E501
-                "Сообщи пользователю, что сначала нужно загрузить CSV-файл или подключить базу данных."
-            )
-
         tool_keys = [
             str(getattr(tool, "name", "")).strip()
             for tool in tools
@@ -2389,104 +2541,19 @@ class AgentRunner:
         )
         capability_context["tool_descriptions"] = tool_descriptions
 
-        user_block = f"Вопрос пользователя: {prompt.strip()}"
-        if refinement_feedback.strip():
-            user_block += (
-                f"\n\nПредыдущая попытка не прошла оценку: "
-                f"{refinement_feedback.strip()}\n"
-                "Скорректируй план с учётом этой обратной связи."
-            )
-
-        # NOTE: tool skills are NOT injected into think phase to keep prompt small.
-        # They are injected into execution phase (_build_execution_system_prompt).
-        think_messages = [
-            SystemMessage(content=self._think_system_prompt(
-                capability_context,
-                selected_skill_ids=state.get("selected_skill_ids"),
-                tool_descriptions=tool_descriptions,
-            )),
-            HumanMessage(content=f"{data_context}\n\n{user_block}"),
-        ]
-
-        llm = self._build_llm(
-            role="plan",
-            include_reasoning=False,
-            timeout_sec=min(
-                self.settings.agent_step_timeout_sec,
-                self.settings.backend_query_timeout_sec,
-            ),
-            max_tokens_override=256,
-        )
-
-        current_step = int(state.get("step_index", 0))
-        self._emit_phase_event(
-            callbacks,
-            phase="think",
-            title="Рассуждение (Chain of Thought)",
-            content="",
-            step_index=current_step,
-            max_steps=max_steps,
-            status="streaming",
-        )
-
-        plan = ""
-        think_llm_failed = False
-        silent_cbs = self._silent_callbacks(callbacks)
-        runtime_config: dict[str, Any] = {"callbacks": silent_cbs}
-        metadata = self._build_runtime_metadata(state.get("trace_context"))
-        if metadata:
-            runtime_config["metadata"] = metadata
-        try:
-            response = llm.invoke(think_messages, config=runtime_config)
-            record_llm_usage_on_active_span(
-                response,
-                fallback_model=self.settings.llm_model,
-                fallback_provider=self.settings.llm_provider,
-            )
-            raw_content = self._content_to_text(getattr(response, "content", ""))
-            plan = raw_content.strip()
-            reasoning = response.additional_kwargs.get("reasoning", "")
-            if not plan:
-                plan = reasoning or "Анализировать данные по запросу пользователя."
-        except Exception as exc:
-            _log_llm_invoke_failure("think/plan LLM invoke", exc, self.settings)
-            plan = "Ошибка при планировании. Выполнить прямой анализ данных."
-            think_llm_failed = True
-
-        self._emit_phase_event(
-            callbacks,
-            phase="think",
-            title="Рассуждение (Chain of Thought)",
-            content=plan,
-            step_index=current_step,
-            max_steps=max_steps,
-            status="done",
-        )
-        self._emit_progress_event(
-            callbacks,
-            phase="plan",
-            title="Планирую решение",
-            details=plan,
-            step_index=0,
-            max_steps=max_steps,
-        )
-
-        first_run = not state.get("tools")
-        result: dict[str, Any] = {
-            "plan": plan,
+        return {
+            "plan": "",
             "max_steps": max_steps,
             "done": False,
             "eval_passed": False,
             "eval_reason": "",
             "stop_reason": "",
-            "llm_unreachable": think_llm_failed,
+            "llm_unreachable": False,
+            "tools": tools,
+            "step_index": 0,
+            "sandbox": sandbox,
+            "capability_context": capability_context,
         }
-        if first_run:
-            result["tools"] = tools
-            result["step_index"] = 0
-            result["sandbox"] = sandbox
-        result["capability_context"] = capability_context
-        return result
 
     def _act_node(self, state: AgentGraphState) -> dict[str, Any]:
         df = state.get("df")
@@ -2557,20 +2624,41 @@ class AgentRunner:
 
         started_at = time.perf_counter()
         try:
-            response = self._analysis_step(
-                df=tool_df,
-                prompt=state.get("prompt", ""),
-                history=state.get("history", []),
-                use_history=state.get("use_history", True),
-                include_reasoning=state.get("include_reasoning", False),
-                callbacks=callbacks,
-                trace_context=state.get("trace_context"),
-                tools=tools,
-                session_source=state.get("session_source"),
-                tool_db_runtime=tool_db_runtime,
-                selected_skill_ids=state.get("selected_skill_ids"),
-                execution_system_prompt=execution_system_prompt,
-            )
+            if self.settings.agent_react_enabled:
+                # ReAct mode: use LangChain pandas agent (Thought/Action/Observation)
+                response = self._analysis_step(
+                    df=tool_df,
+                    prompt=state.get("prompt", ""),
+                    history=state.get("history", []),
+                    use_history=state.get("use_history", True),
+                    include_reasoning=state.get("include_reasoning", False),
+                    callbacks=callbacks,
+                    trace_context=state.get("trace_context"),
+                    tools=tools,
+                    session_source=state.get("session_source"),
+                    tool_db_runtime=tool_db_runtime,
+                    selected_skill_ids=state.get("selected_skill_ids"),
+                    execution_system_prompt=execution_system_prompt,
+                )
+            else:
+                # Direct tool-calling mode (default): bind_tools loop
+                depth_inner_limit = self._depth_profile.get("inner_recursion_limit")
+                effective_inner_limit = (
+                    depth_inner_limit
+                    if isinstance(depth_inner_limit, int)
+                    else self.settings.agent_inner_recursion_limit
+                )
+                response = self._direct_tool_loop(
+                    prompt=state.get("prompt", ""),
+                    history=state.get("history", []),
+                    use_history=state.get("use_history", True),
+                    include_reasoning=state.get("include_reasoning", False),
+                    tools=tools,
+                    execution_system_prompt=execution_system_prompt,
+                    callbacks=callbacks,
+                    max_iterations=max(1, effective_inner_limit),
+                    trace_context=state.get("trace_context"),
+                )
         except Exception as exc:
             artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
             response = AgentResponse(
@@ -2935,6 +3023,31 @@ class AgentRunner:
             )
             return {"response": response}
 
+        if response is None and route == "chat":
+            # Chat route: bypass graph, call LLM directly.
+            try:
+                chat_response = self.chat(
+                    prompt=prompt,
+                    history=state.get("history", []),
+                    use_history=state.get("use_history", True),
+                    include_reasoning=state.get("include_reasoning", False),
+                    callbacks=callbacks,
+                    trace_context=state.get("trace_context"),
+                )
+            except Exception:
+                chat_response = AgentResponse(
+                    final_text=self._fallback_text(prompt, df),
+                    reasoning=None,
+                    artifacts=[],
+                    route="chat",
+                )
+            self._emit_phase_event(
+                callbacks, phase="finalize", title="Финализация",
+                content="Ответ сформирован.",
+                step_index=step_index, max_steps=max_steps, status="done",
+            )
+            return {"response": chat_response}
+
         if response is None:
             self._emit_phase_event(
                 callbacks, phase="finalize", title="Финализация",
@@ -3131,11 +3244,9 @@ class AgentRunner:
                 self._cache_set(cache_key, data_tools_disabled)
             return data_tools_disabled
 
-        # Set recursion_limit well above the max supersteps the outer graph can produce.
-        # Each outer cycle = 4 supersteps (think+act+evaluate+decide) + 1 bookend (finalize).
-        # Worst case: visualization boost gives max_steps=5 → 5*4+1 = 21 supersteps.
-        # Use depth_max_steps_cap * 6 + 20 to handle all depth profiles safely.
-        _outer_recursion_limit = max(50, self._depth_max_steps_cap() * 6 + 20)
+        # Simplified graph: think → act → finalize (no evaluate/decide loop).
+        # 3 supersteps max. Keep a safe margin.
+        _outer_recursion_limit = 20
         try:
             result = self._graph.invoke(
                 {

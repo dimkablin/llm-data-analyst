@@ -143,6 +143,18 @@ return (
             />
             <NumberField label="Таймаут шага, сек" value={draft.agent_step_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
             <NumberField label="Внутр. рекурсия" value={draft.agent_inner_recursion_limit} step={1} onChange={(value) => setDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
+            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div>
+                <span className="text-sm">Режим ReAct</span>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Подробный пошаговый анализ (Thought/Action/Observation). Медленнее, но видны промежуточные шаги.</p>
+              </div>
+              <input
+                type="checkbox"
+                checked={draft.agent_react_enabled ?? false}
+                onChange={(e) => setDraft((prev) => ({ ...prev, agent_react_enabled: e.target.checked }))}
+                className="h-4 w-4 accent-primary ml-3 shrink-0"
+              />
+            </label>
           </div>
         </SectionCard>
 
