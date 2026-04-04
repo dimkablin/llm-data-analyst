@@ -1307,6 +1307,11 @@ class AgentRunner:
         if tool_skills_block:
             sections.append(tool_skills_block)
 
+        # Analytical skills discovery — LLM sees them and fetches full instructions on demand.
+        analytical_skills_block = self.skill_registry.build_analytical_skills_brief_block()
+        if analytical_skills_block:
+            sections.append(analytical_skills_block)
+
         return "\n".join(sections).strip()
 
     def _collect_text_and_reasoning(
@@ -2150,8 +2155,17 @@ class AgentRunner:
                 else:
                     try:
                         result = tool.invoke(tool_args, config=runtime_config)
-                        # BaseTool returns (content, artifact) tuple or string
-                        if isinstance(result, tuple):
+                        # LangChain 1.x returns ToolMessage for content_and_artifact tools.
+                        # on_tool_end is called with only the content string, so the artifact
+                        # in ToolMessage.artifact is never seen by ToolCollector. Recover it.
+                        if hasattr(result, "content") and hasattr(result, "artifact"):
+                            result_text = str(getattr(result, "content", "") or "")
+                            tool_col = next(
+                                (cb for cb in callbacks if isinstance(cb, ToolCollector)), None
+                            )
+                            if tool_col is not None:
+                                tool_col.absorb_tool_message(tool_name, result)
+                        elif isinstance(result, tuple):
                             result_text = str(result[0]) if result[0] else str(result[1])
                         else:
                             result_text = str(result)

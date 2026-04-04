@@ -434,12 +434,18 @@ export function useChatAgent({
             },
             onToolStart: (event) => {
               if (!includeReasoning) return;
-              const text = `\n🔧 **${event.tool_name}** запущен`;
+              const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
+              const text = META_TOOLS.has(event.tool_name)
+                ? ""
+                : `\n🔧 **${event.tool_name}** запущен`;
+              if (!text) return;
               collectedReasoning += text;
               setStreamReasoning((prev) => prev + text);
             },
             onToolEnd: (event) => {
               if (!includeReasoning) return;
+              const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
+              if (META_TOOLS.has(event.tool_name)) return;
               const status = event.status === "ok" ? "✅" : "❌";
               const artifacts = event.artifact_keys?.length
                 ? ` → ${event.artifact_keys.join(", ")}`

@@ -184,6 +184,33 @@ class SkillRegistry:
             lines.append("")
         return "\n".join(lines).strip()
 
+    def build_analytical_skills_brief_block(self) -> str:
+        """One-liner per analytical skill + hint to call get_tool_instructions.
+
+        Lists all analytical skills so the LLM knows they exist and when to use them.
+        Full instructions are fetched on demand via get_tool_instructions(skill_id).
+        """
+        self.load()
+        analytical_skills = [
+            skill for skill in self._skills_by_id.values() if skill.kind == "analytical"
+        ]
+        if not analytical_skills:
+            return ""
+        lines = [
+            "## Аналитические методы",
+            "",
+            "Если запрос совпадает с триггерами — вызови "
+            "`get_tool_instructions(skill_id)` чтобы получить полный алгоритм.",
+            "",
+        ]
+        for skill in analytical_skills:
+            triggers_hint = ""
+            if skill.triggers:
+                sample = ", ".join(skill.triggers[:6])
+                triggers_hint = f" | триггеры: {sample}"
+            lines.append(f"- `{skill.skill_id}`: {skill.description}{triggers_hint}")
+        return "\n".join(lines).strip()
+
     def build_tool_skills_brief_block(
         self,
         available_tool_keys: set[str] | frozenset[str],

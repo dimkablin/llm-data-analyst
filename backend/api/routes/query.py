@@ -535,6 +535,39 @@ def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None
     phase = str(event.get("phase", "")).strip().lower()
     tool_name = str(event.get("tool_name", "unknown")).strip() or "unknown"
 
+    # Special rendering for skill loader — compact inline message, no code block.
+    if tool_name == "get_tool_instructions":
+        skill_id = ""
+        raw_preview = str(event.get("input_preview", "")).strip()
+        try:
+            parsed = json.loads(raw_preview)
+            skill_id = str(parsed.get("tool_name", "")).strip()
+        except Exception:
+            skill_id = raw_preview.strip("'\"")
+        label = f"`{skill_id}`" if skill_id else "скил"
+        if phase == "start":
+            return f"📚 Загружаю инструкцию: {label}"
+        if phase == "end":
+            status = str(event.get("status", "ok")).strip()
+            icon = "✅" if status == "ok" else "❌"
+            return f"{icon} Инструкция {label} загружена"
+        return None
+
+    # Meta-tools that return plain text (no artifacts) — show compact one-liner,
+    # never show misleading "status=empty_output, artifacts=none".
+    _META_TOOLS = {"planner_tool", "review_tool"}
+    if tool_name in _META_TOOLS:
+        if phase == "start":
+            return f"🧠 `{tool_name}` запущен"
+        if phase == "end":
+            status = str(event.get("status", "")).strip()
+            if status == "error":
+                error_text = str(event.get("error", "")).strip()
+                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
+                return f"❌ `{tool_name}` завершен с ошибкой{hint}"
+            return f"✅ `{tool_name}` завершен"
+        return None
+
     if phase == "start":
         raw_input = _extract_tool_code_preview(str(event.get("input_preview", "")))
         if not raw_input:

@@ -251,6 +251,61 @@ class ToolCollector(BaseCallbackHandler):
             "status": event_payload["status"],
             "artifact_keys": event_payload.get("artifact_keys", []),
         })
+
+    def absorb_tool_message(self, tool_name: str, result: ToolMessage) -> None:
+        """Extract and store artifacts from a ToolMessage returned by tool.invoke().
+
+        LangChain 1.x calls on_tool_end(content_string) for content_and_artifact tools,
+        so the artifact payload in ToolMessage.artifact is never seen by on_tool_end.
+        This method recovers it without double-counting tool_calls or events.
+        """
+        artifact = getattr(result, "artifact", None)
+        if not isinstance(artifact, dict):
+            return
+        tool_code = artifact.get("code") if isinstance(artifact.get("code"), str) else None
+        artifact_hints = extract_artifact_hints(artifact)
+        artifact_meta = build_artifact_meta(
+            tool_name=tool_name,
+            tool_code=tool_code,
+            source_context=self._source_context,
+            artifact_hints=artifact_hints,
+        )
+        producer = tool_name or "unknown"
+        if "plot" in artifact and isinstance(artifact["plot"], dict):
+            for name, fig in artifact["plot"].items():
+                if fig is None:
+                    continue
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.PLOT,
+                    producer_tool=producer,
+                    data=fig,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+        if "table" in artifact and isinstance(artifact["table"], dict):
+            for name, table in artifact["table"].items():
+                if table is None:
+                    continue
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.DATAFRAME,
+                    producer_tool=producer,
+                    data=table,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+        if "value" in artifact and isinstance(artifact["value"], dict):
+            clean = {k: v for k, v in artifact["value"].items() if v is not None}
+            if clean:
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.SCALAR,
+                    producer_tool=producer,
+                    data=clean,
+                    name="values",
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_end(
                 event_payload["tool_name"],
