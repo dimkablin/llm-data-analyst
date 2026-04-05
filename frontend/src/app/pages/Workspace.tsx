@@ -45,6 +45,7 @@ export function Workspace() {
   const [activeSource, setActiveSource] = useState<SessionSourceState>({});
   const [pinnedArtifactIds, setPinnedArtifactIds] = useState<string[]>([]);
   const [modelProfile, setModelProfile] = useState<RuntimeModelProfile | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const {
     bindChatAgent,
@@ -55,6 +56,8 @@ export function Workspace() {
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamTools,
+    streamBlocks,
     streamGraph,
     error,
     lastQuery,
@@ -144,6 +147,7 @@ export function Workspace() {
       return;
     }
     let cancelled = false;
+    reset();
 
     void (async () => {
       try {
@@ -185,7 +189,7 @@ export function Workspace() {
     return () => {
       cancelled = true;
     };
-  }, [loadSession, refreshSessions, setErrorMessage, user]);
+  }, [loadSession, refreshSessions, reset, setErrorMessage, user]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -209,12 +213,15 @@ export function Workspace() {
     if (!sessionId) {
       return;
     }
+    setIsUploading(true);
     try {
       await uploadCsv(sessionId, file);
       await loadSession(sessionId);
       await refreshSessions();
     } catch (uploadError) {
       setErrorMessage(summarizeError(uploadError));
+    } finally {
+      setIsUploading(false);
     }
   }
 
@@ -288,11 +295,14 @@ return (
                 streamDraft={streamDraft}
                 streamReasoning={streamReasoning}
                 streamPhases={streamPhases}
+                streamTools={streamTools}
+                streamBlocks={streamBlocks}
                 streamGraph={streamGraph}
                 isStreaming={isStreaming}
                 error={error}
                 canRetry={Boolean(lastQuery)}
                 isReady={Boolean(sessionId)}
+                isUploading={isUploading}
                 hasDataset={hasDataset}
                 activeSource={activeSource}
                 onSubmit={sendQuery}

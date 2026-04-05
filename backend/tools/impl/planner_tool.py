@@ -13,7 +13,6 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
-from backend.agent.prompts import agent_prompt
 
 logger = logging.getLogger(__name__)
 

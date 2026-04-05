@@ -118,6 +118,93 @@ class ToolCollector(BaseCallbackHandler):
                 return candidate.strip()
         return None
 
+    @staticmethod
+    def _extract_input_code(raw: str) -> str | None:
+        """Extract the code/query string from a tool input JSON preview."""
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            for key in ("code", "query", "input", "command"):
+                candidate = parsed.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+        return None
+
+    @staticmethod
+    def _build_input_summary(tool_name: str, raw: str) -> str:
+        """Build a short 1-line summary of what the tool input does."""
+        text = raw.strip()
+        if not text:
+            return ""
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return text[:80]
+        if isinstance(parsed, dict):
+            for key in ("code", "query", "command"):
+                candidate = parsed.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    first_line = candidate.strip().split("\n")[0][:80]
+                    return first_line
+            for key in ("path", "file_path", "dataset", "alias", "pattern", "tool_name"):
+                candidate = parsed.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()[:80]
+        return text[:80]
+
+    @staticmethod
+    def _build_result_summary(
+        payload: object, event_payload: dict[str, Any],
+    ) -> str:
+        """Build a short human-readable result summary for UI display."""
+        if not isinstance(payload, dict):
+            return ""
+        parts: list[str] = []
+        status = event_payload.get("status", "ok")
+        if status == "error":
+            error_text = str(event_payload.get("error", "")).strip()
+            if error_text:
+                last_line = error_text.splitlines()[-1][:120]
+                return f"Error: {last_line}"
+            return "Error"
+        # Summarize artifact types produced
+        if "table" in payload and isinstance(payload["table"], dict):
+            for name, table_data in payload["table"].items():
+                if table_data is None:
+                    continue
+                try:
+                    import pandas as _pd
+                    if isinstance(table_data, _pd.DataFrame):
+                        parts.append(f"{name}: {len(table_data)} rows, {len(table_data.columns)} cols")
+                    elif isinstance(table_data, dict):
+                        parts.append(f"{name}: table")
+                    elif isinstance(table_data, list):
+                        parts.append(f"{name}: {len(table_data)} rows")
+                except Exception:
+                    parts.append(f"{name}: table")
+        if "plot" in payload and isinstance(payload["plot"], dict):
+            plot_names = [n for n in payload["plot"] if payload["plot"][n] is not None]
+            if plot_names:
+                parts.append(f"chart: {', '.join(plot_names[:3])}")
+        if "value" in payload and isinstance(payload["value"], dict):
+            value_items = {
+                k: v for k, v in payload["value"].items() if v is not None
+            }
+            if value_items:
+                formatted = []
+                for k, v in list(value_items.items())[:3]:
+                    if isinstance(v, float):
+                        formatted.append(f"{k}={v:.2f}")
+                    else:
+                        formatted.append(f"{k}={v}")
+                parts.append(", ".join(formatted))
+        return "; ".join(parts) if parts else ""
+
     def on_tool_start(
         self,
         serialized: dict[str, Any],
@@ -138,10 +225,16 @@ class ToolCollector(BaseCallbackHandler):
             "timestamp": datetime.now(UTC).isoformat(),
         }
         self.events.append(event)
-        self._push_event("tool_start", {
+        input_code = self._extract_input_code(input_str[:2000])
+        input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
+        push_data: dict[str, Any] = {
             "tool_name": event["tool_name"],
             "input_preview": event["input_preview"],
-        })
+            "input_summary": input_summary,
+        }
+        if input_code:
+            push_data["input_code"] = input_code[:1200]
+        self._push_event("tool_start", push_data)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_start(event["tool_name"], self._step_index)
             if self._phase_collector_ref is not None:
@@ -246,11 +339,21 @@ class ToolCollector(BaseCallbackHandler):
             ))
             self.artifacts.append(ea)
         self.events.append(event_payload)
-        self._push_event("tool_end", {
+
+        # Build a concise result summary for UI display
+        result_summary = self._build_result_summary(payload, event_payload)
+
+        push_payload: dict[str, Any] = {
             "tool_name": event_payload["tool_name"],
             "status": event_payload["status"],
             "artifact_keys": event_payload.get("artifact_keys", []),
-        })
+        }
+        if result_summary:
+            push_payload["result_summary"] = result_summary
+        raw_text = payload.get("text") if isinstance(payload, dict) else None
+        if isinstance(raw_text, str) and raw_text.strip():
+            push_payload["output_preview"] = raw_text.strip()[:800]
+        self._push_event("tool_end", push_payload)
 
     def absorb_tool_message(self, tool_name: str, result: ToolMessage) -> None:
         """Extract and store artifacts from a ToolMessage returned by tool.invoke().
@@ -262,6 +365,15 @@ class ToolCollector(BaseCallbackHandler):
         artifact = getattr(result, "artifact", None)
         if not isinstance(artifact, dict):
             return
+
+        # Normalize items-envelope format produced by BaseExecTool:
+        # {"schema_version": "1.0", "artifact_type": "plot", "items": {...}}
+        # → merge items under the artifact_type key so downstream checks work.
+        artifact_type = artifact.get("artifact_type", "")
+        items = artifact.get("items")
+        if isinstance(items, dict) and artifact_type:
+            artifact = {**artifact, artifact_type: items}
+
         tool_code = artifact.get("code") if isinstance(artifact.get("code"), str) else None
         artifact_hints = extract_artifact_hints(artifact)
         artifact_meta = build_artifact_meta(
@@ -271,7 +383,10 @@ class ToolCollector(BaseCallbackHandler):
             artifact_hints=artifact_hints,
         )
         producer = tool_name or "unknown"
+        artifact_keys: list[str] = []
+
         if "plot" in artifact and isinstance(artifact["plot"], dict):
+            artifact_keys.append("plot")
             for name, fig in artifact["plot"].items():
                 if fig is None:
                     continue
@@ -284,6 +399,7 @@ class ToolCollector(BaseCallbackHandler):
                 ))
                 self.artifacts.append(ea)
         if "table" in artifact and isinstance(artifact["table"], dict):
+            artifact_keys.append("table")
             for name, table in artifact["table"].items():
                 if table is None:
                     continue
@@ -298,6 +414,7 @@ class ToolCollector(BaseCallbackHandler):
         if "value" in artifact and isinstance(artifact["value"], dict):
             clean = {k: v for k, v in artifact["value"].items() if v is not None}
             if clean:
+                artifact_keys.append("value")
                 ea = self.execution_store.put(ExecutionArtifact(
                     artifact_type=ExecArtifactType.SCALAR,
                     producer_tool=producer,
@@ -308,10 +425,10 @@ class ToolCollector(BaseCallbackHandler):
                 self.artifacts.append(ea)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_end(
-                event_payload["tool_name"],
+                tool_name,
                 self._step_index,
-                status="done" if event_payload["status"] == "ok" else "error",
-                artifact_keys=event_payload.get("artifact_keys"),
+                status="done",
+                artifact_keys=artifact_keys,
             )
             if self._phase_collector_ref is not None:
                 self._phase_collector_ref._graph_version += 1  # noqa: SLF001
@@ -414,37 +531,29 @@ class PhaseCollector(BaseCallbackHandler):
         self.events.append(payload)
 
 
-class PhaseTokenStreamHandler(BaseCallbackHandler):
-    """Streams LLM tokens to the activity panel as ``phase_token`` SSE events.
+class TokenStreamCallbackHandler(BaseCallbackHandler):
+    """Streams LLM tokens to the SSE queue.
 
-    Strips ``<think>``/``</think>`` tags but preserves all content so the
-    user can observe the full chain-of-thought in real time.
+    Splits the raw token stream into two channels:
+    - ``token`` events  — visible text outside ``<think>`` tags (final answer)
+    - ``reasoning_token`` events — text inside ``<think>`` tags (live thinking display)
+
+    Additionally emits block-level signals:
+    - ``thinking_start`` — first reasoning token of each LLM call (no data)
+    - ``thinking_end``   — complete thinking text when the LLM call ends
     """
 
-    THINK_TAG_RE = re.compile(r"</?think>", re.IGNORECASE)
-
-    def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
-        self.queue = queue
-        self.loop = loop
-
-    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
-        if not token:
-            return
-        clean = self.THINK_TAG_RE.sub("", token)
-        if clean:
-            self.loop.call_soon_threadsafe(
-                self.queue.put_nowait, ("phase_token", clean)
-            )
-
-
-class TokenStreamCallbackHandler(BaseCallbackHandler):
     def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
         self.queue = queue
         self.loop = loop
         self._inside_think = False
         self._buffer = ""
         self.reasoning_tokens_emitted = 0
+        # Per-call chunks (reset after each on_llm_end → thinking_end emission)
         self.reasoning_chunks: list[str] = []
+        # Cumulative across all LLM calls (for collected_reasoning())
+        self._all_reasoning: list[str] = []
+        self._thinking_started_this_call: bool = False
 
     def _extract_stream_parts(self, token: str) -> tuple[str, str]:
         self._buffer += token
@@ -493,7 +602,14 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         if visible:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
         if reasoning:
+            # Emit thinking_start on the first reasoning token of this LLM call
+            if not self._thinking_started_this_call:
+                self._thinking_started_this_call = True
+                self.loop.call_soon_threadsafe(
+                    self.queue.put_nowait, ("thinking_start", None)
+                )
             self.reasoning_chunks.append(reasoning)
+            self._all_reasoning.append(reasoning)
             self.reasoning_tokens_emitted += 1
             self.loop.call_soon_threadsafe(
                 self.queue.put_nowait,
@@ -501,11 +617,18 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             )
 
     def on_llm_end(self, response: object, **kwargs: Any) -> None:
+        # Flush any buffered partial tag text
         if self._buffer:
             trailing = self._buffer
             self._buffer = ""
             if self._inside_think:
+                if not self._thinking_started_this_call:
+                    self._thinking_started_this_call = True
+                    self.loop.call_soon_threadsafe(
+                        self.queue.put_nowait, ("thinking_start", None)
+                    )
                 self.reasoning_chunks.append(trailing)
+                self._all_reasoning.append(trailing)
                 self.reasoning_tokens_emitted += 1
                 self.loop.call_soon_threadsafe(
                     self.queue.put_nowait,
@@ -515,8 +638,20 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
                 self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", trailing))
         self._inside_think = False
 
+        # Emit thinking_end with the complete thinking block for this LLM call
+        if self.reasoning_chunks:
+            complete_thinking = "".join(self.reasoning_chunks)
+            self.loop.call_soon_threadsafe(
+                self.queue.put_nowait, ("thinking_end", complete_thinking)
+            )
+            # Reset per-call state
+            self.reasoning_chunks = []
+            self.reasoning_tokens_emitted = 0
+        self._thinking_started_this_call = False
+
     def collected_reasoning(self) -> str | None:
-        merged = "".join(self.reasoning_chunks).strip()
+        """Return all reasoning collected across every LLM call."""
+        merged = "".join(self._all_reasoning).strip()
         return merged or None
 
 

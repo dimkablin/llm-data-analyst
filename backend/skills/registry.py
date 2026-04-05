@@ -320,31 +320,3 @@ class SkillRegistry:
         )
 
 
-class NoOpSkillFilter:
-    def filter(
-        self,
-        skills: tuple[Skill, ...],
-        context: SkillSelectionContext,
-    ) -> tuple[Skill, ...]:
-        _ = context
-        return skills
-
-
-class NullSkillMatcher:
-    def match(
-        self,
-        skills: tuple[Skill, ...],
-        context: SkillSelectionContext,
-    ) -> tuple[SkillSummary, ...]:
-        _ = (skills, context)
-        return ()
-
-
-class NullSkillRanker:
-    def rank(
-        self,
-        skills: tuple[SkillSummary, ...],
-        context: SkillSelectionContext,
-    ) -> tuple[SkillSummary, ...]:
-        _ = context
-        return skills

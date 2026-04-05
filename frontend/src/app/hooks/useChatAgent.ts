@@ -3,17 +3,42 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteLastMessages, getSession, streamQuery } from "../lib/backend-api";
 import type {
   ArtifactPayload,
+  AssistantBlock,
   ChatMessage,
   ExecutionGraph,
   PhaseEvent,
   QueryResponse,
   SessionState,
+  StreamToolCall,
 } from "../lib/backend-types";
+
+const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
+
+function parseInputSummary(toolName: string, raw: string): string {
+  if (META_TOOLS.has(toolName)) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (typeof parsed.code === "string") return parsed.code.split("\n")[0]?.slice(0, 60) ?? "";
+    if (typeof parsed.query === "string") return parsed.query.slice(0, 60);
+    if (typeof parsed.path === "string") return parsed.path;
+    if (typeof parsed.file_path === "string") return parsed.file_path;
+    if (typeof parsed.dataset === "string") return parsed.dataset;
+    if (typeof parsed.alias === "string") return parsed.alias;
+    if (typeof parsed.pattern === "string") return `"${parsed.pattern}"`;
+    if (typeof parsed.command === "string") return parsed.command.split("\n")[0]?.slice(0, 60) ?? "";
+  } catch {
+    /* raw string fallback */
+  }
+  return trimmed.slice(0, 60).replace(/\n/g, " ");
+}
 
 type LiveReasoningSnapshot = {
   fingerprint: string;
   liveReasoningTrace: string | null;
   livePhases: PhaseEvent[];
+  tools?: StreamToolCall[];
 };
 
 function liveReasoningStorageKey(sessionId: string): string {
@@ -52,6 +77,7 @@ function saveLiveReasoningSnapshot(
   },
   liveReasoningTrace: string | null | undefined,
   livePhases: PhaseEvent[] | undefined,
+  tools?: StreamToolCall[] | undefined,
 ): void {
   if (typeof window === "undefined" || !sessionId) {
     return;
@@ -59,13 +85,15 @@ function saveLiveReasoningSnapshot(
   const fingerprint = buildAssistantMessageFingerprint(message);
   const normalizedTrace = String(liveReasoningTrace ?? "").trim();
   const normalizedPhases = Array.isArray(livePhases) ? livePhases.filter(Boolean) : [];
-  if (!fingerprint || (!normalizedTrace && normalizedPhases.length === 0)) {
+  const normalizedTools = Array.isArray(tools) && tools.length > 0 ? tools : undefined;
+  if (!fingerprint || (!normalizedTrace && normalizedPhases.length === 0 && !normalizedTools)) {
     return;
   }
   const snapshot: LiveReasoningSnapshot = {
     fingerprint,
     liveReasoningTrace: normalizedTrace || null,
     livePhases: normalizedPhases,
+    tools: normalizedTools,
   };
   try {
     window.sessionStorage.setItem(
@@ -97,6 +125,7 @@ function loadLiveReasoningSnapshot(sessionId: string): LiveReasoningSnapshot | n
       fingerprint: String(parsed.fingerprint),
       liveReasoningTrace: String(parsed.liveReasoningTrace ?? "").trim() || null,
       livePhases: Array.isArray(parsed.livePhases) ? parsed.livePhases : [],
+      tools: Array.isArray(parsed.tools) && parsed.tools.length > 0 ? parsed.tools : undefined,
     };
   } catch {
     return null;
@@ -134,6 +163,7 @@ function applyLiveReasoningSnapshot(
     ...candidate,
     liveReasoningTrace: snapshot.liveReasoningTrace,
     livePhases: snapshot.livePhases.length > 0 ? snapshot.livePhases : undefined,
+    tools: snapshot.tools ?? candidate.tools,
   };
   return copy;
 }
@@ -201,6 +231,8 @@ type UseChatAgentResult = {
   streamDraft: string;
   streamReasoning: string;
   streamPhases: PhaseEvent[];
+  streamTools: StreamToolCall[];
+  streamBlocks: AssistantBlock[];
   streamGraph: ExecutionGraph | null;
   error: string | null;
   lastQuery: string | null;
@@ -229,21 +261,18 @@ export function useChatAgent({
   const [streamDraft, setStreamDraft] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [streamPhases, setStreamPhases] = useState<PhaseEvent[]>([]);
+  const [streamTools, setStreamTools] = useState<StreamToolCall[]>([]);
+  const [streamBlocks, setStreamBlocks] = useState<AssistantBlock[]>([]);
   const [streamGraph, setStreamGraph] = useState<ExecutionGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
-  const phaseTokenBufRef = useRef("");
-  const phaseFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
-      if (phaseFlushRef.current) {
-        clearTimeout(phaseFlushRef.current);
-      }
     };
   }, []);
 
@@ -278,6 +307,8 @@ export function useChatAgent({
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
+      setStreamTools([]);
+      setStreamBlocks([]);
       setIsStreaming(false);
       setLastQuery(null);
     }
@@ -293,21 +324,11 @@ export function useChatAgent({
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
-    if (phaseFlushRef.current) {
-      clearTimeout(phaseFlushRef.current);
-      phaseFlushRef.current = null;
-    }
-    phaseTokenBufRef.current = "";
   }, []);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
-    if (phaseFlushRef.current) {
-      clearTimeout(phaseFlushRef.current);
-      phaseFlushRef.current = null;
-    }
-    phaseTokenBufRef.current = "";
       setMessages([]);
       setArtifacts([]);
       setIsStreaming(false);
@@ -315,6 +336,8 @@ export function useChatAgent({
       setStreamDraft("");
     setStreamReasoning("");
     setStreamPhases([]);
+    setStreamTools([]);
+    setStreamBlocks([]);
     setError(null);
     setLastQuery(null);
   }, []);
@@ -331,6 +354,8 @@ export function useChatAgent({
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
+      setStreamTools([]);
+      setStreamBlocks([]);
       setStreamGraph(null);
       setIsStreaming(true);
       setStreamingSessionId(sessionId);
@@ -348,8 +373,16 @@ export function useChatAgent({
         streamedText: "",
       };
       const collectedPhases: PhaseEvent[] = [];
+      const collectedTools: StreamToolCall[] = [];
+      const collectedBlocks: AssistantBlock[] = [];
+      let blockCounter = 0;
+      const nextBlockId = () => `blk-${++blockCounter}`;
+      // Accumulated complete thinking blocks (one per LLM call, filled by thinking_end)
       let collectedReasoning = "";
-      let liveReasoningStarted = false;
+      // The last complete thinking block waiting to be attached to the next tool call
+      let pendingThinkingBlock = "";
+      // Track accumulated visible text between tool calls for text blocks
+      let pendingIntentText = "";
       let aborted = false;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -363,53 +396,45 @@ export function useChatAgent({
           {
             onToken: (token) => {
               streamState.streamedText += token;
+              pendingIntentText += token;
               setStreamDraft((prev) => prev + token);
             },
             onFinal: (payload) => {
               streamState.finalPayload = payload;
             },
             onReasoning: (reasoningChunk, mode) => {
-              if (!includeReasoning || !reasoningChunk) {
-                return;
-              }
+              if (!includeReasoning || !reasoningChunk) return;
               if (mode === "token") {
-                if (!liveReasoningStarted) {
-                  liveReasoningStarted = true;
-                  collectedReasoning = collectedReasoning.trim()
-                    ? `${collectedReasoning}\n\n### Р”СѓРјР°СЋ\n`
-                    : "### Р”СѓРјР°СЋ\n";
-                }
-                collectedReasoning += reasoningChunk;
-                setStreamReasoning((prev) => {
-                  let next = prev;
-                  if (!liveReasoningStarted) {
-                    liveReasoningStarted = true;
-                    next = next.trim() ? `${next}\n\n### Думаю\n` : "### Думаю\n";
-                  }
-                  return next + reasoningChunk;
+                // Live display only — complete block arrives via onThinkingEnd
+                setStreamReasoning((prev) => prev + reasoningChunk);
+              }
+              // chunk mode (from emit_live_reasoning progress events) — ignored,
+              // tool activity is shown via tool_start / tool_end events
+            },
+            onThinkingStart: () => {
+              // New thinking block started — clear live display
+              setStreamReasoning("");
+            },
+            onThinkingEnd: (text) => {
+              // Complete thinking block for this LLM call
+              const trimmed = text.trim();
+              if (trimmed) {
+                pendingThinkingBlock = trimmed;
+                collectedReasoning = collectedReasoning
+                  ? `${collectedReasoning}\n\n${trimmed}`
+                  : trimmed;
+                // Add thinking block to block timeline
+                collectedBlocks.push({
+                  type: "thinking",
+                  id: nextBlockId(),
+                  content: trimmed,
                 });
-                return;
+                setStreamBlocks([...collectedBlocks]);
               }
-              const normalized = reasoningChunk.trim();
-              if (!normalized) {
-                return;
-              }
-              collectedReasoning = collectedReasoning
-                ? `${collectedReasoning}\n\n${normalized}`
-                : normalized;
-              setStreamReasoning((prev) => (prev ? `${prev}\n\n${normalized}` : normalized));
+              setStreamReasoning("");
             },
             onPhase: (phaseEvent) => {
-              const pendingTokens = phaseTokenBufRef.current;
-              phaseTokenBufRef.current = "";
-              if (phaseFlushRef.current) {
-                clearTimeout(phaseFlushRef.current);
-                phaseFlushRef.current = null;
-              }
-              const mergedEvent =
-                phaseEvent.status === "streaming" && pendingTokens
-                  ? { ...phaseEvent, content: (phaseEvent.content ?? "") + pendingTokens }
-                  : phaseEvent;
+              const mergedEvent = phaseEvent;
               if (mergedEvent.id) {
                 const idx = collectedPhases.findIndex((p) => p.id === mergedEvent.id);
                 if (idx >= 0) {
@@ -433,64 +458,103 @@ export function useChatAgent({
               });
             },
             onToolStart: (event) => {
-              if (!includeReasoning) return;
-              const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
-              const text = META_TOOLS.has(event.tool_name)
-                ? ""
-                : `\n🔧 **${event.tool_name}** запущен`;
-              if (!text) return;
-              collectedReasoning += text;
-              setStreamReasoning((prev) => prev + text);
+              if (META_TOOLS.has(event.tool_name)) return;
+              const callId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
+              // Attach the last complete thinking block to this tool call
+              const preReasoning = pendingThinkingBlock;
+              pendingThinkingBlock = "";
+
+              // Flush pending intent text as a text block (pre-tool narration)
+              const intentText = pendingIntentText.trim();
+              pendingIntentText = "";
+              if (intentText) {
+                collectedBlocks.push({
+                  type: "text",
+                  id: nextBlockId(),
+                  content: intentText,
+                });
+              }
+
+              // Add tool_use block
+              const toolBlockId = nextBlockId();
+              collectedBlocks.push({
+                type: "tool_use",
+                id: toolBlockId,
+                tool_name: event.tool_name,
+                input_summary: inputSummary,
+                input_code: event.input_code || undefined,
+                input_preview: event.input_preview || undefined,
+                status: "running",
+                started_at: Date.now(),
+              });
+              setStreamBlocks([...collectedBlocks]);
+
+              const entry: StreamToolCall = {
+                id: callId,
+                tool_name: event.tool_name,
+                input_summary: inputSummary,
+                input_preview: event.input_preview || undefined,
+                status: "running",
+                started_at: Date.now(),
+                pre_reasoning: preReasoning || undefined,
+              };
+              collectedTools.push(entry);
+              setStreamTools((prev) => [...prev, entry]);
             },
             onToolEnd: (event) => {
-              if (!includeReasoning) return;
-              const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
               if (META_TOOLS.has(event.tool_name)) return;
-              const status = event.status === "ok" ? "✅" : "❌";
-              const artifacts = event.artifact_keys?.length
-                ? ` → ${event.artifact_keys.join(", ")}`
-                : "";
-              const text = `\n${status} **${event.tool_name}** завершён${artifacts}`;
-              collectedReasoning += text;
-              setStreamReasoning((prev) => prev + text);
+              const endPatch = {
+                status: (event.status === "ok" ? "done" : "error") as "done" | "error",
+                artifact_keys: event.artifact_keys ?? [],
+                ...(event.output_preview ? { output_preview: event.output_preview } : {}),
+              };
+              // Update collectedTools in-place
+              for (let i = collectedTools.length - 1; i >= 0; i--) {
+                if (collectedTools[i]!.tool_name === event.tool_name && collectedTools[i]!.status === "running") {
+                  collectedTools[i] = { ...collectedTools[i]!, ...endPatch };
+                  break;
+                }
+              }
+
+              // Update tool_use block status in collectedBlocks
+              for (let i = collectedBlocks.length - 1; i >= 0; i--) {
+                const blk = collectedBlocks[i]!;
+                if (blk.type === "tool_use" && blk.tool_name === event.tool_name && blk.status === "running") {
+                  collectedBlocks[i] = {
+                    ...blk,
+                    status: event.status === "ok" ? "done" : "error",
+                    input_code: blk.input_code,
+                  };
+                  // Add tool_result block right after
+                  collectedBlocks.push({
+                    type: "tool_result",
+                    id: nextBlockId(),
+                    tool_use_id: blk.id,
+                    tool_name: event.tool_name,
+                    status: (event.status === "ok" ? "ok" : "error") as "ok" | "error",
+                    result_summary: event.result_summary || "",
+                    output_preview: event.output_preview,
+                    artifact_keys: event.artifact_keys,
+                  });
+                  break;
+                }
+              }
+              setStreamBlocks([...collectedBlocks]);
+
+              setStreamTools((prev) => {
+                const copy = [...prev];
+                for (let i = copy.length - 1; i >= 0; i--) {
+                  if (copy[i]!.tool_name === event.tool_name && copy[i]!.status === "running") {
+                    copy[i] = { ...copy[i]!, ...endPatch };
+                    break;
+                  }
+                }
+                return copy;
+              });
             },
             onGraphUpdate: (graph) => {
               setStreamGraph(graph);
-            },
-            onPhaseToken: (token) => {
-              phaseTokenBufRef.current += token;
-              if (!phaseFlushRef.current) {
-                phaseFlushRef.current = setTimeout(() => {
-                  const buf = phaseTokenBufRef.current;
-                  phaseTokenBufRef.current = "";
-                  phaseFlushRef.current = null;
-                  if (!buf) {
-                    return;
-                  }
-                  setStreamPhases((prev) => {
-                    if (prev.length === 0) {
-                      return prev;
-                    }
-                    const copy = [...prev];
-                    const last = copy[copy.length - 1];
-                    if (last.status === "streaming") {
-                      const updated = {
-                        ...last,
-                        content: last.content + buf,
-                      };
-                      copy[copy.length - 1] = updated;
-                      const collectedIndex = collectedPhases.findIndex(
-                        (phase) => phase.id === updated.id,
-                      );
-                      if (collectedIndex >= 0) {
-                        collectedPhases[collectedIndex] = updated;
-                      }
-                      return copy;
-                    }
-                    return prev;
-                  });
-                }, 60);
-              }
             },
             onError: (streamError) => {
               setError(streamError);
@@ -512,6 +576,8 @@ export function useChatAgent({
         setStreamDraft("");
         setStreamReasoning("");
         setStreamPhases([]);
+        setStreamTools([]);
+        setStreamBlocks([]);
       }
 
       if (aborted) {
@@ -530,6 +596,8 @@ export function useChatAgent({
                 "_Генерация остановлена пользователем до появления итогового текста._",
               reasoning: partialReasoning,
               phases: collectedPhases.length > 0 ? [...collectedPhases] : undefined,
+              tools: collectedTools.length > 0 ? [...collectedTools] : undefined,
+              blocks: collectedBlocks.length > 0 ? [...collectedBlocks] : undefined,
             },
           ]);
         }
@@ -556,6 +624,7 @@ export function useChatAgent({
           },
           fallbackReasoning,
           livePhases,
+          collectedTools.length > 0 ? [...collectedTools] : undefined,
         );
         setMessages((prev) => [
           ...prev,
@@ -566,6 +635,8 @@ export function useChatAgent({
             content: finalPayload.text,
             reasoning: finalReasoning,
             phases: savedPhases.length > 0 ? savedPhases : undefined,
+            tools: collectedTools.length > 0 ? [...collectedTools] : undefined,
+            blocks: collectedBlocks.length > 0 ? [...collectedBlocks] : undefined,
             liveReasoningTrace: fallbackReasoning,
             livePhases,
             metrics: finalPayload.metrics,
@@ -592,6 +663,7 @@ export function useChatAgent({
             lastRecoveredAssistant,
             fallbackReasoning,
             collectedPhases.length > 0 ? [...collectedPhases] : undefined,
+            collectedTools.length > 0 ? [...collectedTools] : undefined,
           );
         }
         const hydratedWithLiveTrace = applyLiveReasoningSnapshot(
@@ -676,6 +748,8 @@ export function useChatAgent({
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamTools,
+    streamBlocks,
     streamGraph,
     error,
     lastQuery,

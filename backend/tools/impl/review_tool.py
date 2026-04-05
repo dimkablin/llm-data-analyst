@@ -48,9 +48,8 @@ class ReviewTool(BaseTool):
 
     name: str = "review_tool"
     description: str = (
-        "Проверь качество своего ответа перед финализацией. "
-        "Вызывай после сложного анализа (3+ tool calls). "
-        "Input: question, answer, tool_calls_count, artifact_count."
+        "Системный инструмент проверки качества — вызывается автоматически для аналитических ответов. "
+        "Агенту вызывать не нужно."
     )
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"
@@ -95,8 +94,16 @@ class ReviewTool(BaseTool):
         if issues:
             return json.dumps({"pass": False, "issues": issues}, ensure_ascii=False)
 
-        # ── Phase 2: LLM review for complex queries ─────────────────────
-        if tool_calls_count > 2:
+        # ── Phase 2: LLM review for analytical queries ──────────────────
+        _analytical_keywords = (
+            "график", "диаграмм", "plot", "chart", "визуализ", "гистограмм", "scatter",
+            "анализ", "статистик", "топ", "рейтинг", "сравни", "динамик", "распредел",
+            "sql", "выборк", "таблиц", "данн", "агрегац", "группировк",
+        )
+        is_analytical = artifact_count > 0 or any(
+            kw in question.lower() for kw in _analytical_keywords
+        )
+        if is_analytical:
             try:
                 llm = ThinkingAwareChatOpenAI(
                     model=self._llm_model,

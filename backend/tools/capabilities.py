@@ -70,6 +70,7 @@ def build_runtime_capability_context(
     available_tool_keys: Iterable[str],
     has_dataframe: bool,
     has_db_source: bool,
+    csv_table_names: list[str] | None = None,
 ) -> dict[str, Any]:
     tool_keys = _tool_list(available_tool_keys)
     tool_key_set = set(tool_keys)
@@ -105,19 +106,21 @@ def build_runtime_capability_context(
     available_caps_text = ", ".join(available_labels) if available_labels else "нет"
     unavailable_caps_text = ", ".join(unavailable_labels) if unavailable_labels else "нет"
 
-    prompt_block = "\n".join(
-        [
-            "[ROLE: CAPABILITIES]",
-            f"- Активный режим данных: `{source_mode}`",
-            f"- Доступные tools: {available_tools_text}",
-            f"- Доступные capabilities: {available_caps_text}",
-            f"- Недоступные capabilities: {unavailable_caps_text}",
-            (
-                "- Нельзя обещать действия, требующие недоступного capability. "
-                "Если нужный capability недоступен, честно сообщи об ограничении и предложи ближайшую доступную альтернативу."  # noqa: E501
-            ),
-        ]
+    lines = [
+        "[ROLE: CAPABILITIES]",
+        f"- Активный режим данных: `{source_mode}`",
+        f"- Доступные tools: {available_tools_text}",
+        f"- Доступные capabilities: {available_caps_text}",
+        f"- Недоступные capabilities: {unavailable_caps_text}",
+    ]
+    if csv_table_names:
+        tables_str = ", ".join(f"`{t}`" for t in csv_table_names)
+        lines.append(f"- Таблицы в DuckDB: {tables_str}")
+    lines.append(
+        "- Нельзя обещать действия, требующие недоступного capability. "
+        "Если нужный capability недоступен, честно сообщи об ограничении и предложи ближайшую доступную альтернативу."  # noqa: E501
     )
+    prompt_block = "\n".join(lines)
 
     return {
         "source_mode": source_mode,

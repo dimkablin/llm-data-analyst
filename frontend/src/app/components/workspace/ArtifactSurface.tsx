@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useTheme } from "next-themes";
 import type { ArtifactPayload } from "../../lib/backend-types";
 import { formatNumber } from "../../lib/format";
@@ -70,108 +71,60 @@ function TableArtifact({ artifact }: { artifact: ArtifactPayload }) {
 
 function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
   const { resolvedTheme } = useTheme();
-
-  const payload = artifact.data.data as {
-    data?: unknown[];
-    layout?: Record<string, unknown>;
-    config?: Record<string, unknown>;
-  };
-
+  const containerRef = useRef<HTMLDivElement>(null);
   const isDark = resolvedTheme === "dark";
 
-  const frameBg = isDark ? "#09090b" : "#ffffff";
-  const plotBg = isDark ? "#18181b" : "#ffffff";
-  const text = isDark ? "#fafafa" : "#18181b";
-  const muted = isDark ? "#a1a1aa" : "#717182";
-  const grid = isDark ? "rgba(63,63,70,0.5)" : "rgba(0,0,0,0.10)";
-  const zero = isDark ? "#3f3f46" : "rgba(0,0,0,0.18)";
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
-  const srcDoc = `
-    <html>
-      <head>
-        <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-        <style>
-          html,body,#plot{
-            margin:0;
-            padding:0;
-            width:100%;
-            height:100%;
-            background:${frameBg};
-            color:${text};
-            font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="plot"></div>
-        <script>
-          const payload = ${JSON.stringify(payload).replace(/<\//g, "<\\/")};
-          const baseLayout = payload.layout || {};
-          const themeLayout = {
-            paper_bgcolor: "${frameBg}",
-            plot_bgcolor: "${plotBg}",
-            font: {
-              ...(baseLayout.font || {}),
-              color: "${text}",
-              family: "ui-sans-serif, system-ui, sans-serif"
-            },
-            title: {
-              ...(baseLayout.title || {}),
-              font: {
-                ...(((baseLayout.title || {}).font) || {}),
-                color: "${text}"
-              }
-            },
-            legend: {
-              ...(baseLayout.legend || {}),
-              bgcolor: "transparent",
-              font: { ...(((baseLayout.legend || {}).font) || {}), color: "${muted}" }
-            },
-            xaxis: {
-              ...(baseLayout.xaxis || {}),
-              gridcolor: "${grid}",
-              zerolinecolor: "${zero}",
-              tickfont: { ...(((baseLayout.xaxis || {}).tickfont) || {}), color: "${muted}" }
-            },
-            yaxis: {
-              ...(baseLayout.yaxis || {}),
-              gridcolor: "${grid}",
-              zerolinecolor: "${zero}",
-              tickfont: { ...(((baseLayout.yaxis || {}).tickfont) || {}), color: "${muted}" }
-            },
-            autosize: true,
-            margin: { l: 44, r: 28, t: 44, b: 44 },
-          };
-          Plotly.newPlot(
-            "plot",
-            payload.data || [],
-            Object.assign(themeLayout, baseLayout, {
-              paper_bgcolor: themeLayout.paper_bgcolor,
-              plot_bgcolor: themeLayout.plot_bgcolor,
-              font: themeLayout.font,
-              legend: themeLayout.legend,
-              xaxis: themeLayout.xaxis,
-              yaxis: themeLayout.yaxis,
-              autosize: true,
-              margin: themeLayout.margin,
-            }),
-            Object.assign(
-              { responsive: true, displaylogo: false, scrollZoom: true },
-              payload.config || {},
-            )
-          );
-        </script>
-      </body>
-    </html>
-  `;
+    const payload = artifact.data.data as {
+      data?: unknown[];
+      layout?: Record<string, unknown>;
+      config?: Record<string, unknown>;
+    };
+
+    const frameBg = isDark ? "#09090b" : "#ffffff";
+    const plotBg  = isDark ? "#18181b" : "#ffffff";
+    const text    = isDark ? "#fafafa" : "#18181b";
+    const muted   = isDark ? "#a1a1aa" : "#717182";
+    const grid    = isDark ? "rgba(63,63,70,0.5)"  : "rgba(0,0,0,0.10)";
+    const zero    = isDark ? "#3f3f46"              : "rgba(0,0,0,0.18)";
+
+    const baseLayout = (payload.layout || {}) as Record<string, unknown>;
+    const layout = {
+      ...baseLayout,
+      paper_bgcolor: frameBg,
+      plot_bgcolor:  plotBg,
+      font:   { ...(baseLayout.font   as object || {}), color: text,  family: "ui-sans-serif, system-ui, sans-serif" },
+      legend: { ...(baseLayout.legend as object || {}), bgcolor: "transparent", font: { color: muted } },
+      xaxis:  { ...(baseLayout.xaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
+      yaxis:  { ...(baseLayout.yaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
+      autosize: true,
+      margin: { l: 44, r: 28, t: 44, b: 44 },
+    };
+
+    let cancelled = false;
+    import("plotly.js-dist-min").then((Plotly) => {
+      if (cancelled || !containerRef.current) return;
+      Plotly.newPlot(
+        container,
+        (payload.data || []) as Plotly.Data[],
+        layout as Partial<Plotly.Layout>,
+        { responsive: true, displaylogo: false, scrollZoom: true, ...(payload.config || {}) },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+      import("plotly.js-dist-min").then((Plotly) => Plotly.purge(container));
+    };
+  }, [artifact.id, isDark]);
 
   return (
-    <iframe
-      title={artifact.text || artifact.id}
-      className="h-[400px] w-full rounded-2xl border border-border/40 shadow-inner"
-      style={{ background: frameBg }}
-      srcDoc={srcDoc}
-      sandbox="allow-scripts"
+    <div
+      ref={containerRef}
+      className="h-[400px] w-full rounded-2xl border border-border/40"
     />
   );
 }

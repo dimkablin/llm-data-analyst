@@ -70,14 +70,16 @@ class QuickRouteRAGTests(unittest.TestCase):
 
 
 class QuickRoutePassThroughTests(unittest.TestCase):
-    def test_greeting_returns_none(self) -> None:
-        self.assertIsNone(_make_runner()._quick_route("привет", has_rag=False))
+    def test_greeting_routes_to_chat(self) -> None:
+        # Greetings are now routed to "chat" via _is_chat_message, not passed through
+        self.assertEqual(_make_runner()._quick_route("привет", has_rag=False), "chat")
 
     def test_analytical_prompt_returns_none(self) -> None:
         self.assertIsNone(_make_runner()._quick_route("посчитай продажи", has_rag=False))
 
-    def test_empty_prompt_returns_none(self) -> None:
-        self.assertIsNone(_make_runner()._quick_route("", has_rag=False))
+    def test_empty_prompt_routes_to_chat(self) -> None:
+        # Empty prompts are treated as chat messages, not passed through to the agent
+        self.assertEqual(_make_runner()._quick_route("", has_rag=False), "chat")
 
     def test_generic_question_returns_none(self) -> None:
         self.assertIsNone(
@@ -86,24 +88,6 @@ class QuickRoutePassThroughTests(unittest.TestCase):
 
 
 class UserMemoryInjectionInRouterTests(unittest.TestCase):
-    def test_memory_block_is_included_in_think_prompt(self) -> None:
-        from backend.auth import UserMemory
-
-        runner = _make_runner()
-        runner.user_memory = UserMemory(profile="Analyst", notes="- Uses bar charts")
-        prompt = runner._think_system_prompt()
-        self.assertIn("User memory", prompt)
-        self.assertIn("Analyst", prompt)
-        self.assertIn("Uses bar charts", prompt)
-
-    def test_empty_memory_block_is_omitted_from_think_prompt(self) -> None:
-        from backend.auth import UserMemory
-
-        runner = _make_runner()
-        runner.user_memory = UserMemory(profile="", notes="")
-        prompt = runner._think_system_prompt()
-        self.assertNotIn("User memory", prompt)
-
     def test_memory_block_is_included_in_built_messages(self) -> None:
         from langchain_core.messages import SystemMessage
 

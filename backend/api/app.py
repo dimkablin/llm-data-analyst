@@ -12,7 +12,6 @@ from backend.agent.callbacks import (
     AgentProgressCollector,
     LLMTextCollector,
     PhaseCollector,
-    PhaseTokenStreamHandler,
     TokenStreamCallbackHandler,
     ToolCollector,
 )
@@ -208,7 +207,6 @@ def _configure_routes() -> None:
         AgentProgressCollector=AgentProgressCollector,
         PhaseCollector=PhaseCollector,
         TokenStreamCallbackHandler=TokenStreamCallbackHandler,
-        PhaseTokenStreamHandler=PhaseTokenStreamHandler,
         AgentRunner=AgentRunner,
         effective_enabled_tool_keys_fn=effective_enabled_tool_keys,
         build_tool_catalog_fn=build_tool_catalog,

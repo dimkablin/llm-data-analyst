@@ -153,11 +153,6 @@ class Settings:
     agent_cache_enabled: bool = _get_bool("AGENT_CACHE_ENABLED", True)
     agent_cache_size: int = int(os.getenv("AGENT_CACHE_SIZE", "128"))
     agent_cache_ttl_sec: int = int(os.getenv("AGENT_CACHE_TTL_SEC", "900"))
-    agent_evaluate_enabled: bool = _get_bool("AGENT_EVALUATE_ENABLED", True)
-    agent_react_enabled: bool = _get_bool("AGENT_REACT_ENABLED", False)
-    agent_evaluate_max_tokens: int = int(
-        os.getenv("AGENT_EVALUATE_MAX_TOKENS", "300")
-    )
     agent_analysis_depth: str = (
         os.getenv("AGENT_ANALYSIS_DEPTH", "light").strip().lower()
     )

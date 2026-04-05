@@ -55,7 +55,6 @@ _ToolCollector = None  # type: ignore
 _AgentProgressCollector = None  # type: ignore
 _PhaseCollector = None  # type: ignore
 _TokenStreamCallbackHandler = None  # type: ignore
-_PhaseTokenStreamHandler = None  # type: ignore
 _AgentRunner = None  # type: ignore
 
 _effective_enabled_tool_keys_fn = None  # type: ignore
@@ -83,7 +82,6 @@ def setup(
     AgentProgressCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
-    PhaseTokenStreamHandler,
     AgentRunner,
     effective_enabled_tool_keys_fn,
     build_tool_catalog_fn,
@@ -96,7 +94,7 @@ def setup(
     global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
     global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
-    global _PhaseCollector, _TokenStreamCallbackHandler, _PhaseTokenStreamHandler
+    global _PhaseCollector, _TokenStreamCallbackHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
 
@@ -117,7 +115,6 @@ def setup(
     _AgentProgressCollector = AgentProgressCollector
     _PhaseCollector = PhaseCollector
     _TokenStreamCallbackHandler = TokenStreamCallbackHandler
-    _PhaseTokenStreamHandler = PhaseTokenStreamHandler
     _AgentRunner = AgentRunner
     _effective_enabled_tool_keys_fn = effective_enabled_tool_keys_fn
     _build_tool_catalog_fn = build_tool_catalog_fn
@@ -164,7 +161,13 @@ def _session_runtime_source_payload(state: SessionState) -> dict[str, Any]:
 def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
     if _session_source_type(state) != "csv":
         return state
-    if state.csv_loaded and state.csv_session_id:
+    # Consider the session valid only if it exists AND has not expired (with 60s buffer).
+    session_still_valid = (
+        state.csv_loaded
+        and bool(state.csv_session_id)
+        and (state.csv_expires_at is None or state.csv_expires_at > int(time.time()) + 60)
+    )
+    if session_still_valid:
         return state
     if not state.df_path:
         raise HTTPException(status_code=400, detail="CSV dataset is not attached to this session")
@@ -260,7 +263,6 @@ def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | 
         agent_max_steps=user_runtime.agent_max_steps,
         agent_step_timeout_sec=user_runtime.agent_step_timeout_sec,
         agent_inner_recursion_limit=user_runtime.agent_inner_recursion_limit,
-        agent_react_enabled=user_runtime.agent_react_enabled,
         agent_analysis_depth=depth,
     )
 
@@ -296,8 +298,6 @@ def _build_stream_callbacks(
         progress_collector,
         phase_collector,
     ]
-    if include_reasoning:
-        callbacks.append(_PhaseTokenStreamHandler(queue, loop))
     return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
 
 
@@ -1109,11 +1109,6 @@ async def query_stream(
 
     async def event_generator():
         yield _sse_event("start", {"session_id": session_id})
-        if payload.include_reasoning:
-            yield _sse_event(
-                "reasoning",
-                "### Думаю\nПолучил задачу. Формирую план анализа и последовательность шагов.",
-            )
         agent_task = asyncio.create_task(run_agent())
         reasoning_task = asyncio.create_task(emit_live_reasoning())
         deferred_final: list[tuple[str, Any]] = []

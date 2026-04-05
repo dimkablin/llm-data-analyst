@@ -29,6 +29,8 @@ import { useAppSession } from "../context/AppSessionContext";
 import { changePassword, createAdminUser, deleteAdminUser, deleteAllSessions, listAdminUsers, updateAdminUser } from "../lib/backend-api";
 import type { AccentId } from "../lib/accent";
 import { getStoredAccent, setStoredAccent } from "../lib/accent";
+import type { SpinnerId } from "../lib/spinner";
+import { SPINNER_OPTIONS, getStoredSpinner, setStoredSpinner } from "../lib/spinner";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -70,6 +72,7 @@ export function Account() {
   const [settingsSavedFlash, setSettingsSavedFlash] = useState(false);
   const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">(settings.theme);
   const [accent, setAccent] = useState<AccentId>(() => getStoredAccent());
+  const [spinnerId, setSpinnerId] = useState<SpinnerId>(() => getStoredSpinner());
   const [language, setLanguage] = useState("Русский");
 
   const toolsSectionRef = useRef<ToolAccessSectionRef>(null);
@@ -128,6 +131,10 @@ export function Account() {
   useEffect(() => {
     setStoredAccent(accent);
   }, [accent]);
+
+  useEffect(() => {
+    setStoredSpinner(spinnerId);
+  }, [spinnerId]);
 
   useEffect(() => {
     if (user?.is_admin) void refreshUsers();
@@ -285,6 +292,27 @@ export function Account() {
                           ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
+                    </Field>
+
+                    <Field label="Спиннер загрузки">
+                      <div className="flex flex-wrap gap-2">
+                        {SPINNER_OPTIONS.map((option) => {
+                          const isActive = spinnerId === option.id;
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              title={option.label}
+                              onClick={() => setSpinnerId(option.id)}
+                              className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${isActive ? "border-primary/60 bg-primary/15 text-primary ring-1 ring-primary/30" : "border-border/50 bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground"}`}
+                            >
+                              <span className="font-mono text-base leading-none">{option.frames[0]}</span>
+                              <span>{option.label}</span>
+                              {isActive ? <Check className="h-3.5 w-3.5" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </Field>
 
                     <Field label="Масштаб интерфейса">

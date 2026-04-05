@@ -391,6 +391,10 @@ export async function clearSessionSource(
 type ToolEvent = {
   tool_name: string;
   input_preview?: string;
+  input_summary?: string;
+  input_code?: string;
+  output_preview?: string;
+  result_summary?: string;
   status?: string;
   artifact_keys?: string[];
 };
@@ -400,7 +404,10 @@ type StreamHandlers = {
   onFinal: (payload: QueryResponse) => void;
   onReasoning: (payload: string, mode: "chunk" | "token") => void;
   onPhase?: (event: PhaseEvent) => void;
-  onPhaseToken?: (token: string) => void;
+  /** Fired when a thinking block starts (model entered <think>). No payload. */
+  onThinkingStart?: () => void;
+  /** Fired when a thinking block ends. Carries the complete thinking text for this LLM call. */
+  onThinkingEnd?: (text: string) => void;
   onToolStart?: (event: ToolEvent) => void;
   onToolEnd?: (event: ToolEvent) => void;
   onGraphUpdate?: (graph: ExecutionGraph) => void;
@@ -450,8 +457,12 @@ function consumeSseLine(
     handlers.onPhase?.(payload as PhaseEvent);
     return;
   }
-  if (currentEvent === "phase_token" && typeof payload === "string") {
-    handlers.onPhaseToken?.(payload);
+  if (currentEvent === "thinking_start") {
+    handlers.onThinkingStart?.();
+    return;
+  }
+  if (currentEvent === "thinking_end" && typeof payload === "string") {
+    handlers.onThinkingEnd?.(payload);
     return;
   }
   if (currentEvent === "tool_start" && typeof payload === "object" && payload !== null) {
