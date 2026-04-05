@@ -324,6 +324,7 @@ def _build_response(
     table_count = 0
     plot_count = 0
     value_count = 0
+    json_count = 0
     values: dict[str, Any] = {}
     for artifact in artifacts:
         artifact_type = artifact.get("type")
@@ -334,6 +335,8 @@ def _build_response(
         elif artifact_type == "value":
             value_count += 1
             values.update(artifact.get("data", {}).get("data", {}))
+        elif artifact_type == "json":
+            json_count += 1
     return QueryResponse(
         session_id=session_id,
         text=text,
@@ -346,6 +349,7 @@ def _build_response(
             table_count=table_count,
             plot_count=plot_count,
             value_count=value_count,
+            json_count=json_count,
             model=model_name,
         ),
     )

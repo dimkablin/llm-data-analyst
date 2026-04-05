@@ -102,21 +102,16 @@ class SearchToolHelper:
             artifact_name=artifact_name,
             tool_name=self.tool_name,
         )
-        table = pd.DataFrame(
-            payload["rows"],
-            columns=[
-                "rank",
-                "title",
-                "url",
-                "snippet",
-                "source_name",
-                "published_at",
-            ],
-        )
+        json_data: dict[str, Any] = {
+            "query": result.query,
+            "answer": result.answer,
+            "results": payload["rows"],
+            "sources": list(result.sources),
+        }
         return {
             "schema_version": "1.0",
-            "artifact_type": "table",
-            "items": {str(payload["artifact_name"]): table},
+            "artifact_type": "json",
+            "items": {str(payload["artifact_name"]): json_data},
             "source": payload["source"],
             "recipe": payload["recipe"],
             "meta": payload["meta"],
@@ -125,11 +120,11 @@ class SearchToolHelper:
 
 class SearchTool(BaseExecTool):
     name: str = "search_tool"
-    artifact_name: str = "table"
+    artifact_name: str = "json"
     human_name: str = "результатов поиска"
     description: str = search_tool_prompt
     allowed_libs: set[str] = {"pandas", "numpy"}
-    allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
+    allowed_artifact_types: tuple = (dict,)
     _search_service: SearchIntegrationService = PrivateAttr()
 
     def __init__(
@@ -150,6 +145,28 @@ class SearchTool(BaseExecTool):
             sandbox=sandbox,
         )
         object.__setattr__(self, "_search_service", search_service)
+
+    # Keys that identify a raw search.search() result dict.
+    _SEARCH_RAW_KEYS = frozenset({"query", "results", "sources", "source", "recipe", "meta"})
+
+    def _validate_tool_contract(
+        self, tool_result: object
+    ) -> tuple[dict[str, object] | None, str]:
+        """Extend base contract to handle raw search.search() output.
+
+        When LLM calls search.search() instead of search.search_result(), the
+        result is a dict with query/answer/results/... keys.  Wrap it as a
+        JSON artifact so it passes downstream validation.
+        """
+        if isinstance(tool_result, dict) and self._SEARCH_RAW_KEYS.issubset(tool_result.keys()):
+            json_data: dict[str, Any] = {
+                "query": tool_result.get("query"),
+                "answer": tool_result.get("answer"),
+                "results": tool_result.get("results") or [],
+                "sources": tool_result.get("sources") or [],
+            }
+            return {"search_results": json_data}, ""
+        return super()._validate_tool_contract(tool_result)
 
     def get_execution_scope(self) -> dict[str, Any]:
         return {
@@ -216,8 +233,8 @@ class SearchTool(BaseExecTool):
             max_results=params.get("max_results"),
             language=params.get("language"),
         )
-        # Same contract as BaseExecTool._run: artifact under self.artifact_name ("table"),
-        # not raw envelope "items" — otherwise ToolCollector never registers the table.
+        # Same contract as BaseExecTool._run: artifact under self.artifact_name ("json"),
+        # not raw envelope "items" — otherwise ToolCollector never registers the artifact.
         items = result.get("items") if isinstance(result, dict) else None
         meta = result.get("meta") if isinstance(result, dict) else None
         search_meta = meta.get("search") if isinstance(meta, dict) else None

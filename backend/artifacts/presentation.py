@@ -27,6 +27,7 @@ class PresentationType(StrEnum):
     CHART = "chart"
     VALUE = "value"
     TEXT = "text"
+    JSON = "json"
 
 
 @dataclass
@@ -57,6 +58,7 @@ _TYPE_MAP: dict[ExecArtifactType, PresentationType] = {
     ExecArtifactType.PLOT: PresentationType.CHART,
     ExecArtifactType.SCALAR: PresentationType.VALUE,
     ExecArtifactType.FORECAST: PresentationType.TABLE,
+    ExecArtifactType.JSON: PresentationType.JSON,
 }
 
 
@@ -74,6 +76,8 @@ def to_presentation(exec_artifact: ExecutionArtifact) -> PresentationArtifact:
         data = _serialize_chart_data(exec_artifact)
     elif ptype == PresentationType.VALUE:
         data = _serialize_value_data(exec_artifact)
+    elif ptype == PresentationType.JSON:
+        data = _serialize_json_data(exec_artifact)
     else:
         data = {"format": "text", "data": str(exec_artifact.data or "")}
 
@@ -123,3 +127,15 @@ def _serialize_value_data(artifact: ExecutionArtifact) -> dict[str, Any]:
     if isinstance(data, dict):
         return {"format": "value", "data": data}
     return {"format": "value", "data": {"value": data}}
+
+
+def _serialize_json_data(artifact: ExecutionArtifact) -> dict[str, Any]:
+    import json as _json
+    data = artifact.data
+    if isinstance(data, dict):
+        try:
+            _json.dumps(data, default=str)  # validate serialisability
+            return {"format": "json", "data": data}
+        except Exception:
+            pass
+    return {"format": "json", "data": {"value": str(data)}}

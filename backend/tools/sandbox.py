@@ -258,6 +258,11 @@ class SessionSandbox:
         if extra_scope:
             self._scope.update(extra_scope)
 
+        # Clear stale result candidates from previous executions so they don't
+        # bleed into result extraction for the current execution.
+        for _candidate in _RESULT_CANDIDATES:
+            self._scope.pop(_candidate, None)
+
         # Compile AST — capture last expression as __tool_last_expr__.
         tree = ast.parse(code, filename="<tool_code>", mode="exec")
         if tree.body and isinstance(tree.body[-1], ast.Expr):

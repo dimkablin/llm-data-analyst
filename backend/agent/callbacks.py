@@ -338,6 +338,21 @@ class ToolCollector(BaseCallbackHandler):
                 meta=dict(artifact_meta),
             ))
             self.artifacts.append(ea)
+
+        if "json" in payload and isinstance(payload["json"], dict):
+            event_payload["artifact_keys"].append("json")
+            for name, json_data in payload["json"].items():
+                if json_data is None:
+                    continue
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.JSON,
+                    producer_tool=producer,
+                    data=json_data,
+                    name=name,
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+
         self.events.append(event_payload)
 
         # Build a concise result summary for UI display
@@ -420,6 +435,19 @@ class ToolCollector(BaseCallbackHandler):
                     producer_tool=producer,
                     data=clean,
                     name="values",
+                    meta=dict(artifact_meta),
+                ))
+                self.artifacts.append(ea)
+        if "json" in artifact and isinstance(artifact["json"], dict):
+            artifact_keys.append("json")
+            for name, json_data in artifact["json"].items():
+                if json_data is None:
+                    continue
+                ea = self.execution_store.put(ExecutionArtifact(
+                    artifact_type=ExecArtifactType.JSON,
+                    producer_tool=producer,
+                    data=json_data,
+                    name=name,
                     meta=dict(artifact_meta),
                 ))
                 self.artifacts.append(ea)

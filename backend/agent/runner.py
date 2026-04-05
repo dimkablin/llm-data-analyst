@@ -30,7 +30,7 @@ from backend.agent.prompts import (
     execution_agent_prompt,
     get_detailed_data_info,
 )
-from backend.artifacts.execution import artifact_type_label
+from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact, artifact_type_label
 from backend.auth.user_memory import UserMemory
 from backend.core.config import Settings
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
@@ -554,6 +554,16 @@ class AgentRunner:
                         block_lines.append(
                             "Построен график. Если данные недоступны, ориентируйся на чат и связанные таблицы."
                         )
+                elif artifact_type == "json":
+                    if isinstance(data, dict):
+                        answer = str(data.get("answer") or "").strip()
+                        if answer:
+                            block_lines.append(answer)
+                        results = data.get("results")
+                        if isinstance(results, list):
+                            block_lines.append(f"Найдено результатов: {len(results)}.")
+                    else:
+                        block_lines.append(self._artifact_table_to_text(data))
                 else:
                     block_lines.append(self._artifact_table_to_text(data))
 
@@ -1325,6 +1335,18 @@ class AgentRunner:
                     lines.append(f"- `plot` `{name}`: визуализация построена")
                 continue
 
+            if artifact_type == "json":
+                if isinstance(data, dict):
+                    result_count = len(data.get("results") or [])
+                    answer_preview = str(data.get("answer") or "").strip()[:80]
+                    detail = f"{result_count} результатов" if result_count else ""
+                    if answer_preview:
+                        detail = f"{detail}; ответ: {answer_preview}" if detail else f"ответ: {answer_preview}"
+                    lines.append(f"- `json` `{name}`: {detail or 'данные получены'}")
+                else:
+                    lines.append(f"- `json` `{name}`: JSON-данные получены")
+                continue
+
             lines.append(f"- `{artifact_type}` `{name}`: артефакт сформирован")
 
         return lines
@@ -1407,12 +1429,12 @@ class AgentRunner:
                 if isinstance(row_count, (int, float)) and isinstance(column_count, (int, float)):
                     direct_answer = f"В датасете {int(row_count)} строк и {int(column_count)} столбцов."
 
-        if not direct_answer and not self._response_looks_like_plan_or_trace(base_text):
-            candidate = self._first_sentence(str(base_text or ""))
-            if candidate:
-                direct_answer = candidate
+        # Use full base_text as the main answer when available and not a plan/trace
+        full_base_text = ""
+        if base_text and not self._response_looks_like_plan_or_trace(base_text):
+            full_base_text = base_text.strip()
 
-        if not direct_answer:
+        if not direct_answer and not full_base_text:
             direct_answer = "Ключевой вывод сформирован на основе полученных артефактов."
 
         method_lines = self._artifact_method_lines(artifacts)
@@ -1430,19 +1452,15 @@ class AgentRunner:
                 f"- Построено артефактов: {len(artifacts)} (table={table_count}, plot={plot_count}, value={value_count})."
             ]
 
-        conclusion = (
-            "Итог: ответ сформирован по подтвержденным артефактам; при необходимости могу расширить анализ "
-            "дополнительными срезами или детализацией по конкретным группам."
-        )
+        # Main answer: full base_text if available, otherwise direct_answer (e.g. table extreme)
+        main_answer = full_base_text or direct_answer
 
         return (
-            f"{direct_answer}\n\n"
+            f"{main_answer}\n\n"
             "Что сделано:\n"
             + "\n".join(method_lines)
             + "\n\nКлючевые наблюдения:\n"
             + "\n".join(observation_lines)
-            + "\n\nИтог:\n"
-            + conclusion
         )
 
     @staticmethod
@@ -1839,12 +1857,12 @@ class AgentRunner:
         prompt = normalized_prompt.strip()
         if not prompt:
             return True
+        if any(m in prompt for m in _DATA_MARKERS):
+            return False
         if any(prompt.startswith(g) or prompt == g for g in _CHAT_GREETINGS):
             return True
         if any(m in prompt for m in _CHAT_ABOUT_SELF):
             return True
-        if any(m in prompt for m in _DATA_MARKERS):
-            return False
         if len(prompt) < 4 and not has_data:
             return True
         return False
@@ -1967,11 +1985,29 @@ class AgentRunner:
                     callbacks, phase="act", title="Ответ из базы знаний готов",
                     details="Передаю результат в финализацию.", step_index=0, max_steps=1,
                 )
+                rag_artifacts: list = []
+                try:
+                    rag_result = self.rag_service.search(
+                        query=prompt, include_references=True
+                    )
+                    rag_json_data: dict = {
+                        "query": rag_result.query,
+                        "answer": rag_result.answer or final_text,
+                        "references": rag_result.references,
+                    }
+                    rag_artifacts = [ExecutionArtifact(
+                        artifact_type=ExecArtifactType.JSON,
+                        producer_tool="rag_tool",
+                        data=rag_json_data,
+                        name="rag_result",
+                    )]
+                except Exception:
+                    pass
                 return {
                     "response": AgentResponse(
                         final_text=final_text,
                         reasoning=None,
-                        artifacts=[],
+                        artifacts=rag_artifacts,
                         route="rag",
                         tool_calls=0,
                         tool_names=[],

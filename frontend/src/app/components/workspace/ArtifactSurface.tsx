@@ -69,6 +69,82 @@ function TableArtifact({ artifact }: { artifact: ArtifactPayload }) {
   );
 }
 
+function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
+  const data = artifact.data.data as Record<string, unknown>;
+  const answer = typeof data?.answer === "string" ? data.answer.trim() : null;
+  const query = typeof data?.query === "string" ? data.query.trim() : null;
+  const results = Array.isArray(data?.results) ? data.results as Array<Record<string, unknown>> : null;
+  const references = Array.isArray(data?.references) ? data.references as string[] : null;
+  const sources = Array.isArray(data?.sources) ? data.sources as string[] : null;
+
+  const isSearchResult = results !== null;
+  const isRagResult = references !== null && !isSearchResult;
+
+  if (isSearchResult || isRagResult) {
+    return (
+      <div className="space-y-3">
+        {query && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold uppercase tracking-wider">Запрос: </span>{query}
+          </p>
+        )}
+        {answer && (
+          <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2 text-sm">
+            {answer}
+          </div>
+        )}
+        {results && results.length > 0 && (
+          <ol className="space-y-2">
+            {results.slice(0, 8).map((r, i) => (
+              <li key={i} className="rounded-xl border border-border/30 bg-background/20 px-3 py-2 text-sm">
+                <a
+                  href={typeof r.url === "string" ? r.url : undefined}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary hover:underline"
+                >
+                  {typeof r.title === "string" ? r.title : `Результат ${i + 1}`}
+                </a>
+                {typeof r.snippet === "string" && r.snippet && (
+                  <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">{r.snippet}</p>
+                )}
+                {typeof r.source_name === "string" && r.source_name && (
+                  <p className="mt-0.5 text-xs text-muted-foreground/60">{r.source_name}</p>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+        {(references ?? sources ?? []).length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Источники</p>
+            <ul className="space-y-1">
+              {(references ?? sources ?? []).map((ref, i) => (
+                <li key={i} className="text-xs">
+                  <a
+                    href={ref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline break-all"
+                  >
+                    {ref}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <pre className="overflow-auto rounded-2xl border border-border/40 bg-background/40 p-4 text-xs">
+      {JSON.stringify(data, null, 2)}
+    </pre>
+  );
+}
+
 function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -150,11 +226,12 @@ export function ArtifactSurface({
       {artifact.type === "plot" && artifact.data.format === "plotly-json" ? <PlotArtifact artifact={artifact} /> : null}
       {artifact.type === "table" && artifact.data.format === "split" ? <TableArtifact artifact={artifact} /> : null}
       {artifact.type === "value" && artifact.data.format === "value" ? <ValueArtifact artifact={artifact} /> : null}
-      {artifact.type !== "plot" || artifact.data.format !== "plotly-json" ? null : null}
+      {artifact.type === "json" && artifact.data.format === "json" ? <JsonArtifact artifact={artifact} /> : null}
       {!(
         (artifact.type === "plot" && artifact.data.format === "plotly-json") ||
         (artifact.type === "table" && artifact.data.format === "split") ||
-        (artifact.type === "value" && artifact.data.format === "value")
+        (artifact.type === "value" && artifact.data.format === "value") ||
+        (artifact.type === "json" && artifact.data.format === "json")
       ) ? (
         <pre className="overflow-auto rounded-2xl border border-border/40 bg-background/40 p-4 text-xs">
           {JSON.stringify(artifact.data.data, null, 2)}

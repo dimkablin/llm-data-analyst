@@ -326,6 +326,9 @@ class BaseExecTool(BaseTool):
             "metric": "value",
             "metrics": "value",
             "values": "value",
+            "json_data": "json",
+            "structured": "json",
+            "search_result": "json",
         }
         normalized_artifact_type = str(raw_artifact_type or self.artifact_name).strip().lower()
         normalized_artifact_type = artifact_aliases.get(
