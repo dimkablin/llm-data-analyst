@@ -6,7 +6,6 @@ Internally calls LLM with a compact planning prompt + available tool list.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -41,7 +40,8 @@ class PlannerTool(BaseTool):
 
     name: str = "planner_tool"
     description: str = (
-        "Составь план анализа перед любой задачей с данными (CSV, БД, статистика, графики, метрики, прогноз). "
+        "Составь план анализа перед любой задачей с данными "
+        "(CSV, БД, статистика, графики, метрики, прогноз). "
         "Вызывай ПЕРВЫМ — до sql_tool, pandas_tool, plotly_tool и других инструментов данных. "
         "Исключение: тривиальные выборки ('покажи первые строки') и веб-поиск. "
         "Input: question (вопрос пользователя)."

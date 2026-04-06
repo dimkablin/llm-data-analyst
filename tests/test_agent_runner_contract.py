@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 import textwrap
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -48,13 +48,12 @@ from backend.tools.impl.factory import (  # noqa: E402
     MemoryToolFactory,
     PandasToolFactory,
     PlannerToolFactory,
-    SQLToolFactory,
     SessionNoteToolFactory,
+    SQLToolFactory,
     ValueToolFactory,
 )
 from backend.tools.policy import is_tool_allowed  # noqa: E402
 from backend.tools.registry import ToolRegistry  # noqa: E402
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -617,7 +616,7 @@ class TestDepthProfileContract:
 class TestAgentResponseContract:
     """AgentResponse must always carry a valid route value."""
 
-    VALID_ROUTES = {"chat", "analysis", "rag", "summary"}
+    VALID_ROUTES: ClassVar[set[str]] = {"chat", "analysis", "rag", "summary"}
 
     def test_default_route_is_valid(self):
         r = AgentResponse(final_text="", reasoning=None, artifacts=[])

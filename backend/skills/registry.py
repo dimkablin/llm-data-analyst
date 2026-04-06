@@ -9,7 +9,6 @@ import yaml
 from backend.skills.models import (
     Skill,
     SkillExample,
-    SkillSelectionContext,
     SkillSelectionError,
     SkillSummary,
     SkillValidationError,

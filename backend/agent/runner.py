@@ -157,7 +157,8 @@ GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефак
 
 _LLM_UNAVAILABLE_USER_TEXT = (
     "Языковая модель сейчас недоступна: нет соединения с LLM-сервером или сработал таймаут. "
-    "Проверьте, что Ollama (или другой провайдер) запущен и что LLM_MODEL_API_URL доступен из контейнера backend."
+    "Проверьте, что Ollama (или другой провайдер) запущен и что "
+    "LLM_MODEL_API_URL доступен из контейнера backend."
 )
 
 # Depth profiles control the inner tool-calling loop iteration limit.
@@ -552,7 +553,8 @@ class AgentRunner:
                         block_lines.append(self._artifact_table_to_text(data))
                     else:
                         block_lines.append(
-                            "Построен график. Если данные недоступны, ориентируйся на чат и связанные таблицы."
+                            "Построен график. Если данные недоступны, "
+                            "ориентируйся на чат и связанные таблицы."
                         )
                 elif artifact_type == "json":
                     if isinstance(data, dict):
@@ -622,7 +624,8 @@ class AgentRunner:
             "- Не выдумывай факты.\n"
             "- Опирайся только на чат и артефакты из входа.\n"
             "- Не добавляй даты, сроки, дедлайны и периоды в пункты 3 и 5.\n"
-            "- В 'Рекомендации' пиши только практические рекомендации в формате 'действие — ответственный — KPI'.\n"
+            "- В 'Рекомендации' пиши только практические рекомендации "
+            "в формате 'действие — ответственный — KPI'.\n"
             "- В 'Заключение' отрази сильные стороны, зоны роста и цель на период.\n"
             "- В 'Следующие шаги' пиши только 'что сделать — кто отвечает', без дат и сроков.\n"
             "- Если таблица маленькая, используй её целиком как основание для выводов.\n"
@@ -661,7 +664,8 @@ class AgentRunner:
                     "УПРАВЛЕНЧЕСКАЯ ЗАПИСКА\n\n"
                     "1. Цель анализа\nНедостаточно данных для формулировки цели.\n\n"
                     "2. Основные выводы\nНе удалось извлечь подтверждённые выводы.\n\n"
-                    "3. Рекомендации\n- уточнить контекст запроса — пользователь — наличие уточнённой постановки\n\n"
+                    "3. Рекомендации\n- уточнить контекст запроса — пользователь — "
+                    "наличие уточнённой постановки\n\n"
                     "4. Заключение\nСильные стороны: запрос на структурированный итог сформулирован. "
                     "Зоны роста: недостаточно данных. Цель на период: уточнить входные материалы.\n\n"
                     "5. Следующие шаги\n- уточнить, по какой части переписки нужен отчёт — пользователь"
@@ -1341,7 +1345,11 @@ class AgentRunner:
                     answer_preview = str(data.get("answer") or "").strip()[:80]
                     detail = f"{result_count} результатов" if result_count else ""
                     if answer_preview:
-                        detail = f"{detail}; ответ: {answer_preview}" if detail else f"ответ: {answer_preview}"
+                        detail = (
+                            f"{detail}; ответ: {answer_preview}"
+                            if detail
+                            else f"ответ: {answer_preview}"
+                        )
                     lines.append(f"- `json` `{name}`: {detail or 'данные получены'}")
                 else:
                     lines.append(f"- `json` `{name}`: JSON-данные получены")
@@ -1387,7 +1395,8 @@ class AgentRunner:
                 lines.append(f"- `{name}`: значение {max_value} для `{max_label}`.")
             else:
                 lines.append(
-                    f"- `{name}`: максимум у `{max_label}` = {max_value}, минимум у `{min_label}` = {min_value}."
+                    f"- `{name}`: максимум у `{max_label}` = {max_value}, "
+                    f"минимум у `{min_label}` = {min_value}."
                 )
             if len(lines) >= max_items:
                 break
@@ -1422,10 +1431,14 @@ class AgentRunner:
             if asks_direct_answer and "сколько" in normalized:
                 if isinstance(row_count, (int, float)) and ("строк" in normalized or "запис" in normalized):
                     direct_answer = f"В датасете {int(row_count)} строк."
-                elif isinstance(column_count, (int, float)) and ("столбц" in normalized or "колонк" in normalized):
+                elif isinstance(column_count, (int, float)) and (
+                    "столбц" in normalized or "колонк" in normalized
+                ):
                     direct_answer = f"В датасете {int(column_count)} столбцов."
 
-            if not direct_answer and ("датасет" in normalized or "данн" in normalized or "расскажи" in normalized):
+            if not direct_answer and (
+                "датасет" in normalized or "данн" in normalized or "расскажи" in normalized
+            ):
                 if isinstance(row_count, (int, float)) and isinstance(column_count, (int, float)):
                     direct_answer = f"В датасете {int(row_count)} строк и {int(column_count)} столбцов."
 
@@ -1449,7 +1462,8 @@ class AgentRunner:
         observation_lines.extend(self._table_observation_lines(artifacts, max_items=2))
         if not observation_lines:
             observation_lines = [
-                f"- Построено артефактов: {len(artifacts)} (table={table_count}, plot={plot_count}, value={value_count})."
+                f"- Построено артефактов: {len(artifacts)} "
+                f"(table={table_count}, plot={plot_count}, value={value_count})."
             ]
 
         # Main answer: full base_text if available, otherwise direct_answer (e.g. table extreme)

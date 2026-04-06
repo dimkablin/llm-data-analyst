@@ -671,7 +671,9 @@ class AuthDB:
             ),
             agent_step_timeout_sec=int(row["agent_step_timeout_sec"] or 45),
             agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 14),
-            agent_react_enabled=bool(row["agent_react_enabled"]) if "agent_react_enabled" in row.keys() else False,
+            agent_react_enabled=(
+                bool(row["agent_react_enabled"]) if "agent_react_enabled" in row.keys() else False
+            ),
             ui_scale=int(row["ui_scale"] if "ui_scale" in row.keys() else 100),
         )
 

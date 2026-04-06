@@ -192,7 +192,7 @@ class TestSkillsPolicy:
                 """),
                 encoding="utf-8",
             )
-        with pytest.raises(SkillValidationError, match="[Dd]uplicate"):
+        with pytest.raises(SkillValidationError, match=r"[Dd]uplicate"):
             SkillRegistry.from_path(tmp_path).load()
 
     def test_tool_skill_full_instructions_in_prompt_block(
