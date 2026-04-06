@@ -345,6 +345,24 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self.tool_names.append(tool_name)
 
+        error_text = str(error) if isinstance(error, BaseException) else str(error)
+        event_payload: dict[str, Any] = {
+            "phase": "end",
+            "tool_name": tool_name or "unknown",
+            "status": "error",
+            "error": error_text,
+            "artifact_keys": [],
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        self.events.append(event_payload)
+        self._push_event("tool_end", {
+            "tool_name": tool_name or "unknown",
+            "status": "error",
+            "artifact_keys": [],
+            "result_summary": error_text[:300],
+            "output_preview": error_text[:800],
+        })
+
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
         payload = self._normalize_output(output)

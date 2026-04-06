@@ -85,7 +85,7 @@ export function ToolUseBlock({
 
         {/* Result summary inline */}
         {!isRunning && !artifact_keys?.length && result_summary ? (
-          <span className="ml-auto shrink-0 truncate font-mono text-[11px] text-muted-foreground/40">
+          <span className={`ml-auto shrink-0 truncate font-mono text-[11px] ${status === "error" ? "text-destructive/70" : "text-muted-foreground/40"}`}>
             {result_summary}
           </span>
         ) : null}
@@ -116,9 +116,9 @@ export function ToolUseBlock({
           {output_preview ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/30 select-none">
-                Output
+                {status === "error" ? "Error" : "Output"}
               </span>
-              <div className="overflow-x-auto rounded border border-border/20 bg-muted/15 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/60 whitespace-pre-wrap">
+              <div className={`overflow-x-auto rounded border px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap ${status === "error" ? "border-destructive/20 bg-destructive/5 text-destructive/80" : "border-border/20 bg-muted/15 text-muted-foreground/60"}`}>
                 {output_preview}
               </div>
             </div>

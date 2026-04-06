@@ -265,6 +265,9 @@ export type ToolUseBlock = {
   input_preview?: string;
   status: "running" | "done" | "error";
   started_at: number;
+  result_summary?: string;
+  output_preview?: string;
+  artifact_keys?: string[];
 };
 
 export type ToolResultBlock = {

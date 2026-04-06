@@ -60,6 +60,13 @@ class SQLTool(BaseTool):
         self._sandbox = sandbox
 
     def _run(self, question: str) -> tuple[str, dict[str, object]]:
+        try:
+            return self._run_query(question)
+        except Exception as exc:
+            error_text = f"❌ Ошибка sql_tool: {exc}"
+            return error_text, {"text": error_text}
+
+    def _run_query(self, question: str) -> tuple[str, dict[str, object]]:
         import pandas as pd
 
         payload = self._service.build_table_artifact(question)
