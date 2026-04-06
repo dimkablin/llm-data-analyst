@@ -202,9 +202,9 @@ class SearchIntegrationTests(unittest.TestCase):
 
 
 class SearchToolRunDirectPayloadTests(unittest.TestCase):
-    """Dict-style tool input must expose payload['table'] for ToolCollector."""
+    """Dict-style tool input must expose payload['json'] for ToolCollector."""
 
-    def test_run_direct_uses_table_key_not_items_envelope(self) -> None:
+    def _make_service(self) -> SearchIntegrationService:
         def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
             _ = (url, payload, timeout_sec)
             return {
@@ -214,7 +214,7 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
                 ],
             }
 
-        service = SearchIntegrationService(
+        return SearchIntegrationService(
             SearchIntegrationConfig(
                 enabled=True,
                 base_url="https://search.example",
@@ -226,47 +226,30 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
             ),
             transport=fake_transport,
         )
-        tool = SearchTool(pd.DataFrame(), search_service=service)
+
+    def test_run_direct_uses_json_key_not_items_envelope(self) -> None:
+        tool = SearchTool(pd.DataFrame(), search_service=self._make_service())
         _text, payload = tool._run_direct({"query": "q"})
 
-        self.assertIn("table", payload)
-        self.assertIsInstance(payload["table"], dict)
-        self.assertEqual(len(payload["table"]), 1)
-        df = next(iter(payload["table"].values()))
-        self.assertIsInstance(df, pd.DataFrame)
-        self.assertGreaterEqual(len(df), 1)
+        # Artifact key must be 'json' (search_tool.artifact_name), not 'table'
+        self.assertIn("json", payload)
+        self.assertIsInstance(payload["json"], dict)
+        # Contains one key (the artifact name, e.g. "search_results")
+        self.assertEqual(len(payload["json"]), 1)
+        result_data = next(iter(payload["json"].values()))
+        self.assertIsInstance(result_data, dict)
+        self.assertIn("results", result_data)
+        self.assertGreaterEqual(len(result_data["results"]), 1)
         # Raw tool-result envelope must not sit at top level (breaks artifact extraction)
         self.assertNotIn("items", payload)
 
     def test_run_accepts_query_kwarg_like_langchain(self) -> None:
         """Structured tool calls pass query=... as kwargs; _run must not raise TypeError."""
-
-        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
-            _ = (url, payload, timeout_sec)
-            return {
-                "answer": "Synth",
-                "results": [
-                    {"title": "T1", "url": "https://x/1", "snippet": "S1"},
-                ],
-            }
-
-        service = SearchIntegrationService(
-            SearchIntegrationConfig(
-                enabled=True,
-                base_url="https://search.example",
-                search_endpoint="/api/v1/search/",
-                fetch_endpoint="/api/v1/fetch/",
-                timeout_sec=9.0,
-                max_results_default=5,
-                fetch_top_n_default=0,
-            ),
-            transport=fake_transport,
-        )
-        tool = SearchTool(pd.DataFrame(), search_service=service)
+        tool = SearchTool(pd.DataFrame(), search_service=self._make_service())
         _text, payload = tool._run(query="capital of France", run_manager=None)
 
-        self.assertIn("table", payload)
-        self.assertIsInstance(payload["table"], dict)
+        self.assertIn("json", payload)
+        self.assertIsInstance(payload["json"], dict)
 
     def test_run_accepts_queries_list_kwarg(self) -> None:
         def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
@@ -293,7 +276,7 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
         tool = SearchTool(pd.DataFrame(), search_service=service)
         _text, payload = tool._run(queries=["one", "two"], run_manager=None)
 
-        self.assertIn("table", payload)
+        self.assertIn("json", payload)
 
 
 if __name__ == "__main__":

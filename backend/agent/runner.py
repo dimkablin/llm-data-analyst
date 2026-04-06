@@ -258,8 +258,8 @@ class AgentRunner:
 
     # ── Utility: LLM / data context ──────────────────────────────────────────
 
+    @staticmethod
     def _db_session_prompt_block(
-        self,
         *,
         session_source: dict[str, Any] | None,
         runtime: RuntimeDBConnectionConfig | None,

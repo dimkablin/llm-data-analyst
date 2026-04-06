@@ -69,7 +69,7 @@ tool_result
             has_db_source=False,
         )
 
-        prompt = runner._think_system_prompt(capability_context)
+        prompt = runner._build_execution_system_prompt(capability_context=capability_context)
 
         self.assertIn("value_tool", prompt)
         self.assertIn("search_tool", prompt)
