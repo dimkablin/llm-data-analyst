@@ -59,6 +59,7 @@ type Props = {
   streamBlocks: AssistantBlock[];
   streamGraph?: ExecutionGraph | null;
   isStreaming: boolean;
+  isBackgroundStreaming?: boolean;
   error: string | null;
   canRetry: boolean;
   isReady: boolean;
@@ -85,6 +86,7 @@ export function ChatPanel({
   streamBlocks,
   streamGraph,
   isStreaming,
+  isBackgroundStreaming = false,
   error,
   canRetry,
   isReady,
@@ -154,7 +156,7 @@ export function ChatPanel({
   }
 
   async function handleSend(): Promise<void> {
-    if (!input.trim() || isStreaming || isUploading) {
+    if (!input.trim() || isStreaming || isBackgroundStreaming || isUploading) {
       return;
     }
     const value = input;
@@ -255,7 +257,7 @@ export function ChatPanel({
                 {/* Streaming answer text */}
                 {streamDraft ? (
                   <div className="rounded-2xl rounded-tl-none border border-border/40 bg-card px-4 py-3 text-[13px] leading-relaxed lg:px-5 lg:py-4 lg:text-[14px]">
-                    {streamDraft}
+                    <MarkdownBlock content={streamDraft} />
                   </div>
                 ) : !streamBlocks.length && !streamTools.length ? (
                   <div className="rounded-2xl rounded-tl-none border border-border/40 bg-card px-4 py-3 text-[13px] leading-relaxed lg:px-5 lg:py-4 lg:text-[14px]">
@@ -271,6 +273,18 @@ export function ChatPanel({
       </div>
 
       <div className="border-t border-border/50 bg-background/40 p-3 backdrop-blur-xl lg:p-4 xl:p-6">
+        {isBackgroundStreaming ? (
+          <div className="mb-4 flex items-center justify-between rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-300">
+            <span>Генерация идёт в другой сессии...</span>
+            <button
+              type="button"
+              onClick={onStop}
+              className="ml-4 rounded-lg border border-amber-500/40 px-3 py-1 text-[12px] font-medium text-amber-300 transition-colors hover:bg-amber-500/20"
+            >
+              Остановить
+            </button>
+          </div>
+        ) : null}
         {error ? (
           <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div>
         ) : null}
@@ -363,10 +377,10 @@ export function ChatPanel({
               <button
                 type="button"
                 onClick={() => void handleSend()}
-                disabled={!input.trim() || isUploading}
-                title={isUploading ? "Дождитесь загрузки файла..." : undefined}
+                disabled={!input.trim() || isUploading || isBackgroundStreaming}
+                title={isUploading ? "Дождитесь загрузки файла..." : isBackgroundStreaming ? "Дождитесь завершения генерации..." : undefined}
                 className={`rounded-lg p-2 transition-all ${
-                  input.trim() && !isUploading
+                  input.trim() && !isUploading && !isBackgroundStreaming
                     ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
                     : "cursor-not-allowed bg-secondary text-muted-foreground opacity-60"
                 }`}

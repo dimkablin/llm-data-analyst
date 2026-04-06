@@ -52,6 +52,8 @@ export function Workspace() {
     messages,
     artifacts,
     isStreaming,
+    isStreamingCurrentSession,
+    backgroundStreamingSessionId,
     streamingSessionId,
     streamDraft,
     streamReasoning,
@@ -131,15 +133,13 @@ export function Workspace() {
 
   const loadSession = useCallback(
     async (nextSessionId: string) => {
-      const preserveActive =
-        isStreamingRef.current && streamingSessionIdRef.current === nextSessionId;
-      if (!preserveActive) {
-        reset();
-      }
+      // Do NOT call reset() here — an ongoing stream in another session must survive
+      // the tab switch. The hydrate() call inside applySessionState handles display
+      // state correctly without aborting the background stream.
       const session = await getSession(nextSessionId);
       applySessionState(session, nextSessionId);
     },
-    [applySessionState, reset],
+    [applySessionState],
   );
 
   useEffect(() => {
@@ -298,7 +298,8 @@ return (
                 streamTools={streamTools}
                 streamBlocks={streamBlocks}
                 streamGraph={streamGraph}
-                isStreaming={isStreaming}
+                isStreaming={isStreamingCurrentSession}
+                isBackgroundStreaming={Boolean(backgroundStreamingSessionId)}
                 error={error}
                 canRetry={Boolean(lastQuery)}
                 isReady={Boolean(sessionId)}
