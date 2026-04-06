@@ -140,19 +140,26 @@ class SessionSandbox:
     # ------ bootstrap ------------------------------------------------
 
     def _init_scope(self) -> None:
-        """Populate scope with standard libs and safe builtins."""
+        """Populate scope with standard libs and safe builtins.
+
+        We use a single dict for both globals and locals in exec() so that
+        list/dict/set comprehensions and nested functions can resolve names like
+        ``df`` via LOAD_GLOBAL — they cannot see a separate locals dict.
+        """
         import numpy as _np  # pylint: disable=reimported
         import pandas as _pd  # pylint: disable=reimported
 
+        safe = dict(SAFE_BUILTINS)
+        safe["__import__"] = self._make_safe_import(_ALL_ALLOWED_LIBS)
+
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
-        self._scope.update({"pd": _pd, "np": _np, "df": df_entry})
+        self._scope.update({"__builtins__": safe, "pd": _pd, "np": _np, "df": df_entry})
         if self._bound_db_config is not None:
             self._scope["db_connection"] = self._bound_db_config
             self._scope["db_runtime"] = self._bound_db_config
 
-        safe = dict(SAFE_BUILTINS)
-        safe["__import__"] = self._make_safe_import(_ALL_ALLOWED_LIBS)
-        self._globals = {"__builtins__": safe}
+        # _globals is kept as an alias so callers that reference it still work.
+        self._globals = self._scope
 
     @staticmethod
     def _make_safe_import(allowed: frozenset[str]):
@@ -278,7 +285,7 @@ class SessionSandbox:
 
         def _run():
             try:
-                exec(compiled, self._globals, self._scope)  # pylint: disable=exec-used
+                exec(compiled, self._scope)  # pylint: disable=exec-used
             except Exception as exc:
                 error_box.append(exc)
 
