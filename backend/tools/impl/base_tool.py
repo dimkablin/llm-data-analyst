@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
+from backend.agent.callbacks import strip_thinking
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import extract_artifact_hints
 from backend.core.config import settings
@@ -479,7 +480,7 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
                 SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),  # noqa: E501
                 HumanMessage(content=prompt),
             ])
-            fixed = str(resp.content or "").strip()
+            fixed = strip_thinking(str(resp.content or "")).strip()
             # Strip markdown code fences if LLM adds them despite instructions.
             fixed = re.sub(r"^```(?:python)?\s*", "", fixed, flags=re.IGNORECASE)
             fixed = re.sub(r"\s*```$", "", fixed)
@@ -489,7 +490,9 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
             return None
 
     def _run(self, code: str) -> tuple[str, dict[str, object]]:
-        code = normalize_code(code)
+        # Strip any leaked <think>...</think> blocks (e.g. when the upstream LLM
+        # embeds reasoning inside the generated code argument).
+        code = normalize_code(strip_thinking(code))
         if not code:
             text = f"❌ Ошибка при создании {self.human_name}: пустой код инструмента"
             return text, {self.artifact_name: None, "text": text}

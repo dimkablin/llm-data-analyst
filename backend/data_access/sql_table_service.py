@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from backend.agent.callbacks import strip_thinking
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.core.config import settings
@@ -539,7 +540,7 @@ CANDIDATES:
                 HumanMessage(content=user_prompt),
             ]
         )
-        return clean_sql(_message_text(resp.content))
+        return clean_sql(strip_thinking(_message_text(resp.content)))
 
     @staticmethod
     def _is_trivial_sql(sql: str) -> bool:

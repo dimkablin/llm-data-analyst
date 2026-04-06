@@ -96,11 +96,17 @@ class TestThinkingOutputParserFullDoc(unittest.TestCase):
         self.assertEqual(vis, "visible")
         self.assertIn("thinking", rsn)
 
-    def test_stray_close_tag_passes_through(self):
-        """A </think> without a matching <think> should not eat content."""
+    def test_stray_close_tag_discarded(self):
+        """An orphaned </think> (vLLM strips the opening tag) is discarded; content after is visible."""
         vis, rsn = _full_parse("</think>SELECT 1")
-        self.assertIn("SELECT 1", vis)
+        self.assertEqual(vis, "SELECT 1")
         self.assertEqual(rsn, "")
+
+    def test_stray_close_tag_with_prefix_reasoning(self):
+        """Content before an orphaned </think> is treated as reasoning, not visible."""
+        vis, rsn = _full_parse("some reasoning</think>SELECT 1")
+        self.assertEqual(vis, "SELECT 1")
+        self.assertEqual(rsn, "some reasoning")
 
     def test_sql_in_thinking_not_in_visible(self):
         thinking = "<think>```sql\nSELECT evil FROM t\n```\n</think>"

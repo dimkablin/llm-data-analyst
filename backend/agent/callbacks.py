@@ -68,17 +68,30 @@ class ThinkingOutputParser:
                 self._buf = self._buf[idx + _THINK_CLOSE_LEN:]
                 self._inside = False
             else:
-                idx = lower.find(_THINK_OPEN)
-                if idx == -1:
-                    # Keep a tail that could be a partial opening tag.
-                    keep = _THINK_OPEN_LEN - 1
+                idx_open = lower.find(_THINK_OPEN)
+                idx_close = lower.find(_THINK_CLOSE)
+
+                if idx_open == -1 and idx_close == -1:
+                    # Neither tag present — keep a tail long enough to span the longest tag.
+                    keep = max(_THINK_OPEN_LEN, _THINK_CLOSE_LEN) - 1
                     if len(self._buf) > keep:
                         vis.append(self._buf[:-keep])
                         self._buf = self._buf[-keep:]
                     break
-                if idx > 0:
-                    vis.append(self._buf[:idx])
-                self._buf = self._buf[idx + _THINK_OPEN_LEN:]
+
+                # Orphaned </think> without preceding <think>: treat content before it as
+                # reasoning (vLLM strips the opening tag server-side), discard the tag itself.
+                if idx_close != -1 and (idx_open == -1 or idx_close < idx_open):
+                    if idx_close > 0:
+                        rsn.append(self._buf[:idx_close])
+                    self._buf = self._buf[idx_close + _THINK_CLOSE_LEN:]
+                    # _inside stays False — continue processing what follows
+                    continue
+
+                # Normal <think> found first.
+                if idx_open > 0:
+                    vis.append(self._buf[:idx_open])
+                self._buf = self._buf[idx_open + _THINK_OPEN_LEN:]
                 self._inside = True
 
         v, r = "".join(vis), "".join(rsn)
@@ -688,9 +701,16 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
     - ``thinking_end``   — complete thinking text when the LLM call ends
     """
 
-    def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        queue: asyncio.Queue,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        show_think: bool = True,
+    ) -> None:
         self.queue = queue
         self.loop = loop
+        self._show_think = show_think
         # Per-call parser (reset after each on_llm_end).
         self._stream_parser: ThinkingOutputParser = ThinkingOutputParser()
         self.reasoning_tokens_emitted = 0
@@ -703,13 +723,17 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
     def _emit_reasoning(self, text: str) -> None:
         if not text:
             return
+        # Always accumulate so collected_reasoning() stays accurate.
+        self.reasoning_chunks.append(text)
+        self._all_reasoning.append(text)
+        if not self._show_think:
+            # Thinking suppressed — parsed and stripped but never forwarded to the SSE queue.
+            return
         if not self._thinking_started_this_call:
             self._thinking_started_this_call = True
             self.loop.call_soon_threadsafe(
                 self.queue.put_nowait, ("thinking_start", None)
             )
-        self.reasoning_chunks.append(text)
-        self._all_reasoning.append(text)
         self.reasoning_tokens_emitted += 1
         self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
@@ -736,9 +760,10 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Emit thinking_end with the complete thinking block for this LLM call.
         if self.reasoning_chunks:
             complete_thinking = "".join(self.reasoning_chunks)
-            self.loop.call_soon_threadsafe(
-                self.queue.put_nowait, ("thinking_end", complete_thinking)
-            )
+            if self._show_think:
+                self.loop.call_soon_threadsafe(
+                    self.queue.put_nowait, ("thinking_end", complete_thinking)
+                )
             self.reasoning_chunks = []
             self.reasoning_tokens_emitted = 0
         self._thinking_started_this_call = False

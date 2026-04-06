@@ -290,7 +290,7 @@ def _build_stream_callbacks(
     phase_collector.graph_tracker = graph_tracker
     tool_collector.graph_tracker = graph_tracker
     tool_collector._phase_collector_ref = phase_collector  # noqa: SLF001
-    token_collector = _TokenStreamCallbackHandler(queue, loop)
+    token_collector = _TokenStreamCallbackHandler(queue, loop, show_think=settings.llm_show_think)
     callbacks: list[Any] = [
         token_collector,
         text_collector,

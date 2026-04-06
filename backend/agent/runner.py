@@ -300,7 +300,11 @@ class AgentRunner:
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
     ) -> ThinkingAwareChatOpenAI:
-        enable_thinking = self.settings.llm_enable_thinking and include_reasoning
+        enable_thinking = (
+            self.settings.llm_enable_thinking
+            and include_reasoning
+            and self.settings.llm_show_think
+        )
 
         if enable_thinking:
             temperature = 1.0
