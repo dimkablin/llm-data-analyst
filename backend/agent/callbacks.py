@@ -345,7 +345,7 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self.tool_names.append(tool_name)
 
-        error_text = str(error) if isinstance(error, BaseException) else str(error)
+        error_text = str(error)
         event_payload: dict[str, Any] = {
             "phase": "end",
             "tool_name": tool_name or "unknown",

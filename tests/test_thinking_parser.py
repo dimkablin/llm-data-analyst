@@ -22,12 +22,10 @@ ThinkingAwareChatOpenAI:
 """
 from __future__ import annotations
 
-import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
 
 from backend.agent.callbacks import ThinkingOutputParser
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -203,7 +201,7 @@ class TestThinkingOutputParserStreaming(unittest.TestCase):
         p = ThinkingOutputParser()
         p.feed("<think>dangerous ")
         p.feed("SELECT evil FROM t")
-        _, rsn = p.flush()
+        _, _rsn = p.flush()
         # flush should have discarded the buffer
         self.assertEqual(p.visible(), "")
         self.assertIn("dangerous", p.reasoning())
@@ -237,7 +235,6 @@ class TestThinkingAwareChatOpenAIInvoke(unittest.TestCase):
         return wrapper
 
     def test_invoke_strips_thinking(self):
-        wrapper = self._make_wrapper()
         raw = _make_message("<think>reason</think>SELECT 1")
         with patch("langchain_openai.ChatOpenAI.invoke", return_value=raw):
             from backend.agent.llm_client import _sanitize_response
