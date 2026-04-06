@@ -278,7 +278,7 @@ class RAGService:
                 self.config.timeout_sec,
                 self.config.verify_ssl,
             )
-        except RAGIntegrationError:
+        except RAGIntegrationError:  # pylint: disable=try-except-raise
             raise
         except HTTPError as exc:
             body_preview = ""
@@ -305,7 +305,7 @@ class RAGService:
                 self.config.timeout_sec,
                 self.config.verify_ssl,
             )
-        except RAGIntegrationError:
+        except RAGIntegrationError:  # pylint: disable=try-except-raise
             raise
         except HTTPError as exc:
             body_preview = ""

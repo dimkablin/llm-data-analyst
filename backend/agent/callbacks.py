@@ -18,17 +18,116 @@ from backend.artifacts.execution import (
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+_THINK_OPEN_LEN = len(_THINK_OPEN)
+_THINK_CLOSE_LEN = len(_THINK_CLOSE)
+
+
+class ThinkingOutputParser:
+    """Stateful incremental parser that separates visible text from ``<think>`` blocks.
+
+    Safe to feed one token at a time (streaming) or the full text at once.
+    Handles:
+    - Closed ``<think>...</think>`` blocks
+    - Unclosed ``<think>`` (discards from open tag to end — no leak)
+    - Multiple ``<think>`` blocks
+    - Tags split across consecutive ``feed()`` calls
+    - Case-insensitive tags
+    """
+
+    def __init__(self) -> None:
+        self._buf: str = ""
+        self._inside: bool = False
+        self._visible: list[str] = []
+        self._reasoning: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def feed(self, text: str) -> tuple[str, str]:
+        """Process *text*, return ``(visible, reasoning)`` extracted from this chunk."""
+        self._buf += text
+        vis: list[str] = []
+        rsn: list[str] = []
+
+        while self._buf:
+            lower = self._buf.lower()
+            if self._inside:
+                idx = lower.find(_THINK_CLOSE)
+                if idx == -1:
+                    # Keep a tail that could be a partial closing tag.
+                    keep = _THINK_CLOSE_LEN - 1
+                    if len(self._buf) > keep:
+                        rsn.append(self._buf[:-keep])
+                        self._buf = self._buf[-keep:]
+                    break
+                if idx > 0:
+                    rsn.append(self._buf[:idx])
+                self._buf = self._buf[idx + _THINK_CLOSE_LEN:]
+                self._inside = False
+            else:
+                idx = lower.find(_THINK_OPEN)
+                if idx == -1:
+                    # Keep a tail that could be a partial opening tag.
+                    keep = _THINK_OPEN_LEN - 1
+                    if len(self._buf) > keep:
+                        vis.append(self._buf[:-keep])
+                        self._buf = self._buf[-keep:]
+                    break
+                if idx > 0:
+                    vis.append(self._buf[:idx])
+                self._buf = self._buf[idx + _THINK_OPEN_LEN:]
+                self._inside = True
+
+        v, r = "".join(vis), "".join(rsn)
+        self._visible.append(v)
+        self._reasoning.append(r)
+        return v, r
+
+    def flush(self) -> tuple[str, str]:
+        """Finalise the stream.
+
+        - If inside an unclosed ``<think>``: discard the buffer (no leak).
+        - Otherwise: emit remaining buffer as visible text.
+
+        Returns ``(visible, reasoning)`` for any remaining content.
+        """
+        v, r = "", ""
+        if self._buf:
+            if self._inside:
+                # Unclosed block — discard to prevent reasoning leaking downstream.
+                r = self._buf
+                self._reasoning.append(r)
+            else:
+                v = self._buf
+                self._visible.append(v)
+            self._buf = ""
+        self._inside = False
+        return v, r
+
+    def visible(self) -> str:
+        """All visible text collected so far, stripped."""
+        return "".join(self._visible).strip()
+
+    def reasoning(self) -> str:
+        """All reasoning text collected so far, stripped."""
+        return "".join(self._reasoning).strip()
+
 
 def strip_thinking(text: str) -> str:
-    return THINKING_RE.sub("", text).strip()
+    parser = ThinkingOutputParser()
+    parser.feed(str(text or ""))
+    parser.flush()
+    return parser.visible()
 
 
 def extract_thinking(text: str) -> str:
-    parts = THINKING_RE.findall(text or "")
-    if not parts:
-        return ""
-    merged = "\n".join(parts)
-    return re.sub(r"</?think>", "", merged, flags=re.IGNORECASE).strip()
+    parser = ThinkingOutputParser()
+    parser.feed(str(text or ""))
+    parser.flush()
+    return parser.reasoning()
 
 
 class LLMTextCollector(BaseCallbackHandler):
@@ -574,105 +673,54 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
     def __init__(self, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop) -> None:
         self.queue = queue
         self.loop = loop
-        self._inside_think = False
-        self._buffer = ""
+        # Per-call parser (reset after each on_llm_end).
+        self._stream_parser: ThinkingOutputParser = ThinkingOutputParser()
         self.reasoning_tokens_emitted = 0
-        # Per-call chunks (reset after each on_llm_end → thinking_end emission)
+        # Per-call reasoning chunks (reset after each on_llm_end → thinking_end emission)
         self.reasoning_chunks: list[str] = []
         # Cumulative across all LLM calls (for collected_reasoning())
         self._all_reasoning: list[str] = []
         self._thinking_started_this_call: bool = False
 
-    def _extract_stream_parts(self, token: str) -> tuple[str, str]:
-        self._buffer += token
-        visible_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        think_open = "<think>"
-        think_close = "</think>"
-
-        while self._buffer:
-            lower_buffer = self._buffer.lower()
-            if self._inside_think:
-                close_idx = lower_buffer.find(think_close)
-                if close_idx == -1:
-                    tail_len = len(think_close) - 1
-                    if len(self._buffer) <= tail_len:
-                        break
-                    reasoning_parts.append(self._buffer[:-tail_len])
-                    self._buffer = self._buffer[-tail_len:]
-                    break
-                if close_idx > 0:
-                    reasoning_parts.append(self._buffer[:close_idx])
-                self._buffer = self._buffer[close_idx + len(think_close) :]
-                self._inside_think = False
-                continue
-
-            open_idx = lower_buffer.find(think_open)
-            if open_idx == -1:
-                tail_len = len(think_open) - 1
-                if len(self._buffer) <= tail_len:
-                    break
-                visible_parts.append(self._buffer[:-tail_len])
-                self._buffer = self._buffer[-tail_len:]
-                break
-
-            if open_idx > 0:
-                visible_parts.append(self._buffer[:open_idx])
-            self._buffer = self._buffer[open_idx + len(think_open) :]
-            self._inside_think = True
-
-        return "".join(visible_parts), "".join(reasoning_parts)
+    def _emit_reasoning(self, text: str) -> None:
+        if not text:
+            return
+        if not self._thinking_started_this_call:
+            self._thinking_started_this_call = True
+            self.loop.call_soon_threadsafe(
+                self.queue.put_nowait, ("thinking_start", None)
+            )
+        self.reasoning_chunks.append(text)
+        self._all_reasoning.append(text)
+        self.reasoning_tokens_emitted += 1
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         if not token:
             return
-        visible, reasoning = self._extract_stream_parts(token)
+        visible, reasoning = self._stream_parser.feed(token)
         if visible:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
         if reasoning:
-            # Emit thinking_start on the first reasoning token of this LLM call
-            if not self._thinking_started_this_call:
-                self._thinking_started_this_call = True
-                self.loop.call_soon_threadsafe(
-                    self.queue.put_nowait, ("thinking_start", None)
-                )
-            self.reasoning_chunks.append(reasoning)
-            self._all_reasoning.append(reasoning)
-            self.reasoning_tokens_emitted += 1
-            self.loop.call_soon_threadsafe(
-                self.queue.put_nowait,
-                ("reasoning_token", reasoning),
-            )
+            self._emit_reasoning(reasoning)
 
     def on_llm_end(self, response: object, **kwargs: Any) -> None:
-        # Flush any buffered partial tag text
-        if self._buffer:
-            trailing = self._buffer
-            self._buffer = ""
-            if self._inside_think:
-                if not self._thinking_started_this_call:
-                    self._thinking_started_this_call = True
-                    self.loop.call_soon_threadsafe(
-                        self.queue.put_nowait, ("thinking_start", None)
-                    )
-                self.reasoning_chunks.append(trailing)
-                self._all_reasoning.append(trailing)
-                self.reasoning_tokens_emitted += 1
-                self.loop.call_soon_threadsafe(
-                    self.queue.put_nowait,
-                    ("reasoning_token", trailing),
-                )
-            else:
-                self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", trailing))
-        self._inside_think = False
+        # Flush any buffered partial tag text; unclosed <think> is discarded (no leak).
+        visible, reasoning = self._stream_parser.flush()
+        if reasoning:
+            self._emit_reasoning(reasoning)
+        if visible:
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
 
-        # Emit thinking_end with the complete thinking block for this LLM call
+        # Reset per-call parser so the next LLM call starts clean.
+        self._stream_parser = ThinkingOutputParser()
+
+        # Emit thinking_end with the complete thinking block for this LLM call.
         if self.reasoning_chunks:
             complete_thinking = "".join(self.reasoning_chunks)
             self.loop.call_soon_threadsafe(
                 self.queue.put_nowait, ("thinking_end", complete_thinking)
             )
-            # Reset per-call state
             self.reasoning_chunks = []
             self.reasoning_tokens_emitted = 0
         self._thinking_started_this_call = False

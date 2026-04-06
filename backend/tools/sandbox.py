@@ -141,8 +141,8 @@ class SessionSandbox:
 
     def _init_scope(self) -> None:
         """Populate scope with standard libs and safe builtins."""
-        import numpy as _np
-        import pandas as _pd
+        import numpy as _np  # pylint: disable=reimported
+        import pandas as _pd  # pylint: disable=reimported
 
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
         self._scope.update({"pd": _pd, "np": _np, "df": df_entry})
@@ -278,7 +278,7 @@ class SessionSandbox:
 
         def _run():
             try:
-                exec(compiled, self._globals, self._scope)
+                exec(compiled, self._globals, self._scope)  # pylint: disable=exec-used
             except Exception as exc:
                 error_box.append(exc)
 

@@ -226,7 +226,7 @@ class ForecastIntegrationService:
                 payload,
                 self.config.timeout_sec,
             )
-        except ForecastIntegrationError:
+        except ForecastIntegrationError:  # pylint: disable=try-except-raise
             raise
         except HTTPError as exc:
             body_preview = ""

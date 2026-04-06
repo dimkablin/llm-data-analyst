@@ -1009,7 +1009,7 @@ class AuthDB:
     ) -> None:
         title_candidate = str(auto_title or "").strip() or None
         if title_candidate and len(title_candidate) > 120:
-            title_candidate = title_candidate[:120].rstrip() or None
+            title_candidate = title_candidate[:120].rstrip() or None  # pylint: disable=unsubscriptable-object
 
         preview = assistant_text.strip()
         if len(preview) > 200:

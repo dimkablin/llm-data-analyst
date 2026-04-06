@@ -355,7 +355,7 @@ def _build_response(
     )
 
 
-def _fallback_text(query: str, reason: str) -> str:
+def _fallback_text(query: str, reason: str) -> str:  # pylint: disable=redefined-outer-name
     normalized = query.strip().lower()
     if CHAT_FALLBACK_RE.search(normalized):
         if "как дела" in normalized:
@@ -380,7 +380,7 @@ def _fallback_text(query: str, reason: str) -> str:
     return "Я получил запрос, но не смог сформировать содержательный ответ."
 
 
-def _build_fallback_response(
+def _build_fallback_response(  # pylint: disable=redefined-outer-name
     session_id: str,
     query: str,
     reason: str,

@@ -378,7 +378,7 @@ class AgentRunner:
         first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
         if not first_line:
             return None
-        first_line = first_line.strip("`\"'«»"".,:;!?-–— ")
+        first_line = first_line.strip("`\"'«»"".,:;!?-–— ")  # pylint: disable=implicit-str-concat
         words = AgentRunner._title_words(first_line)
         if len(words) < 3:
             return None
@@ -1267,7 +1267,7 @@ class AgentRunner:
         if not candidate_series:
             return ""
 
-        chosen = max(candidate_series, key=lambda item: len(item))
+        chosen = max(candidate_series, key=len)
         if chosen.empty:
             return ""
 
@@ -1382,7 +1382,7 @@ class AgentRunner:
             if not series_list:
                 continue
 
-            chosen = max(series_list, key=lambda item: len(item))
+            chosen = max(series_list, key=len)
             if chosen.empty:
                 continue
 

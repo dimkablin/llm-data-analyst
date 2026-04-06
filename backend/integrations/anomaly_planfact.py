@@ -234,7 +234,7 @@ class AnomalyPlanfactIntegrationService:
                 payload,
                 self.config.timeout_sec,
             )
-        except AnomalyPlanfactIntegrationError:
+        except AnomalyPlanfactIntegrationError:  # pylint: disable=try-except-raise
             raise
         except HTTPError as exc:
             body_preview = ""
