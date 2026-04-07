@@ -7,8 +7,6 @@ from pathlib import Path
 
 import yaml
 
-logger = logging.getLogger(__name__)
-
 from backend.skills.models import (
     Skill,
     SkillExample,
@@ -16,6 +14,8 @@ from backend.skills.models import (
     SkillSummary,
     SkillValidationError,
 )
+
+logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 _PYTHON_FENCE_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)

@@ -21,7 +21,6 @@ from backend.agent.callbacks import (
     AgentProgressCollector,
     LLMTextCollector,
     PhaseCollector,
-    TokenStreamCallbackHandler,
     ToolCollector,
 )
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
@@ -30,7 +29,7 @@ from backend.agent.prompts import (
     execution_agent_prompt,
     get_detailed_data_info,
 )
-from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact, artifact_type_label
+from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
 from backend.core.config import Settings
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig

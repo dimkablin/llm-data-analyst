@@ -109,9 +109,8 @@ class RagToolTests(unittest.TestCase):
 
 
 def _make_ctx(*, allowed: set[str] | None):
-    from dataclasses import replace as _replace
-    from backend.tools.context import ToolBuildContext
     from backend.core import Settings
+    from backend.tools.context import ToolBuildContext
     return ToolBuildContext(settings=Settings(), allowed_tool_keys=allowed)
 
 

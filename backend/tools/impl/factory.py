@@ -25,10 +25,10 @@ from backend.tools.impl.database_tool import DatabaseTool
 from backend.tools.impl.forecast_tool import ForecastTool
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
-from backend.tools.impl.rag_tool import RagTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.planner_tool import PlannerTool
 from backend.tools.impl.plotly_tool import PlotlyTool
+from backend.tools.impl.rag_tool import RagTool
 from backend.tools.impl.review_tool import ReviewTool
 from backend.tools.impl.search_tool import SearchTool
 from backend.tools.impl.sql_tool import SQLTool
