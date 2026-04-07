@@ -85,7 +85,7 @@ class SQLTool(BaseTool):
             vars_hint = ", ".join(f"`{v}`" for v in injected)
             text = (
                 f"✅ Выполнен sql_tool: {item_names}. "
-                f"Результаты сохранены в переменных sandbox: {vars_hint}. "
+                f"Результаты доступны как Python-переменные: {vars_hint}. "
                 f"Используй эти имена напрямую в plotly_tool/pandas_tool."
             )
         else:
