@@ -427,7 +427,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis", "rag", "summary"}:
+    if normalized_route not in {"chat", "analysis", "summary"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []

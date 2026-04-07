@@ -17,6 +17,7 @@ from langchain_core.tools import BaseTool
 
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
+from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
 from backend.tools.context import ToolBuildContext
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
@@ -24,6 +25,7 @@ from backend.tools.impl.database_tool import DatabaseTool
 from backend.tools.impl.forecast_tool import ForecastTool
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
+from backend.tools.impl.rag_tool import RagTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.planner_tool import PlannerTool
 from backend.tools.impl.plotly_tool import PlotlyTool
@@ -113,6 +115,19 @@ class AnomalyPlanfactToolFactory:
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
         )
+
+
+class RagToolFactory:
+    key = "rag_tool"
+
+    def __init__(self, service: RAGService) -> None:
+        self._service = service
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        return self._service.is_enabled and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+
+    def build(self, ctx: ToolBuildContext) -> RagTool:
+        return RagTool(rag_service=self._service)
 
 
 # ── Built-in factories ────────────────────────────────────────────────────────

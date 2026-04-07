@@ -175,7 +175,7 @@ class AgentResponse:
     final_text: str
     reasoning: str | None
     artifacts: list
-    route: Literal["chat", "analysis", "rag", "summary"] = "chat"
+    route: Literal["chat", "analysis", "summary"] = "chat"
     tool_calls: int = 0
     tool_names: list[str] = field(default_factory=list)
     llm_unreachable: bool = False
@@ -244,6 +244,7 @@ class AgentRunner:
             search_service=search_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
+            rag_service=rag_service,
             memory_note_callback=self._user_memory_buffer.append,
             session_note_callback=self._session_memory_buffer.append,
             skill_registry=self.skill_registry,
@@ -862,7 +863,7 @@ class AgentRunner:
             session_source, trace_context,
         )
 
-        if self._quick_route(prompt, has_rag=False) == "summary":
+        if self._quick_route(prompt) == "summary":
             return None
         _normalized = prompt.strip().lower()
         _chat_markers = (
@@ -1597,36 +1598,6 @@ class AgentRunner:
                     gt.phase_end(phase, si, status="done" if status in ("done", "pass") else "error")
                 collector._graph_version += 1  # noqa: SLF001
 
-    # ── Utility: RAG streaming ────────────────────────────────────────────────
-
-    @staticmethod
-    def _emit_rag_stream_chunk(callbacks: list, chunk: str) -> None:
-        if not chunk:
-            return
-        for cb in callbacks:
-            if not isinstance(cb, TokenStreamCallbackHandler):
-                continue
-            try:
-                cb.on_llm_new_token(chunk)
-            except Exception:
-                continue
-
-    def _stream_rag_answer(self, *, prompt: str, callbacks: list) -> str:
-        if self.rag_service is None:
-            return ""
-
-        parts: list[str] = []
-        for chunk in self.rag_service.stream_search(query=prompt, include_references=False):
-            parts.append(chunk)
-            self._emit_rag_stream_chunk(callbacks, chunk)
-
-        final_text = "".join(parts).strip()
-        if final_text:
-            return final_text
-
-        result = self.rag_service.search(query=prompt, include_references=False)
-        return self.rag_service.format_for_user(result)
-
     def _artifacts_recovery_text(self, artifacts: list) -> str:
         if not artifacts:
             return ""
@@ -1799,7 +1770,7 @@ class AgentRunner:
     def _build_query_graph(self):
         """Compile the agent graph: dispatch → agent → finalize.
 
-        dispatch: keyword pre-check for lightweight bypasses (chat/rag/summary),
+        dispatch: keyword pre-check for lightweight bypasses (chat/summary),
                   or builds tools/sandbox/capability context for analysis.
         agent: single direct tool-calling loop with skills and sandbox.
         finalize: synthesizes answer, rewrites if needed, runs quality review.
@@ -1827,9 +1798,8 @@ class AgentRunner:
     def _quick_route(
         prompt: str,
         *,
-        has_rag: bool,
         has_data: bool = False,
-    ) -> Literal["chat", "rag", "summary"] | None:
+    ) -> Literal["chat", "summary"] | None:
         """Lightweight keyword pre-check for bypass routes. No LLM call."""
         normalized = prompt.strip().lower()
         _summary_markers = (
@@ -1839,13 +1809,6 @@ class AgentRunner:
         )
         if any(m in normalized for m in _summary_markers):
             return "summary"
-        if has_rag:
-            _rag_markers = (
-                "rag ", " rag", "документац", "база знаний", "в базе знаний",
-                "knowledge base", "в документации", "из документации",
-            )
-            if any(m in normalized for m in _rag_markers):
-                return "rag"
         if AgentRunner._is_chat_message(normalized, has_data=has_data):
             return "chat"
         return None
@@ -1914,9 +1877,8 @@ class AgentRunner:
             or tool_db_runtime is not None
             or (csv_loaded and str(csv_session_id or "").strip())
         )
-        has_rag = self.rag_service is not None and self.rag_service.is_enabled
 
-        quick = self._quick_route(prompt, has_rag=has_rag, has_data=has_data)
+        quick = self._quick_route(prompt, has_data=has_data)
 
         # ── Chat bypass ──────────────────────────────────────────────────────
         if quick == "chat":
@@ -1939,117 +1901,6 @@ class AgentRunner:
                     route="chat",
                 )
             return {"response": response, "done": True, "stop_reason": "chat_route"}
-
-        # ── RAG bypass ───────────────────────────────────────────────────────
-        if quick == "rag":
-            self._emit_phase_event(
-                callbacks, phase="act", title="Поиск по базе знаний",
-                content="", step_index=0, max_steps=1, status="streaming",
-            )
-            self._emit_progress_event(
-                callbacks, phase="act", title="Ищу ответ в базе знаний",
-                details="Отправляю запрос в RAG сервис.", step_index=0, max_steps=1,
-            )
-
-            if not self._tool_allowed("rag_tool"):
-                self._emit_phase_event(
-                    callbacks, phase="act", title="Поиск по базе знаний",
-                    content="RAG отключен для текущего пользователя.",
-                    step_index=0, max_steps=1, status="fail",
-                )
-                return {
-                    "response": AgentResponse(
-                        final_text=(
-                            "Не могу выполнить поиск по базе знаний: RAG интеграция "
-                            "отключена в настройках аккаунта."
-                        ),
-                        reasoning="RAG route selected but rag_tool is disabled for the user.",
-                        artifacts=[],
-                        route="rag",
-                        tool_calls=0,
-                        tool_names=[],
-                    ),
-                    "done": True,
-                    "stop_reason": "rag_disabled",
-                }
-
-            if self.rag_service is None or not self.rag_service.is_enabled:
-                self._emit_phase_event(
-                    callbacks, phase="act", title="Поиск по базе знаний",
-                    content="RAG сервис не настроен.", step_index=0, max_steps=1, status="fail",
-                )
-                return {
-                    "response": AgentResponse(
-                        final_text=self._fallback_text(prompt, df),
-                        reasoning="RAG route selected but RAG service is not configured.",
-                        artifacts=[],
-                        route="rag",
-                        tool_calls=0,
-                        tool_names=[],
-                    ),
-                    "done": True,
-                    "stop_reason": "rag_unavailable",
-                }
-
-            try:
-                final_text = self._stream_rag_answer(prompt=prompt, callbacks=callbacks)
-                if not final_text.strip():
-                    final_text = "RAG вернул пустой ответ."
-                self._emit_phase_event(
-                    callbacks, phase="act", title="Поиск по базе знаний",
-                    content="RAG-ответ получен.", step_index=0, max_steps=1, status="done",
-                )
-                self._emit_progress_event(
-                    callbacks, phase="act", title="Ответ из базы знаний готов",
-                    details="Передаю результат в финализацию.", step_index=0, max_steps=1,
-                )
-                rag_artifacts: list = []
-                try:
-                    rag_result = self.rag_service.search(
-                        query=prompt, include_references=True
-                    )
-                    rag_json_data: dict = {
-                        "query": rag_result.query,
-                        "answer": rag_result.answer or final_text,
-                        "references": rag_result.references,
-                    }
-                    rag_artifacts = [ExecutionArtifact(
-                        artifact_type=ExecArtifactType.JSON,
-                        producer_tool="rag_tool",
-                        data=rag_json_data,
-                        name="rag_result",
-                    )]
-                except Exception:
-                    pass
-                return {
-                    "response": AgentResponse(
-                        final_text=final_text,
-                        reasoning=None,
-                        artifacts=rag_artifacts,
-                        route="rag",
-                        tool_calls=0,
-                        tool_names=[],
-                    ),
-                    "done": True,
-                    "stop_reason": "rag_ready",
-                }
-            except Exception as exc:
-                self._emit_phase_event(
-                    callbacks, phase="act", title="Поиск по базе знаний",
-                    content=f"Ошибка RAG: {exc}", step_index=0, max_steps=1, status="fail",
-                )
-                return {
-                    "response": AgentResponse(
-                        final_text=self._fallback_text(prompt, df),
-                        reasoning=f"RAG route failed: {exc}",
-                        artifacts=[],
-                        route="rag",
-                        tool_calls=0,
-                        tool_names=[],
-                    ),
-                    "done": True,
-                    "stop_reason": "rag_failed",
-                }
 
         # ── Summary bypass ───────────────────────────────────────────────────
         if quick == "summary":

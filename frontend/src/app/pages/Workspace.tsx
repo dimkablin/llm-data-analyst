@@ -147,7 +147,11 @@ export function Workspace() {
       return;
     }
     let cancelled = false;
-    reset();
+    // Skip reset if a stream is currently active — navigating away and back
+    // (e.g. /workspace → /sessions → /workspace) must not abort an ongoing stream.
+    if (!isStreamingRef.current) {
+      reset();
+    }
 
     void (async () => {
       try {

@@ -26,6 +26,7 @@ from backend.tools.impl.factory import (
     PandasToolFactory,
     PlannerToolFactory,
     PlotlyToolFactory,
+    RagToolFactory,
     ReviewToolFactory,
     SearchToolFactory,
     SessionNoteToolFactory,
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         ForecastIntegrationService,
         SearchIntegrationService,
     )
+    from backend.integrations.rag import RAGService
     from backend.skills.registry import SkillRegistry
     from backend.tools.context import ToolBuildContext
 
@@ -97,6 +99,7 @@ class ToolRegistry:
         search_service: SearchIntegrationService | None = None,
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
+        rag_service: RAGService | None = None,
         memory_note_callback: Callable[[str], None] | None = None,
         session_note_callback: Callable[[str], None] | None = None,
         skill_registry: SkillRegistry | None = None,
@@ -111,6 +114,8 @@ class ToolRegistry:
             factories.append(ForecastToolFactory(forecast_service))
         if anomaly_planfact_service is not None:
             factories.append(AnomalyPlanfactToolFactory(anomaly_planfact_service))
+        if rag_service is not None:
+            factories.append(RagToolFactory(rag_service))
 
         # Built-in tools are always registered; their own is_available guards handle
         # data-context requirements (df / db_runtime_config / allowed_tool_keys).

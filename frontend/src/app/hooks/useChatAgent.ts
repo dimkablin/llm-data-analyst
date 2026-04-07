@@ -480,6 +480,9 @@ export function useChatAgent({
       let collectedReasoning = "";
       let pendingThinkingBlock = "";
       let pendingIntentText = "";
+      // Tokens emitted before thinking_start (vLLM strips <think> opening tag, so
+      // reasoning content arrives as token events until </think> is seen).
+      let prethinkPrefix = "";
       let aborted = false;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -506,19 +509,32 @@ export function useChatAgent({
               }
             },
             onThinkingStart: () => {
+              // When vLLM strips the <think> opening tag, the backend emits token
+              // events for all reasoning content until it finds </think>. Save
+              // any accumulated tokens as a prefix for the upcoming thinking block.
+              if (pendingIntentText) {
+                prethinkPrefix = pendingIntentText;
+                pendingIntentText = "";
+                setStreamDraft("");
+              }
               setStreamReasoning("");
             },
             onThinkingEnd: (text) => {
-              const trimmed = text.trim();
-              if (trimmed) {
-                pendingThinkingBlock = trimmed;
+              // Prepend any tokens that arrived before thinking_start was detected
+              // (happens when vLLM strips the <think> opening tag server-side).
+              const combined = prethinkPrefix
+                ? (prethinkPrefix + text).trim()
+                : text.trim();
+              prethinkPrefix = "";
+              if (combined) {
+                pendingThinkingBlock = combined;
                 collectedReasoning = collectedReasoning
-                  ? `${collectedReasoning}\n\n${trimmed}`
-                  : trimmed;
+                  ? `${collectedReasoning}\n\n${combined}`
+                  : combined;
                 collectedBlocks.push({
                   type: "thinking",
                   id: nextBlockId(),
-                  content: trimmed,
+                  content: combined,
                 });
                 setStreamBlocks([...collectedBlocks]);
               }
