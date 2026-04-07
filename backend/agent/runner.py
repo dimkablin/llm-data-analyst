@@ -276,6 +276,9 @@ class AgentRunner:
         ]
         if runtime.database:
             lines.append(f"База/каталог: {runtime.database}")
+        configured_schema = runtime.options.get("schema")
+        if isinstance(configured_schema, str) and configured_schema.strip():
+            lines.append(f"Схема по умолчанию: {configured_schema.strip()}.")
         lines.append(f"Идентификатор подключения: {runtime.connection_id}")
         if isinstance(session_source, dict):
             label = str(session_source.get("source_label") or "").strip()

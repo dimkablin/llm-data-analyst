@@ -106,6 +106,11 @@ export type DBConnectionTestResult = {
   error?: string | null;
 };
 
+export type DBConnectionSchema = {
+  name: string;
+  display_name: string;
+};
+
 export type DBConnectionFormPayload = {
   name: string;
   db_type: DBConnectionType;

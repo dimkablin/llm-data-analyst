@@ -3,6 +3,7 @@ import type {
   AuthUser,
   DBConnection,
   DBConnectionFormPayload,
+  DBConnectionSchema,
   DBConnectionTestResult,
   ExecutionGraph,
   PhaseEvent,
@@ -349,6 +350,12 @@ export async function testDbConnection(connectionId: string): Promise<DBConnecti
   });
   await assertOk(response);
   return (await response.json()) as DBConnectionTestResult;
+}
+
+export async function listDbConnectionSchemas(connectionId: string): Promise<DBConnectionSchema[]> {
+  const response = await authFetch(`/db-connections/${connectionId}/schemas`);
+  await assertOk(response);
+  return (await response.json()) as DBConnectionSchema[];
 }
 
 export async function bindDbConnectionSource(

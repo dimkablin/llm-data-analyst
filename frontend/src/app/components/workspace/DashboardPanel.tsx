@@ -5,6 +5,7 @@ import {
   FileText,
   Grid2X2,
   LoaderCircle,
+  MoreHorizontal,
   PenSquare,
   Pin,
   PlugZap,
@@ -22,6 +23,7 @@ import {
   clearSessionSource,
   createDbConnection,
   deleteDbConnection,
+  listDbConnectionSchemas,
   listDbConnections,
   testDbConnection,
   updateDbConnection,
@@ -30,6 +32,7 @@ import type {
   ArtifactPayload,
   DBConnection,
   DBConnectionFormPayload,
+  DBConnectionSchema,
   DBConnectionType,
   SessionSourceState,
 } from "../../lib/backend-types";
@@ -42,6 +45,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -79,7 +89,6 @@ type ConnectionFormState = {
   host: string;
   port: string;
   database: string;
-  schema: string;
   username: string;
   password: string;
   secretMode: SecretMode;
@@ -93,7 +102,6 @@ const DEFAULT_FORM: ConnectionFormState = {
   host: "",
   port: "5432",
   database: "",
-  schema: "",
   username: "",
   password: "",
   secretMode: "replace",
@@ -115,7 +123,6 @@ function toFormState(connection?: DBConnection | null): ConnectionFormState {
     host: connection.host,
     port: connection.port ? String(connection.port) : defaultPortFor(connection.db_type),
     database: connection.database ?? "",
-    schema: typeof connection.options_json?.schema === "string" ? connection.options_json.schema : "",
     username: connection.username ?? "",
     password: "",
     secretMode: "keep",
@@ -127,7 +134,10 @@ function toFormState(connection?: DBConnection | null): ConnectionFormState {
   };
 }
 
-function buildPayload(form: ConnectionFormState, editing: boolean): DBConnectionFormPayload {
+function buildPayload(form: ConnectionFormState, editing: boolean, existingConnection?: DBConnection | null): DBConnectionFormPayload {
+  const existingSchema = typeof existingConnection?.options_json?.schema === "string"
+    ? existingConnection.options_json.schema
+    : null;
   const payload: DBConnectionFormPayload = {
     name: form.name.trim(),
     db_type: form.dbType,
@@ -137,8 +147,8 @@ function buildPayload(form: ConnectionFormState, editing: boolean): DBConnection
     username: form.username.trim() || null,
     options_json:
       form.dbType === "postgresql"
-        ? { sslmode: form.sslmode, schema: form.schema.trim() || null }
-        : { secure: form.secure, schema: form.schema.trim() || null },
+        ? { sslmode: form.sslmode, schema: existingSchema }
+        : { secure: form.secure, schema: existingSchema },
   };
 
   if (!editing || form.secretMode === "replace") {
@@ -177,6 +187,8 @@ export function DashboardPanel(props: Props) {
   const [form, setForm] = useState<ConnectionFormState>(DEFAULT_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [connectionSchemas, setConnectionSchemas] = useState<Record<string, DBConnectionSchema[]>>({});
+  const [schemasLoadingId, setSchemasLoadingId] = useState<string | null>(null);
   const [bindingId, setBindingId] = useState<string | null>(null);
   const [bindingCsv, setBindingCsv] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -280,7 +292,7 @@ export function DashboardPanel(props: Props) {
     setSubmitting(true);
     setSourceError(null);
     try {
-      const payload = buildPayload(form, Boolean(editingConnection));
+      const payload = buildPayload(form, Boolean(editingConnection), editingConnection);
       if (editingConnection) {
         await updateDbConnection(editingConnection.id, payload);
       } else {
@@ -315,12 +327,37 @@ export function DashboardPanel(props: Props) {
   async function handleTestConnection(connection: DBConnection): Promise<void> {
     setTestingId(connection.id);
     try {
-      await testDbConnection(connection.id);
+      const result = await testDbConnection(connection.id);
       await loadConnections();
+      if (result.last_test_ok) {
+        void loadSchemasForConnection(connection.id);
+      }
     } catch (error) {
       await loadConnections();
     } finally {
       setTestingId(null);
+    }
+  }
+
+  async function loadSchemasForConnection(connectionId: string): Promise<void> {
+    setSchemasLoadingId(connectionId);
+    try {
+      const schemas = await listDbConnectionSchemas(connectionId);
+      setConnectionSchemas((prev) => ({ ...prev, [connectionId]: schemas }));
+    } catch {
+      // ignore — schemas will remain unavailable
+    } finally {
+      setSchemasLoadingId((prev) => (prev === connectionId ? null : prev));
+    }
+  }
+
+  async function handleSelectSchema(connection: DBConnection, schema: string): Promise<void> {
+    try {
+      const updatedOptionsJson = { ...(connection.options_json ?? {}), schema: schema || null };
+      await updateDbConnection(connection.id, { options_json: updatedOptionsJson });
+      await loadConnections();
+    } catch (error) {
+      setSourceError(summarizeError(error));
     }
   }
 
@@ -638,65 +675,120 @@ export function DashboardPanel(props: Props) {
                         const isActive =
                           activeSource.source_type === "db_connection" &&
                           activeSource.source_ref_id === connection.id;
-                        const canBind = connection.last_test_ok === true;
+                        const testedOk = connection.last_test_ok === true;
+                        const hasSchema = typeof connection.options_json?.schema === "string" && connection.options_json.schema.trim().length > 0;
+                        const canUse = testedOk && hasSchema;
                         return (
                           <div key={connection.id} className="rounded-[22px] border border-border/50 bg-secondary/20 px-4 py-4">
+                            {/* Header: info + three-dots menu */}
                             <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <div className="flex items-center gap-2">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
                                   <span className="text-sm font-bold text-foreground">{connection.name}</span>
                                   <span className="rounded-full border border-border/50 bg-card/70 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                                     {connection.db_type}
                                   </span>
                                   {isActive ? <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-400">active</span> : null}
                                 </div>
-                                <div className="mt-1 text-sm text-muted-foreground">
+                                <div className="mt-1 truncate text-xs text-muted-foreground">
                                   {connection.host}{connection.port ? `:${connection.port}` : ""}{connection.database ? ` / ${connection.database}` : ""}
                                 </div>
-                                {typeof connection.options_json?.schema === "string" && connection.options_json.schema.trim() ? (
-                                  <div className="mt-1 text-xs text-muted-foreground">
-                                    schema: {connection.options_json.schema.trim()}
-                                  </div>
-                                ) : null}
-                                <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+                                <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                                   <span className="inline-flex items-center gap-1">
-                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                    <ShieldCheck className="h-3 w-3" />
                                     {connection.password_present ? "секрет сохранен" : "секрет не задан"}
                                   </span>
-                                  {connection.last_test_ok === true ? (
+                                  {testedOk ? (
                                     <span className="inline-flex items-center gap-1 text-emerald-500">
-                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      <CheckCircle2 className="h-3 w-3" />
                                       connection ok
                                     </span>
                                   ) : null}
                                 </div>
                               </div>
 
-                              <div className="flex flex-wrap justify-end gap-2">
-                                <button type="button" onClick={() => void handleBindConnection(connection)} disabled={!sessionId || bindingId === connection.id || !canBind} className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card/70 px-3 py-2 text-xs font-bold text-foreground transition-all hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60">
-                                  {bindingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
-                                  Использовать
-                                </button>
-                                <button type="button" onClick={() => void handleTestConnection(connection)} disabled={testingId === connection.id} className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card/70 px-3 py-2 text-xs font-bold text-foreground transition-all hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60">
-                                  {testingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                                  Тест
-                                </button>
-                                <button type="button" onClick={() => { resetForm(connection); setDialogOpen(true); }} className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-card/70 px-3 py-2 text-xs font-bold text-foreground transition-all hover:bg-muted">
-                                  <PenSquare className="h-3.5 w-3.5" />
-                                  Изменить
-                                </button>
-                                <button type="button" onClick={() => void handleDeleteConnection(connection)} disabled={deletingId === connection.id} className="inline-flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-400 transition-all hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-60">
-                                  {deletingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                                </button>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button type="button" className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-border/50 bg-card/70 text-muted-foreground transition-all hover:text-foreground">
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="min-w-[150px]">
+                                  <DropdownMenuItem
+                                    onClick={() => void handleTestConnection(connection)}
+                                    disabled={testingId === connection.id}
+                                    className="gap-2 text-xs"
+                                  >
+                                    {testingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                                    Тест
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => { resetForm(connection); setDialogOpen(true); }}
+                                    className="gap-2 text-xs"
+                                  >
+                                    <PenSquare className="h-3.5 w-3.5" />
+                                    Изменить
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    onClick={() => void handleDeleteConnection(connection)}
+                                    disabled={deletingId === connection.id}
+                                    className="gap-2 text-xs text-rose-400 focus:text-rose-400"
+                                  >
+                                    {deletingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                                    Удалить
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+
+                            {/* Action row: Use button + schema select */}
+                            <div className="mt-3 flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void handleBindConnection(connection)}
+                                disabled={!sessionId || bindingId === connection.id || !canUse}
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-border/50 bg-card/70 px-3 py-2 text-xs font-bold text-foreground transition-all hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {bindingId === connection.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <PlugZap className="h-3.5 w-3.5" />}
+                                Использовать
+                              </button>
+
+                              <div className="ml-auto flex items-center gap-1.5">
+                                {testedOk ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => void loadSchemasForConnection(connection.id)}
+                                      disabled={schemasLoadingId === connection.id}
+                                      className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-xl border border-border/50 bg-card/60 text-muted-foreground transition-all hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      <RefreshCcw className={`h-3.5 w-3.5 ${schemasLoadingId === connection.id ? "animate-spin" : ""}`} />
+                                    </button>
+                                    <Select
+                                      value={typeof connection.options_json?.schema === "string" ? connection.options_json.schema : ""}
+                                      onValueChange={(value) => void handleSelectSchema(connection, value)}
+                                      disabled={schemasLoadingId === connection.id}
+                                    >
+                                      <SelectTrigger className="h-8 w-44 rounded-xl border border-border/50 bg-card/60 px-3 text-xs text-muted-foreground">
+                                        <SelectValue placeholder="Выберите схему" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {!connectionSchemas[connection.id] && typeof connection.options_json?.schema === "string" && connection.options_json.schema ? (
+                                          <SelectItem value={connection.options_json.schema}>{connection.options_json.schema}</SelectItem>
+                                        ) : null}
+                                        {(connectionSchemas[connection.id] ?? []).map((s) => (
+                                          <SelectItem key={s.name} value={s.name}>{s.display_name}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </>
+                                ) : (
+                                  <span className="text-[11px] text-muted-foreground/60">Сначала запустите тест</span>
+                                )}
                               </div>
                             </div>
-                            {!canBind ? (
-                              <div className="mt-3">
-                                <div className="inline-flex rounded-2xl border border-border/50 bg-card/40 px-3 py-2 text-xs text-muted-foreground">
-                                  Выбор недоступен, пока подключение не пройдет тест.
-                                </div>
-                              </div>
-                            ) : null}
+
                             {connection.last_error ? (
                               <div className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
                                 {connection.last_error}
@@ -838,11 +930,6 @@ export function DashboardPanel(props: Props) {
               <label className="space-y-2">
                 <span className="text-[12px] font-bold uppercase tracking-[0.16em] text-muted-foreground">Database</span>
                 <input value={form.database} onChange={(event) => setForm((prev) => ({ ...prev, database: event.target.value }))} className="h-12 w-full rounded-2xl border border-border/60 bg-secondary/40 px-4 text-sm outline-none transition focus:border-primary/40" placeholder={form.dbType === "clickhouse" ? "default" : "analytics"} />
-              </label>
-
-              <label className="space-y-2">
-                <span className="text-[12px] font-bold uppercase tracking-[0.16em] text-muted-foreground">Schema</span>
-                <input value={form.schema} onChange={(event) => setForm((prev) => ({ ...prev, schema: event.target.value }))} className="h-12 w-full rounded-2xl border border-border/60 bg-secondary/40 px-4 text-sm outline-none transition focus:border-primary/40" placeholder={form.dbType === "clickhouse" ? "analytics" : "public"} />
               </label>
 
               <label className="space-y-2">
