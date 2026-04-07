@@ -3,17 +3,42 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteLastMessages, getSession, streamQuery } from "../lib/backend-api";
 import type {
   ArtifactPayload,
+  AssistantBlock,
   ChatMessage,
   ExecutionGraph,
   PhaseEvent,
   QueryResponse,
   SessionState,
+  StreamToolCall,
 } from "../lib/backend-types";
+
+const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
+
+function parseInputSummary(toolName: string, raw: string): string {
+  if (META_TOOLS.has(toolName)) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (typeof parsed.code === "string") return parsed.code.split("\n")[0]?.slice(0, 60) ?? "";
+    if (typeof parsed.query === "string") return parsed.query.slice(0, 60);
+    if (typeof parsed.path === "string") return parsed.path;
+    if (typeof parsed.file_path === "string") return parsed.file_path;
+    if (typeof parsed.dataset === "string") return parsed.dataset;
+    if (typeof parsed.alias === "string") return parsed.alias;
+    if (typeof parsed.pattern === "string") return `"${parsed.pattern}"`;
+    if (typeof parsed.command === "string") return parsed.command.split("\n")[0]?.slice(0, 60) ?? "";
+  } catch {
+    /* raw string fallback */
+  }
+  return trimmed.slice(0, 60).replace(/\n/g, " ");
+}
 
 type LiveReasoningSnapshot = {
   fingerprint: string;
   liveReasoningTrace: string | null;
   livePhases: PhaseEvent[];
+  tools?: StreamToolCall[];
 };
 
 function liveReasoningStorageKey(sessionId: string): string {
@@ -52,6 +77,7 @@ function saveLiveReasoningSnapshot(
   },
   liveReasoningTrace: string | null | undefined,
   livePhases: PhaseEvent[] | undefined,
+  tools?: StreamToolCall[] | undefined,
 ): void {
   if (typeof window === "undefined" || !sessionId) {
     return;
@@ -59,13 +85,15 @@ function saveLiveReasoningSnapshot(
   const fingerprint = buildAssistantMessageFingerprint(message);
   const normalizedTrace = String(liveReasoningTrace ?? "").trim();
   const normalizedPhases = Array.isArray(livePhases) ? livePhases.filter(Boolean) : [];
-  if (!fingerprint || (!normalizedTrace && normalizedPhases.length === 0)) {
+  const normalizedTools = Array.isArray(tools) && tools.length > 0 ? tools : undefined;
+  if (!fingerprint || (!normalizedTrace && normalizedPhases.length === 0 && !normalizedTools)) {
     return;
   }
   const snapshot: LiveReasoningSnapshot = {
     fingerprint,
     liveReasoningTrace: normalizedTrace || null,
     livePhases: normalizedPhases,
+    tools: normalizedTools,
   };
   try {
     window.sessionStorage.setItem(
@@ -97,6 +125,7 @@ function loadLiveReasoningSnapshot(sessionId: string): LiveReasoningSnapshot | n
       fingerprint: String(parsed.fingerprint),
       liveReasoningTrace: String(parsed.liveReasoningTrace ?? "").trim() || null,
       livePhases: Array.isArray(parsed.livePhases) ? parsed.livePhases : [],
+      tools: Array.isArray(parsed.tools) && parsed.tools.length > 0 ? parsed.tools : undefined,
     };
   } catch {
     return null;
@@ -134,6 +163,7 @@ function applyLiveReasoningSnapshot(
     ...candidate,
     liveReasoningTrace: snapshot.liveReasoningTrace,
     livePhases: snapshot.livePhases.length > 0 ? snapshot.livePhases : undefined,
+    tools: snapshot.tools ?? candidate.tools,
   };
   return copy;
 }
@@ -150,7 +180,6 @@ function toChatMessages(
   }>,
 ): ChatMessage[] {
   const messages = history.map((item, index) => ({
-    // Prefer the backend UUID as the React key when available for stability.
     id: item.id ?? `${item.timestamp}-${index}`,
     backendId: item.id,
     timestamp: item.timestamp,
@@ -186,6 +215,11 @@ function mergeReasoning(
   return normalized.length > 0 ? normalized.join("\n\n") : null;
 }
 
+type SessionSlot = {
+  messages: ChatMessage[];
+  artifacts: ArtifactPayload[];
+};
+
 type UseChatAgentArgs = {
   sessionId: string;
   includeReasoning: boolean;
@@ -197,10 +231,14 @@ type UseChatAgentResult = {
   messages: ChatMessage[];
   artifacts: ArtifactPayload[];
   isStreaming: boolean;
+  isStreamingCurrentSession: boolean;
+  backgroundStreamingSessionId: string | null;
   streamingSessionId: string | null;
   streamDraft: string;
   streamReasoning: string;
   streamPhases: PhaseEvent[];
+  streamTools: StreamToolCall[];
+  streamBlocks: AssistantBlock[];
   streamGraph: ExecutionGraph | null;
   error: string | null;
   lastQuery: string | null;
@@ -222,43 +260,105 @@ export function useChatAgent({
   useHistory,
   analysisDepth,
 }: UseChatAgentArgs): UseChatAgentResult {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [artifacts, setArtifacts] = useState<ArtifactPayload[]>([]);
+  // Per-session storage: messages and artifacts are keyed by session ID.
+  const [sessionData, setSessionData] = useState<Map<string, SessionSlot>>(new Map());
+  const [displayedSessionId, setDisplayedSessionId] = useState("");
+
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamingSessionId, setStreamingSessionId] = useState<string | null>(null);
   const [streamDraft, setStreamDraft] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [streamPhases, setStreamPhases] = useState<PhaseEvent[]>([]);
+  const [streamTools, setStreamTools] = useState<StreamToolCall[]>([]);
+  const [streamBlocks, setStreamBlocks] = useState<AssistantBlock[]>([]);
   const [streamGraph, setStreamGraph] = useState<ExecutionGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Derived values for the currently displayed session.
+  const messages = sessionData.get(displayedSessionId)?.messages ?? [];
+  const artifacts = sessionData.get(displayedSessionId)?.artifacts ?? [];
+
+  // True only when the user is looking at the session that is currently streaming.
+  const isStreamingCurrentSession = isStreaming && streamingSessionId === displayedSessionId;
+
+  // Non-null when a stream is running in a session the user is NOT currently viewing.
+  const backgroundStreamingSessionId =
+    isStreaming && streamingSessionId !== null && streamingSessionId !== displayedSessionId
+      ? streamingSessionId
+      : null;
+
   const messagesRef = useRef<ChatMessage[]>([]);
   messagesRef.current = messages;
-  const phaseTokenBufRef = useRef("");
-  const phaseFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Ref so sendQuery always captures the session the user is actually viewing,
+  // even if args.sessionId hasn't been updated yet via the bindChatAgent effect.
+  const displayedSessionIdRef = useRef(displayedSessionId);
+  displayedSessionIdRef.current = displayedSessionId;
 
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
-      if (phaseFlushRef.current) {
-        clearTimeout(phaseFlushRef.current);
-      }
     };
   }, []);
 
   const isStreamingRef = useRef(isStreaming);
   isStreamingRef.current = isStreaming;
 
+  const streamingSessionIdRef = useRef<string | null>(null);
+  streamingSessionIdRef.current = streamingSessionId;
+
+  // Helper: update the messages array for a specific session slot.
+  const patchSlotMessages = useCallback(
+    (sid: string, updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+      setSessionData((prev) => {
+        const newMap = new Map(prev);
+        const slot = newMap.get(sid) ?? { messages: [], artifacts: [] };
+        newMap.set(sid, { ...slot, messages: updater(slot.messages) });
+        return newMap;
+      });
+    },
+    [],
+  );
+
+  // Helper: replace both messages and artifacts for a specific session slot.
+  const replaceSlot = useCallback(
+    (sid: string, nextMessages: ChatMessage[], nextArtifacts: ArtifactPayload[]) => {
+      setSessionData((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(sid, { messages: nextMessages, artifacts: nextArtifacts });
+        return newMap;
+      });
+    },
+    [],
+  );
+
+  // Helper: append artifacts for a specific session slot.
+  const appendSlotArtifacts = useCallback(
+    (sid: string, newArtifacts: ArtifactPayload[]) => {
+      setSessionData((prev) => {
+        const newMap = new Map(prev);
+        const slot = newMap.get(sid) ?? { messages: [], artifacts: [] };
+        newMap.set(sid, { ...slot, artifacts: [...slot.artifacts, ...newArtifacts] });
+        return newMap;
+      });
+    },
+    [],
+  );
+
   const hydrate = useCallback((
     session: SessionState,
     options?: { preserveStreamingForSessionId?: string | null },
   ) => {
-    const preserveStreaming =
-      isStreamingRef.current &&
-      options?.preserveStreamingForSessionId &&
-      options.preserveStreamingForSessionId === session.session_id;
-    const hydratedMessages = toChatMessages(session.session_id, session.chat_history);
+    const sid = session.session_id;
+    // Should we keep the live messages for this session (it's currently streaming)?
+    const isCurrentlyStreamingThis =
+      isStreamingRef.current && streamingSessionIdRef.current === sid;
+    const shouldPreserveMessages =
+      isCurrentlyStreamingThis && options?.preserveStreamingForSessionId === sid;
+
+    const hydratedMessages = toChatMessages(sid, session.chat_history);
     const hasArtifactMessages = hydratedMessages.some((item) => (item.artifacts?.length ?? 0) > 0);
     if (!hasArtifactMessages && session.artifacts.length > 0) {
       hydratedMessages.push({
@@ -269,17 +369,40 @@ export function useChatAgent({
         artifacts: session.artifacts,
       });
     }
-    if (!preserveStreaming) {
-      setMessages(hydratedMessages);
-    }
-    setArtifacts(session.artifacts);
+
+    setSessionData((prev) => {
+      const newMap = new Map(prev);
+      if (shouldPreserveMessages) {
+        // Keep live messages and merge artifacts: server state is canonical, but
+        // preserve any locally-generated artifacts that aren't yet persisted
+        // (e.g. the current streaming response that triggered this reload).
+        const existing = newMap.get(sid);
+        const serverIds = new Set(session.artifacts.map((a) => a.id));
+        const localOnly = (existing?.artifacts ?? []).filter((a) => !serverIds.has(a.id));
+        newMap.set(sid, {
+          messages: existing?.messages ?? hydratedMessages,
+          artifacts: [...session.artifacts, ...localOnly],
+        });
+      } else {
+        newMap.set(sid, { messages: hydratedMessages, artifacts: session.artifacts });
+      }
+      return newMap;
+    });
+
+    setDisplayedSessionId(sid);
     setError(null);
-    if (!preserveStreaming) {
+
+    // Clear streaming display state only when switching to a non-streaming session.
+    // The stream itself continues uninterrupted in its own session slot.
+    if (!isCurrentlyStreamingThis) {
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
-      setIsStreaming(false);
-      setLastQuery(null);
+      setStreamTools([]);
+      setStreamBlocks([]);
+      if (!isStreamingRef.current) {
+        setLastQuery(null);
+      }
     }
   }, []);
 
@@ -293,28 +416,20 @@ export function useChatAgent({
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();
-    if (phaseFlushRef.current) {
-      clearTimeout(phaseFlushRef.current);
-      phaseFlushRef.current = null;
-    }
-    phaseTokenBufRef.current = "";
   }, []);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
-    if (phaseFlushRef.current) {
-      clearTimeout(phaseFlushRef.current);
-      phaseFlushRef.current = null;
-    }
-    phaseTokenBufRef.current = "";
-      setMessages([]);
-      setArtifacts([]);
-      setIsStreaming(false);
-      setStreamingSessionId(null);
-      setStreamDraft("");
+    setSessionData(new Map());
+    setDisplayedSessionId("");
+    setIsStreaming(false);
+    setStreamingSessionId(null);
+    setStreamDraft("");
     setStreamReasoning("");
     setStreamPhases([]);
+    setStreamTools([]);
+    setStreamBlocks([]);
     setError(null);
     setLastQuery(null);
   }, []);
@@ -326,15 +441,25 @@ export function useChatAgent({
         return;
       }
 
+      // Capture the session ID for this request — it must not change even if the
+      // user navigates to a different session while the stream is in flight.
+      // Prefer displayedSessionIdRef (updated synchronously by hydrate) over
+      // sessionId from args (updated via useEffect, one render later).
+      const capturedSessionId = displayedSessionIdRef.current || sessionId;
+
       setError(null);
       setLastQuery(prompt);
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
+      setStreamTools([]);
+      setStreamBlocks([]);
       setStreamGraph(null);
       setIsStreaming(true);
-      setStreamingSessionId(sessionId);
-      setMessages((prev) => [
+      setStreamingSessionId(capturedSessionId);
+
+      // Add the user message to the captured session's slot.
+      patchSlotMessages(capturedSessionId, (prev) => [
         ...prev,
         {
           id: `u-${Date.now()}`,
@@ -348,68 +473,59 @@ export function useChatAgent({
         streamedText: "",
       };
       const collectedPhases: PhaseEvent[] = [];
+      const collectedTools: StreamToolCall[] = [];
+      const collectedBlocks: AssistantBlock[] = [];
+      let blockCounter = 0;
+      const nextBlockId = () => `blk-${++blockCounter}`;
       let collectedReasoning = "";
-      let liveReasoningStarted = false;
+      let pendingThinkingBlock = "";
+      let pendingIntentText = "";
       let aborted = false;
       const controller = new AbortController();
       abortRef.current = controller;
 
       try {
         await streamQuery(
-          sessionId,
+          capturedSessionId,
           prompt,
           includeReasoning,
           useHistory,
           {
             onToken: (token) => {
               streamState.streamedText += token;
+              pendingIntentText += token;
               setStreamDraft((prev) => prev + token);
             },
             onFinal: (payload) => {
               streamState.finalPayload = payload;
             },
             onReasoning: (reasoningChunk, mode) => {
-              if (!includeReasoning || !reasoningChunk) {
-                return;
-              }
+              if (!includeReasoning || !reasoningChunk) return;
               if (mode === "token") {
-                if (!liveReasoningStarted) {
-                  liveReasoningStarted = true;
-                  collectedReasoning = collectedReasoning.trim()
-                    ? `${collectedReasoning}\n\n### Р”СѓРјР°СЋ\n`
-                    : "### Р”СѓРјР°СЋ\n";
-                }
-                collectedReasoning += reasoningChunk;
-                setStreamReasoning((prev) => {
-                  let next = prev;
-                  if (!liveReasoningStarted) {
-                    liveReasoningStarted = true;
-                    next = next.trim() ? `${next}\n\n### Думаю\n` : "### Думаю\n";
-                  }
-                  return next + reasoningChunk;
+                setStreamReasoning((prev) => prev + reasoningChunk);
+              }
+            },
+            onThinkingStart: () => {
+              setStreamReasoning("");
+            },
+            onThinkingEnd: (text) => {
+              const trimmed = text.trim();
+              if (trimmed) {
+                pendingThinkingBlock = trimmed;
+                collectedReasoning = collectedReasoning
+                  ? `${collectedReasoning}\n\n${trimmed}`
+                  : trimmed;
+                collectedBlocks.push({
+                  type: "thinking",
+                  id: nextBlockId(),
+                  content: trimmed,
                 });
-                return;
+                setStreamBlocks([...collectedBlocks]);
               }
-              const normalized = reasoningChunk.trim();
-              if (!normalized) {
-                return;
-              }
-              collectedReasoning = collectedReasoning
-                ? `${collectedReasoning}\n\n${normalized}`
-                : normalized;
-              setStreamReasoning((prev) => (prev ? `${prev}\n\n${normalized}` : normalized));
+              setStreamReasoning("");
             },
             onPhase: (phaseEvent) => {
-              const pendingTokens = phaseTokenBufRef.current;
-              phaseTokenBufRef.current = "";
-              if (phaseFlushRef.current) {
-                clearTimeout(phaseFlushRef.current);
-                phaseFlushRef.current = null;
-              }
-              const mergedEvent =
-                phaseEvent.status === "streaming" && pendingTokens
-                  ? { ...phaseEvent, content: (phaseEvent.content ?? "") + pendingTokens }
-                  : phaseEvent;
+              const mergedEvent = phaseEvent;
               if (mergedEvent.id) {
                 const idx = collectedPhases.findIndex((p) => p.id === mergedEvent.id);
                 if (idx >= 0) {
@@ -433,58 +549,100 @@ export function useChatAgent({
               });
             },
             onToolStart: (event) => {
-              if (!includeReasoning) return;
-              const text = `\n🔧 **${event.tool_name}** запущен`;
-              collectedReasoning += text;
-              setStreamReasoning((prev) => prev + text);
+              if (META_TOOLS.has(event.tool_name)) return;
+              const callId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
+              const preReasoning = pendingThinkingBlock;
+              pendingThinkingBlock = "";
+
+              const intentText = pendingIntentText.trim();
+              pendingIntentText = "";
+              if (intentText) {
+                collectedBlocks.push({
+                  type: "text",
+                  id: nextBlockId(),
+                  content: intentText,
+                });
+              }
+
+              const toolBlockId = nextBlockId();
+              collectedBlocks.push({
+                type: "tool_use",
+                id: toolBlockId,
+                tool_name: event.tool_name,
+                input_summary: inputSummary,
+                input_code: event.input_code || undefined,
+                input_preview: event.input_preview || undefined,
+                status: "running",
+                started_at: Date.now(),
+              });
+              setStreamBlocks([...collectedBlocks]);
+
+              const entry: StreamToolCall = {
+                id: callId,
+                tool_name: event.tool_name,
+                input_summary: inputSummary,
+                input_preview: event.input_preview || undefined,
+                status: "running",
+                started_at: Date.now(),
+                pre_reasoning: preReasoning || undefined,
+              };
+              collectedTools.push(entry);
+              setStreamTools((prev) => [...prev, entry]);
             },
             onToolEnd: (event) => {
-              if (!includeReasoning) return;
-              const status = event.status === "ok" ? "✅" : "❌";
-              const artifacts = event.artifact_keys?.length
-                ? ` → ${event.artifact_keys.join(", ")}`
-                : "";
-              const text = `\n${status} **${event.tool_name}** завершён${artifacts}`;
-              collectedReasoning += text;
-              setStreamReasoning((prev) => prev + text);
+              if (META_TOOLS.has(event.tool_name)) return;
+              const endPatch = {
+                status: (event.status === "ok" ? "done" : "error") as "done" | "error",
+                artifact_keys: event.artifact_keys ?? [],
+                ...(event.output_preview ? { output_preview: event.output_preview } : {}),
+              };
+              for (let i = collectedTools.length - 1; i >= 0; i--) {
+                if (collectedTools[i]!.tool_name === event.tool_name && collectedTools[i]!.status === "running") {
+                  collectedTools[i] = { ...collectedTools[i]!, ...endPatch };
+                  break;
+                }
+              }
+
+              for (let i = collectedBlocks.length - 1; i >= 0; i--) {
+                const blk = collectedBlocks[i]!;
+                if (blk.type === "tool_use" && blk.tool_name === event.tool_name && blk.status === "running") {
+                  collectedBlocks[i] = {
+                    ...blk,
+                    status: event.status === "ok" ? "done" : "error",
+                    input_code: blk.input_code,
+                    result_summary: event.result_summary || undefined,
+                    output_preview: event.output_preview || undefined,
+                    artifact_keys: event.artifact_keys,
+                  };
+                  collectedBlocks.push({
+                    type: "tool_result",
+                    id: nextBlockId(),
+                    tool_use_id: blk.id,
+                    tool_name: event.tool_name,
+                    status: (event.status === "ok" ? "ok" : "error") as "ok" | "error",
+                    result_summary: event.result_summary || "",
+                    output_preview: event.output_preview,
+                    artifact_keys: event.artifact_keys,
+                  });
+                  break;
+                }
+              }
+              setStreamBlocks([...collectedBlocks]);
+
+              setStreamTools((prev) => {
+                const copy = [...prev];
+                for (let i = copy.length - 1; i >= 0; i--) {
+                  if (copy[i]!.tool_name === event.tool_name && copy[i]!.status === "running") {
+                    copy[i] = { ...copy[i]!, ...endPatch };
+                    break;
+                  }
+                }
+                return copy;
+              });
             },
             onGraphUpdate: (graph) => {
               setStreamGraph(graph);
-            },
-            onPhaseToken: (token) => {
-              phaseTokenBufRef.current += token;
-              if (!phaseFlushRef.current) {
-                phaseFlushRef.current = setTimeout(() => {
-                  const buf = phaseTokenBufRef.current;
-                  phaseTokenBufRef.current = "";
-                  phaseFlushRef.current = null;
-                  if (!buf) {
-                    return;
-                  }
-                  setStreamPhases((prev) => {
-                    if (prev.length === 0) {
-                      return prev;
-                    }
-                    const copy = [...prev];
-                    const last = copy[copy.length - 1];
-                    if (last.status === "streaming") {
-                      const updated = {
-                        ...last,
-                        content: last.content + buf,
-                      };
-                      copy[copy.length - 1] = updated;
-                      const collectedIndex = collectedPhases.findIndex(
-                        (phase) => phase.id === updated.id,
-                      );
-                      if (collectedIndex >= 0) {
-                        collectedPhases[collectedIndex] = updated;
-                      }
-                      return copy;
-                    }
-                    return prev;
-                  });
-                }, 60);
-              }
             },
             onError: (streamError) => {
               setError(streamError);
@@ -506,14 +664,14 @@ export function useChatAgent({
         setStreamDraft("");
         setStreamReasoning("");
         setStreamPhases([]);
+        setStreamTools([]);
+        setStreamBlocks([]);
       }
 
       if (aborted) {
-        const partialReasoning = buildStreamingReasoning(
-          collectedReasoning,
-        );
+        const partialReasoning = buildStreamingReasoning(collectedReasoning);
         if (streamState.streamedText.trim() || partialReasoning) {
-          setMessages((prev) => [
+          patchSlotMessages(capturedSessionId, (prev) => [
             ...prev,
             {
               id: `a-aborted-${Date.now()}`,
@@ -524,6 +682,8 @@ export function useChatAgent({
                 "_Генерация остановлена пользователем до появления итогового текста._",
               reasoning: partialReasoning,
               phases: collectedPhases.length > 0 ? [...collectedPhases] : undefined,
+              tools: collectedTools.length > 0 ? [...collectedTools] : undefined,
+              blocks: collectedBlocks.length > 0 ? [...collectedBlocks] : undefined,
             },
           ]);
         }
@@ -532,17 +692,12 @@ export function useChatAgent({
 
       const finalPayload = streamState.finalPayload;
       const savedPhases = collectedPhases.filter((p) => p.status === "done");
-      const fallbackReasoning = buildStreamingReasoning(
-        collectedReasoning,
-      );
+      const fallbackReasoning = buildStreamingReasoning(collectedReasoning);
       if (finalPayload) {
-        const finalReasoning = mergeReasoning(
-          finalPayload.reasoning,
-          fallbackReasoning,
-        );
+        const finalReasoning = mergeReasoning(finalPayload.reasoning, fallbackReasoning);
         const livePhases = collectedPhases.length > 0 ? [...collectedPhases] : undefined;
         saveLiveReasoningSnapshot(
-          sessionId,
+          capturedSessionId,
           {
             role: "assistant",
             content: finalPayload.text,
@@ -550,29 +705,39 @@ export function useChatAgent({
           },
           fallbackReasoning,
           livePhases,
+          collectedTools.length > 0 ? [...collectedTools] : undefined,
         );
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `a-${Date.now()}`,
-            timestamp: new Date().toISOString(),
-            role: "assistant",
-            content: finalPayload.text,
-            reasoning: finalReasoning,
-            phases: savedPhases.length > 0 ? savedPhases : undefined,
-            liveReasoningTrace: fallbackReasoning,
-            livePhases,
-            metrics: finalPayload.metrics,
-            artifacts: finalPayload.artifacts,
-            executionGraph: (finalPayload as Record<string, unknown>).execution_graph as ExecutionGraph | undefined,
-          },
-        ]);
-        setArtifacts((prev) => [...prev, ...finalPayload.artifacts]);
+        setSessionData((prev) => {
+          const newMap = new Map(prev);
+          const slot = newMap.get(capturedSessionId) ?? { messages: [], artifacts: [] };
+          newMap.set(capturedSessionId, {
+            messages: [
+              ...slot.messages,
+              {
+                id: `a-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                role: "assistant",
+                content: finalPayload.text,
+                reasoning: finalReasoning,
+                phases: savedPhases.length > 0 ? savedPhases : undefined,
+                tools: collectedTools.length > 0 ? [...collectedTools] : undefined,
+                blocks: collectedBlocks.length > 0 ? [...collectedBlocks] : undefined,
+                liveReasoningTrace: fallbackReasoning,
+                livePhases,
+                metrics: finalPayload.metrics,
+                artifacts: finalPayload.artifacts,
+                executionGraph: (finalPayload as Record<string, unknown>).execution_graph as ExecutionGraph | undefined,
+              },
+            ],
+            artifacts: [...slot.artifacts, ...finalPayload.artifacts],
+          });
+          return newMap;
+        });
         return;
       }
 
       try {
-        const recoveredSession = await getSession(sessionId);
+        const recoveredSession = await getSession(capturedSessionId);
         const recoveredHistory = toChatMessages(
           recoveredSession.session_id,
           recoveredSession.chat_history,
@@ -582,10 +747,11 @@ export function useChatAgent({
           .find((message) => message.role === "assistant");
         if (lastRecoveredAssistant) {
           saveLiveReasoningSnapshot(
-            sessionId,
+            capturedSessionId,
             lastRecoveredAssistant,
             fallbackReasoning,
             collectedPhases.length > 0 ? [...collectedPhases] : undefined,
+            collectedTools.length > 0 ? [...collectedTools] : undefined,
           );
         }
         const hydratedWithLiveTrace = applyLiveReasoningSnapshot(
@@ -593,8 +759,7 @@ export function useChatAgent({
           recoveredHistory,
         );
         if (hydratedWithLiveTrace.length > 0) {
-          setMessages(hydratedWithLiveTrace);
-          setArtifacts(recoveredSession.artifacts);
+          replaceSlot(capturedSessionId, hydratedWithLiveTrace, recoveredSession.artifacts);
           return;
         }
       } catch {
@@ -602,7 +767,7 @@ export function useChatAgent({
       }
 
       if (streamState.streamedText.trim()) {
-        setMessages((prev) => [
+        patchSlotMessages(capturedSessionId, (prev) => [
           ...prev,
           {
             id: `a-${Date.now()}`,
@@ -616,7 +781,7 @@ export function useChatAgent({
         return;
       }
 
-      setMessages((prev) => [
+      patchSlotMessages(capturedSessionId, (prev) => [
         ...prev,
         {
           id: `a-fallback-${Date.now()}`,
@@ -627,7 +792,7 @@ export function useChatAgent({
         },
       ]);
     },
-    [analysisDepth, includeReasoning, isStreaming, sessionId, useHistory],
+    [analysisDepth, appendSlotArtifacts, includeReasoning, isStreaming, patchSlotMessages, replaceSlot, sessionId, useHistory],
   );
 
   const retryLast = useCallback(async () => {
@@ -635,9 +800,6 @@ export function useChatAgent({
       return;
     }
     const msgs = messagesRef.current;
-    // lastQuery is only populated during the current browser session.
-    // Fall back to the content of the last user message so the button works
-    // after a page reload or when the session is restored from the backend.
     let lastUserMsg: ChatMessage | undefined;
     for (let i = msgs.length - 1; i >= 0; i -= 1) {
       if (msgs[i].role === "user") {
@@ -649,7 +811,6 @@ export function useChatAgent({
     if (!query) {
       return;
     }
-    // Delete from backend by the exact message ID so history stays consistent.
     if (lastUserMsg?.backendId) {
       try {
         await deleteLastMessages(sessionId, lastUserMsg.backendId);
@@ -657,8 +818,18 @@ export function useChatAgent({
         // Best-effort: continue even if the message wasn't persisted yet.
       }
     }
-    // Mirror the deletion in local state (remove last user + assistant pair).
-    setMessages((prev) => (prev.length >= 2 ? prev.slice(0, -2) : []));
+    // Remove the last user + assistant pair from this session's slot.
+    setSessionData((prev) => {
+      const newMap = new Map(prev);
+      const slot = newMap.get(sessionId);
+      if (slot) {
+        newMap.set(sessionId, {
+          ...slot,
+          messages: slot.messages.length >= 2 ? slot.messages.slice(0, -2) : [],
+        });
+      }
+      return newMap;
+    });
     await sendQuery(query);
   }, [isStreaming, lastQuery, sendQuery, sessionId]);
 
@@ -666,10 +837,14 @@ export function useChatAgent({
     messages,
     artifacts,
     isStreaming,
+    isStreamingCurrentSession,
+    backgroundStreamingSessionId,
     streamingSessionId,
     streamDraft,
     streamReasoning,
     streamPhases,
+    streamTools,
+    streamBlocks,
     streamGraph,
     error,
     lastQuery,

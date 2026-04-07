@@ -131,6 +131,7 @@ class Settings:
     llm_max_tokens_default: int = int(os.getenv("LLM_MAX_TOKENS_DEFAULT", "2048"))
     llm_max_tokens_reasoning: int = int(os.getenv("LLM_MAX_TOKENS_REASONING", "4096"))
     llm_enable_thinking: bool = _get_bool("LLM_ENABLE_THINKING", False)
+    llm_show_think: bool = _get_bool("LLM_SHOW_THINK", True)
     llm_num_ctx: int = int(os.getenv("LLM_NUM_CTX", "32768"))
     llm_streaming: bool = _get_bool("LLM_STREAMING", True)
     llm_streaming_force: bool = _get_bool("LLM_STREAMING_FORCE", True)
@@ -153,10 +154,6 @@ class Settings:
     agent_cache_enabled: bool = _get_bool("AGENT_CACHE_ENABLED", True)
     agent_cache_size: int = int(os.getenv("AGENT_CACHE_SIZE", "128"))
     agent_cache_ttl_sec: int = int(os.getenv("AGENT_CACHE_TTL_SEC", "900"))
-    agent_evaluate_enabled: bool = _get_bool("AGENT_EVALUATE_ENABLED", True)
-    agent_evaluate_max_tokens: int = int(
-        os.getenv("AGENT_EVALUATE_MAX_TOKENS", "300")
-    )
     agent_analysis_depth: str = (
         os.getenv("AGENT_ANALYSIS_DEPTH", "light").strip().lower()
     )

@@ -135,7 +135,7 @@ class UserArtifact(TextArtifact):
 class TableArtifact(Artifact):
     type: str = "table"
 
-    def normalize(self):
+    def normalize(self):  # pylint: disable=no-member
         table = self.data
         if isinstance(table, pd.Series):
             table = table.to_frame()
@@ -146,7 +146,7 @@ class TableArtifact(Artifact):
                 table[col] = table[col].astype(str)
         return table
 
-    def generate_history_message(
+    def generate_history_message(  # pylint: disable=arguments-differ
         self, max_table_rows: int = 5, **kwargs
     ) -> BaseMessage | None:
         table_md = self.normalized.head(max_table_rows).to_markdown()
@@ -162,7 +162,7 @@ class PlotArtifact(Artifact):
 
     type: str = "plot"
 
-    def normalize(self) -> go.Figure:
+    def normalize(self) -> go.Figure:  # pylint: disable=no-member
         """
         Нормализует график для отображения.
 
@@ -177,7 +177,7 @@ class PlotArtifact(Artifact):
         )
         return fig
 
-    def generate_history_message(self, **kwargs) -> BaseMessage | None:
+    def generate_history_message(self, **kwargs) -> BaseMessage | None:  # pylint: disable=arguments-differ
         """
         Генерирует описание графика для истории LLM.
 
@@ -225,7 +225,7 @@ _artifact_type_map = {
 
 
 def artifact_factory(
-    type: str,
+    artifact_type: str,
     data: object = None,
     text: str | None = None,
     meta: dict[str, object] | None = None,
@@ -234,7 +234,7 @@ def artifact_factory(
     Фабрика для создания артефактов разных типов.
 
     Args:
-        type (str): Тип артефакта (text, user, table, plot, error).
+        artifact_type (str): Тип артефакта (text, user, table, plot, error).
         data (object): Данные артефакта.
         text (str | None): Имя или описание.
         meta (dict[str, object] | None): Метаданные.
@@ -243,9 +243,9 @@ def artifact_factory(
         Artifact: Экземпляр соответствующего класса артефакта.
     """
     meta = meta or {}
-    cls = _artifact_type_map.get(type)
+    cls = _artifact_type_map.get(artifact_type)
     if cls is None:
-        raise ValueError(f"Неизвестный тип артефакта: {type}")
+        raise ValueError(f"Неизвестный тип артефакта: {artifact_type}")
     return cls(data=data, text=text, meta=meta)
 
 

@@ -28,6 +28,7 @@ class ExecArtifactType(StrEnum):
     SQL_RESULT = "sql_result"
     SEARCH_RESULT = "search_result"
     FORECAST = "forecast"
+    JSON = "json"
 
 
 def artifact_type_label(artifact_type_val: Any) -> str:
@@ -94,7 +95,7 @@ class ExecutionArtifact:
             import pandas as pd
             if isinstance(self.data, pd.DataFrame):
                 return pd.util.hash_pandas_object(self.data).sum().__str__()
-        if self.artifact_type == ExecArtifactType.SCALAR:
+        if self.artifact_type in (ExecArtifactType.SCALAR, ExecArtifactType.JSON):
             return json.dumps(self.data, sort_keys=True, default=str)
         if self.artifact_type == ExecArtifactType.PLOT:
             fig = self.data

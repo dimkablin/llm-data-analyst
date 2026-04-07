@@ -42,7 +42,6 @@ class RAGRouteTests(unittest.TestCase):
             Settings(),
             agent_cache_enabled=False,
             llm_warmup_enabled=False,
-            agent_evaluate_enabled=False,
         )
         return AgentRunner(
             settings,

@@ -162,6 +162,7 @@ export type UserSettings = {
   agent_max_steps: number;
   agent_step_timeout_sec: number;
   agent_inner_recursion_limit: number;
+  agent_react_enabled: boolean;
   ui_scale: number;
 };
 
@@ -224,6 +225,70 @@ export type ExecutionGraph = {
   edges: GraphEdge[];
 };
 
+export type StreamToolCall = {
+  /** Client-side ID (uuid generated on tool_start). */
+  id: string;
+  tool_name: string;
+  /** Short human-readable summary of the tool input, e.g. first line of code or file path. */
+  input_summary: string;
+  /** Raw tool input (up to 360 chars), used for expand view showing code / SQL. */
+  input_preview?: string;
+  /** Raw tool output text (up to 800 chars), shown in expand view. */
+  output_preview?: string;
+  status: "running" | "done" | "error";
+  artifact_keys?: string[];
+  started_at: number;
+  /** Reasoning text that preceded this tool call (delta since previous tool call). */
+  pre_reasoning?: string;
+};
+
+// ─── Assistant block model (Claude-like sequential rendering) ────────────────
+
+export type ThinkingBlock = {
+  type: "thinking";
+  id: string;
+  content: string;
+};
+
+export type TextBlock = {
+  type: "text";
+  id: string;
+  content: string;
+};
+
+export type ToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  tool_name: string;
+  input_summary: string;
+  input_code?: string;
+  input_preview?: string;
+  status: "running" | "done" | "error";
+  started_at: number;
+  result_summary?: string;
+  output_preview?: string;
+  artifact_keys?: string[];
+};
+
+export type ToolResultBlock = {
+  type: "tool_result";
+  id: string;
+  tool_use_id: string;
+  tool_name: string;
+  status: "ok" | "error";
+  result_summary: string;
+  output_preview?: string;
+  artifact_keys?: string[];
+};
+
+export type AssistantBlock =
+  | ThinkingBlock
+  | TextBlock
+  | ToolUseBlock
+  | ToolResultBlock;
+
+// ─── Chat message ────────────────────────────────────────────────────────────
+
 export type ChatMessage = {
   /** Frontend-local composite ID (used as React key). */
   id: string;
@@ -234,6 +299,10 @@ export type ChatMessage = {
   content: string;
   reasoning?: string | null;
   phases?: PhaseEvent[];
+  /** Tool calls that happened during this message (for inline display, Claude Code style). */
+  tools?: StreamToolCall[];
+  /** Ordered block sequence for Claude-like sequential rendering. */
+  blocks?: AssistantBlock[];
   liveReasoningTrace?: string | null;
   livePhases?: PhaseEvent[];
   metrics?: QueryMetrics;

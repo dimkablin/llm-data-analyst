@@ -292,7 +292,7 @@ class SearchIntegrationService:
                 payload,
                 self.config.timeout_sec,
             )
-        except SearchIntegrationError:
+        except SearchIntegrationError:  # pylint: disable=try-except-raise
             raise
         except HTTPError as exc:
             body_preview = ""
@@ -514,7 +514,7 @@ class SearchIntegrationService:
 
         try:
             raw = self._transport(fetch_url, body, self.config.timeout_sec)
-        except SearchIntegrationError:
+        except SearchIntegrationError:  # pylint: disable=try-except-raise
             raise
         except Exception as exc:
             raise SearchIntegrationError(f"Fetch request failed: {exc}") from exc

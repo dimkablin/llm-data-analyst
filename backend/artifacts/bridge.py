@@ -20,6 +20,7 @@ _EXEC_TO_API_TYPE: dict[ExecArtifactType, str] = {
     ExecArtifactType.PLOT: "plot",
     ExecArtifactType.SCALAR: "value",
     ExecArtifactType.FORECAST: "table",
+    ExecArtifactType.JSON: "json",
 }
 
 

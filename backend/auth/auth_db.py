@@ -42,6 +42,7 @@ class UserSettings:
     agent_max_steps: int
     agent_step_timeout_sec: int
     agent_inner_recursion_limit: int
+    agent_react_enabled: bool = False
     ui_scale: int = 100
 
 
@@ -371,6 +372,13 @@ class AuthDB:
                 ADD COLUMN ui_scale INTEGER NOT NULL DEFAULT 100
                 """
             )
+        if "agent_react_enabled" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN agent_react_enabled INTEGER NOT NULL DEFAULT 0
+                """
+            )
 
     @staticmethod
     def _ensure_user_db_connections_columns(conn: sqlite3.Connection) -> None:
@@ -663,6 +671,9 @@ class AuthDB:
             ),
             agent_step_timeout_sec=int(row["agent_step_timeout_sec"] or 45),
             agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 14),
+            agent_react_enabled=(
+                bool(row["agent_react_enabled"]) if "agent_react_enabled" in row.keys() else False
+            ),
             ui_scale=int(row["ui_scale"] if "ui_scale" in row.keys() else 100),
         )
 
@@ -677,6 +688,7 @@ class AuthDB:
                     , llm_max_tokens_default, llm_max_tokens_reasoning
                     , backend_query_timeout_sec, agent_max_steps
                     , agent_step_timeout_sec, agent_inner_recursion_limit
+                    , agent_react_enabled
                     , ui_scale
                 FROM user_settings
                 WHERE user_id = ?
@@ -697,6 +709,7 @@ class AuthDB:
                 agent_max_steps=20,
                 agent_step_timeout_sec=45,
                 agent_inner_recursion_limit=6,
+                agent_react_enabled=False,
                 ui_scale=100,
             )
         return self._parse_user_settings(row)
@@ -717,6 +730,7 @@ class AuthDB:
         agent_max_steps: int | None = None,
         agent_step_timeout_sec: int | None = None,
         agent_inner_recursion_limit: int | None = None,
+        agent_react_enabled: bool | None = None,
         ui_scale: int | None = None,
     ) -> UserSettings:
         with self._connect() as conn:
@@ -798,6 +812,11 @@ class AuthDB:
                 if agent_inner_recursion_limit is not None
                 else current.agent_inner_recursion_limit
             )
+            next_agent_react_enabled = (
+                bool(agent_react_enabled)
+                if agent_react_enabled is not None
+                else current.agent_react_enabled
+            )
             next_ui_scale = (
                 min(max(70, int(ui_scale)), 150)
                 if ui_scale is not None
@@ -812,6 +831,7 @@ class AuthDB:
                     llm_max_tokens_default = ?, llm_max_tokens_reasoning = ?,
                     backend_query_timeout_sec = ?, agent_max_steps = ?,
                     agent_step_timeout_sec = ?, agent_inner_recursion_limit = ?,
+                    agent_react_enabled = ?,
                     ui_scale = ?,
                     updated_at = ?
                 WHERE user_id = ?
@@ -829,6 +849,7 @@ class AuthDB:
                     next_agent_max_steps,
                     next_agent_step_timeout_sec,
                     next_agent_inner_recursion_limit,
+                    1 if next_agent_react_enabled else 0,
                     next_ui_scale,
                     self._now_iso(),
                     user_id,
@@ -847,6 +868,7 @@ class AuthDB:
             agent_max_steps=next_agent_max_steps,
             agent_step_timeout_sec=next_agent_step_timeout_sec,
             agent_inner_recursion_limit=next_agent_inner_recursion_limit,
+            agent_react_enabled=next_agent_react_enabled,
             ui_scale=next_ui_scale,
         )
 
@@ -987,7 +1009,7 @@ class AuthDB:
     ) -> None:
         title_candidate = str(auto_title or "").strip() or None
         if title_candidate and len(title_candidate) > 120:
-            title_candidate = title_candidate[:120].rstrip() or None
+            title_candidate = title_candidate[:120].rstrip() or None  # pylint: disable=unsubscriptable-object
 
         preview = assistant_text.strip()
         if len(preview) > 200:

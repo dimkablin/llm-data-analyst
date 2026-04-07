@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useTheme } from "next-themes";
 import type { ArtifactPayload } from "../../lib/backend-types";
 import { formatNumber } from "../../lib/format";
@@ -68,110 +69,138 @@ function TableArtifact({ artifact }: { artifact: ArtifactPayload }) {
   );
 }
 
-function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
-  const { resolvedTheme } = useTheme();
+function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
+  const data = artifact.data.data as Record<string, unknown>;
+  const answer = typeof data?.answer === "string" ? data.answer.trim() : null;
+  const query = typeof data?.query === "string" ? data.query.trim() : null;
+  const results = Array.isArray(data?.results) ? data.results as Array<Record<string, unknown>> : null;
+  const references = Array.isArray(data?.references) ? data.references as string[] : null;
+  const sources = Array.isArray(data?.sources) ? data.sources as string[] : null;
 
-  const payload = artifact.data.data as {
-    data?: unknown[];
-    layout?: Record<string, unknown>;
-    config?: Record<string, unknown>;
-  };
+  const isSearchResult = results !== null;
+  const isRagResult = references !== null && !isSearchResult;
 
-  const isDark = resolvedTheme === "dark";
-
-  const frameBg = isDark ? "#09090b" : "#ffffff";
-  const plotBg = isDark ? "#18181b" : "#ffffff";
-  const text = isDark ? "#fafafa" : "#18181b";
-  const muted = isDark ? "#a1a1aa" : "#717182";
-  const grid = isDark ? "rgba(63,63,70,0.5)" : "rgba(0,0,0,0.10)";
-  const zero = isDark ? "#3f3f46" : "rgba(0,0,0,0.18)";
-
-  const srcDoc = `
-    <html>
-      <head>
-        <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-        <style>
-          html,body,#plot{
-            margin:0;
-            padding:0;
-            width:100%;
-            height:100%;
-            background:${frameBg};
-            color:${text};
-            font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif;
-          }
-        </style>
-      </head>
-      <body>
-        <div id="plot"></div>
-        <script>
-          const payload = ${JSON.stringify(payload).replace(/<\//g, "<\\/")};
-          const baseLayout = payload.layout || {};
-          const themeLayout = {
-            paper_bgcolor: "${frameBg}",
-            plot_bgcolor: "${plotBg}",
-            font: {
-              ...(baseLayout.font || {}),
-              color: "${text}",
-              family: "ui-sans-serif, system-ui, sans-serif"
-            },
-            title: {
-              ...(baseLayout.title || {}),
-              font: {
-                ...(((baseLayout.title || {}).font) || {}),
-                color: "${text}"
-              }
-            },
-            legend: {
-              ...(baseLayout.legend || {}),
-              bgcolor: "transparent",
-              font: { ...(((baseLayout.legend || {}).font) || {}), color: "${muted}" }
-            },
-            xaxis: {
-              ...(baseLayout.xaxis || {}),
-              gridcolor: "${grid}",
-              zerolinecolor: "${zero}",
-              tickfont: { ...(((baseLayout.xaxis || {}).tickfont) || {}), color: "${muted}" }
-            },
-            yaxis: {
-              ...(baseLayout.yaxis || {}),
-              gridcolor: "${grid}",
-              zerolinecolor: "${zero}",
-              tickfont: { ...(((baseLayout.yaxis || {}).tickfont) || {}), color: "${muted}" }
-            },
-            autosize: true,
-            margin: { l: 44, r: 28, t: 44, b: 44 },
-          };
-          Plotly.newPlot(
-            "plot",
-            payload.data || [],
-            Object.assign(themeLayout, baseLayout, {
-              paper_bgcolor: themeLayout.paper_bgcolor,
-              plot_bgcolor: themeLayout.plot_bgcolor,
-              font: themeLayout.font,
-              legend: themeLayout.legend,
-              xaxis: themeLayout.xaxis,
-              yaxis: themeLayout.yaxis,
-              autosize: true,
-              margin: themeLayout.margin,
-            }),
-            Object.assign(
-              { responsive: true, displaylogo: false, scrollZoom: true },
-              payload.config || {},
-            )
-          );
-        </script>
-      </body>
-    </html>
-  `;
+  if (isSearchResult || isRagResult) {
+    return (
+      <div className="space-y-3">
+        {query && (
+          <p className="text-xs text-muted-foreground">
+            <span className="font-semibold uppercase tracking-wider">Запрос: </span>{query}
+          </p>
+        )}
+        {answer && (
+          <div className="rounded-xl border border-border/40 bg-background/30 px-3 py-2 text-sm">
+            {answer}
+          </div>
+        )}
+        {results && results.length > 0 && (
+          <ol className="space-y-2">
+            {results.slice(0, 8).map((r, i) => (
+              <li key={i} className="rounded-xl border border-border/30 bg-background/20 px-3 py-2 text-sm">
+                <a
+                  href={typeof r.url === "string" ? r.url : undefined}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-primary hover:underline"
+                >
+                  {typeof r.title === "string" ? r.title : `Результат ${i + 1}`}
+                </a>
+                {typeof r.snippet === "string" && r.snippet && (
+                  <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">{r.snippet}</p>
+                )}
+                {typeof r.source_name === "string" && r.source_name && (
+                  <p className="mt-0.5 text-xs text-muted-foreground/60">{r.source_name}</p>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+        {(references ?? sources ?? []).length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Источники</p>
+            <ul className="space-y-1">
+              {(references ?? sources ?? []).map((ref, i) => (
+                <li key={i} className="text-xs">
+                  <a
+                    href={ref}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline break-all"
+                  >
+                    {ref}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
-    <iframe
-      title={artifact.text || artifact.id}
-      className="h-[400px] w-full rounded-2xl border border-border/40 shadow-inner"
-      style={{ background: frameBg }}
-      srcDoc={srcDoc}
-      sandbox="allow-scripts"
+    <pre className="overflow-auto rounded-2xl border border-border/40 bg-background/40 p-4 text-xs">
+      {JSON.stringify(data, null, 2)}
+    </pre>
+  );
+}
+
+function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
+  const { resolvedTheme } = useTheme();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isDark = resolvedTheme === "dark";
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const payload = artifact.data.data as {
+      data?: unknown[];
+      layout?: Record<string, unknown>;
+      config?: Record<string, unknown>;
+    };
+
+    const frameBg = isDark ? "#09090b" : "#ffffff";
+    const plotBg  = isDark ? "#18181b" : "#ffffff";
+    const text    = isDark ? "#fafafa" : "#18181b";
+    const muted   = isDark ? "#a1a1aa" : "#717182";
+    const grid    = isDark ? "rgba(63,63,70,0.5)"  : "rgba(0,0,0,0.10)";
+    const zero    = isDark ? "#3f3f46"              : "rgba(0,0,0,0.18)";
+
+    const baseLayout = (payload.layout || {}) as Record<string, unknown>;
+    const layout = {
+      ...baseLayout,
+      paper_bgcolor: frameBg,
+      plot_bgcolor:  plotBg,
+      font:   { ...(baseLayout.font   as object || {}), color: text,  family: "ui-sans-serif, system-ui, sans-serif" },
+      legend: { ...(baseLayout.legend as object || {}), bgcolor: "transparent", font: { color: muted } },
+      xaxis:  { ...(baseLayout.xaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
+      yaxis:  { ...(baseLayout.yaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
+      autosize: true,
+      margin: { l: 44, r: 28, t: 44, b: 44 },
+    };
+
+    let cancelled = false;
+    import("plotly.js-dist-min").then((Plotly) => {
+      if (cancelled || !containerRef.current) return;
+      Plotly.newPlot(
+        container,
+        (payload.data || []) as Plotly.Data[],
+        layout as Partial<Plotly.Layout>,
+        { responsive: true, displaylogo: false, scrollZoom: true, ...(payload.config || {}) },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+      import("plotly.js-dist-min").then((Plotly) => Plotly.purge(container));
+    };
+  }, [artifact.id, isDark]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="h-[400px] w-full rounded-2xl border border-border/40"
     />
   );
 }
@@ -197,11 +226,12 @@ export function ArtifactSurface({
       {artifact.type === "plot" && artifact.data.format === "plotly-json" ? <PlotArtifact artifact={artifact} /> : null}
       {artifact.type === "table" && artifact.data.format === "split" ? <TableArtifact artifact={artifact} /> : null}
       {artifact.type === "value" && artifact.data.format === "value" ? <ValueArtifact artifact={artifact} /> : null}
-      {artifact.type !== "plot" || artifact.data.format !== "plotly-json" ? null : null}
+      {artifact.type === "json" && artifact.data.format === "json" ? <JsonArtifact artifact={artifact} /> : null}
       {!(
         (artifact.type === "plot" && artifact.data.format === "plotly-json") ||
         (artifact.type === "table" && artifact.data.format === "split") ||
-        (artifact.type === "value" && artifact.data.format === "value")
+        (artifact.type === "value" && artifact.data.format === "value") ||
+        (artifact.type === "json" && artifact.data.format === "json")
       ) ? (
         <pre className="overflow-auto rounded-2xl border border-border/40 bg-background/40 p-4 text-xs">
           {JSON.stringify(artifact.data.data, null, 2)}

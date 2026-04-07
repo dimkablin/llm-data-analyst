@@ -10,15 +10,19 @@ from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact
 from backend.core import Settings
 
 
+def _build_runner() -> AgentRunner:
+    settings = replace(
+        Settings(),
+        agent_cache_enabled=False,
+        llm_warmup_enabled=False,
+    )
+    return AgentRunner(settings, allowed_tool_keys={"plotly_tool", "pandas_tool", "value_tool"})
+
+
+@unittest.skip("_evaluate_node was removed in stream-based runner refactor")
 class VisualizationToolFlowTests(unittest.TestCase):
     def _build_runner(self) -> AgentRunner:
-        settings = replace(
-            Settings(),
-            agent_cache_enabled=False,
-            llm_warmup_enabled=False,
-            agent_evaluate_enabled=False,
-        )
-        return AgentRunner(settings, allowed_tool_keys={"plotly_tool", "pandas_tool", "value_tool"})
+        return _build_runner()
 
     def test_evaluate_node_requires_plot_artifact_for_visualization_prompt(self) -> None:
         runner = self._build_runner()

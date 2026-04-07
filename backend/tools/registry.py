@@ -24,7 +24,9 @@ from backend.tools.impl.factory import (
     GetToolInstructionsToolFactory,
     MemoryToolFactory,
     PandasToolFactory,
+    PlannerToolFactory,
     PlotlyToolFactory,
+    ReviewToolFactory,
     SearchToolFactory,
     SessionNoteToolFactory,
     SQLToolFactory,
@@ -113,6 +115,8 @@ class ToolRegistry:
         # Built-in tools are always registered; their own is_available guards handle
         # data-context requirements (df / db_runtime_config / allowed_tool_keys).
         factories.extend([
+            PlannerToolFactory(),
+            ReviewToolFactory(),
             SQLToolFactory(),
             DatabaseToolFactory(),
             PlotlyToolFactory(),

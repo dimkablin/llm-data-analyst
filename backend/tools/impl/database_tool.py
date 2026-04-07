@@ -85,6 +85,19 @@ class DatabaseTool(BaseTool):
         db_schema: str | None = None,
         limit: int = 10,
     ) -> tuple[str, dict[str, Any]]:
+        try:
+            return self._run_action(action, table, db_schema, limit)
+        except Exception as exc:
+            error_text = f"❌ Ошибка database_tool ({action}): {exc}"
+            return error_text, {"text": error_text}
+
+    def _run_action(
+        self,
+        action: str,
+        table: str | None = None,
+        db_schema: str | None = None,
+        limit: int = 10,
+    ) -> tuple[str, dict[str, Any]]:
         db = self._db()
         limit = max(1, min(limit, 50))
 
@@ -92,16 +105,16 @@ class DatabaseTool(BaseTool):
             return self._action_list_tables(db, db_schema)
         if action == "describe_table":
             if not table:
-                return "Ошибка: укажи имя таблицы (аргумент table).", {}
+                return "❌ Ошибка: укажи имя таблицы (аргумент table).", {}
             return self._action_describe_table(db, table, db_schema)
         if action == "preview":
             if not table:
-                return "Ошибка: укажи имя таблицы (аргумент table).", {}
+                return "❌ Ошибка: укажи имя таблицы (аргумент table).", {}
             return self._action_preview(db, table, db_schema, limit)
         if action == "list_schemas":
             return self._action_list_schemas(db)
 
-        return f"Неизвестное действие: {action}", {}
+        return f"❌ Неизвестное действие: {action}", {}
 
     def _action_list_tables(
         self, db: DBAnalyticsHelper, schema: str | None,

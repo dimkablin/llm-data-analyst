@@ -55,7 +55,6 @@ _ToolCollector = None  # type: ignore
 _AgentProgressCollector = None  # type: ignore
 _PhaseCollector = None  # type: ignore
 _TokenStreamCallbackHandler = None  # type: ignore
-_PhaseTokenStreamHandler = None  # type: ignore
 _AgentRunner = None  # type: ignore
 
 _effective_enabled_tool_keys_fn = None  # type: ignore
@@ -83,7 +82,6 @@ def setup(
     AgentProgressCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
-    PhaseTokenStreamHandler,
     AgentRunner,
     effective_enabled_tool_keys_fn,
     build_tool_catalog_fn,
@@ -96,7 +94,7 @@ def setup(
     global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
     global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
-    global _PhaseCollector, _TokenStreamCallbackHandler, _PhaseTokenStreamHandler
+    global _PhaseCollector, _TokenStreamCallbackHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
 
@@ -117,7 +115,6 @@ def setup(
     _AgentProgressCollector = AgentProgressCollector
     _PhaseCollector = PhaseCollector
     _TokenStreamCallbackHandler = TokenStreamCallbackHandler
-    _PhaseTokenStreamHandler = PhaseTokenStreamHandler
     _AgentRunner = AgentRunner
     _effective_enabled_tool_keys_fn = effective_enabled_tool_keys_fn
     _build_tool_catalog_fn = build_tool_catalog_fn
@@ -164,7 +161,13 @@ def _session_runtime_source_payload(state: SessionState) -> dict[str, Any]:
 def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
     if _session_source_type(state) != "csv":
         return state
-    if state.csv_loaded and state.csv_session_id:
+    # Consider the session valid only if it exists AND has not expired (with 60s buffer).
+    session_still_valid = (
+        state.csv_loaded
+        and bool(state.csv_session_id)
+        and (state.csv_expires_at is None or state.csv_expires_at > int(time.time()) + 60)
+    )
+    if session_still_valid:
         return state
     if not state.df_path:
         raise HTTPException(status_code=400, detail="CSV dataset is not attached to this session")
@@ -287,7 +290,7 @@ def _build_stream_callbacks(
     phase_collector.graph_tracker = graph_tracker
     tool_collector.graph_tracker = graph_tracker
     tool_collector._phase_collector_ref = phase_collector  # noqa: SLF001
-    token_collector = _TokenStreamCallbackHandler(queue, loop)
+    token_collector = _TokenStreamCallbackHandler(queue, loop, show_think=settings.llm_show_think)
     callbacks: list[Any] = [
         token_collector,
         text_collector,
@@ -295,8 +298,6 @@ def _build_stream_callbacks(
         progress_collector,
         phase_collector,
     ]
-    if include_reasoning:
-        callbacks.append(_PhaseTokenStreamHandler(queue, loop))
     return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
 
 
@@ -323,6 +324,7 @@ def _build_response(
     table_count = 0
     plot_count = 0
     value_count = 0
+    json_count = 0
     values: dict[str, Any] = {}
     for artifact in artifacts:
         artifact_type = artifact.get("type")
@@ -333,6 +335,8 @@ def _build_response(
         elif artifact_type == "value":
             value_count += 1
             values.update(artifact.get("data", {}).get("data", {}))
+        elif artifact_type == "json":
+            json_count += 1
     return QueryResponse(
         session_id=session_id,
         text=text,
@@ -345,12 +349,13 @@ def _build_response(
             table_count=table_count,
             plot_count=plot_count,
             value_count=value_count,
+            json_count=json_count,
             model=model_name,
         ),
     )
 
 
-def _fallback_text(query: str, reason: str) -> str:
+def _fallback_text(query: str, reason: str) -> str:  # pylint: disable=redefined-outer-name
     normalized = query.strip().lower()
     if CHAT_FALLBACK_RE.search(normalized):
         if "как дела" in normalized:
@@ -375,7 +380,7 @@ def _fallback_text(query: str, reason: str) -> str:
     return "Я получил запрос, но не смог сформировать содержательный ответ."
 
 
-def _build_fallback_response(
+def _build_fallback_response(  # pylint: disable=redefined-outer-name
     session_id: str,
     query: str,
     reason: str,
@@ -533,6 +538,39 @@ def _trim_preview(text: str, limit: int = 1200) -> str:
 def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None:
     phase = str(event.get("phase", "")).strip().lower()
     tool_name = str(event.get("tool_name", "unknown")).strip() or "unknown"
+
+    # Special rendering for skill loader — compact inline message, no code block.
+    if tool_name == "get_tool_instructions":
+        skill_id = ""
+        raw_preview = str(event.get("input_preview", "")).strip()
+        try:
+            parsed = json.loads(raw_preview)
+            skill_id = str(parsed.get("tool_name", "")).strip()
+        except Exception:
+            skill_id = raw_preview.strip("'\"")
+        label = f"`{skill_id}`" if skill_id else "скил"
+        if phase == "start":
+            return f"📚 Загружаю инструкцию: {label}"
+        if phase == "end":
+            status = str(event.get("status", "ok")).strip()
+            icon = "✅" if status == "ok" else "❌"
+            return f"{icon} Инструкция {label} загружена"
+        return None
+
+    # Meta-tools that return plain text (no artifacts) — show compact one-liner,
+    # never show misleading "status=empty_output, artifacts=none".
+    _META_TOOLS = {"planner_tool", "review_tool"}
+    if tool_name in _META_TOOLS:
+        if phase == "start":
+            return f"🧠 `{tool_name}` запущен"
+        if phase == "end":
+            status = str(event.get("status", "")).strip()
+            if status == "error":
+                error_text = str(event.get("error", "")).strip()
+                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
+                return f"❌ `{tool_name}` завершен с ошибкой{hint}"
+            return f"✅ `{tool_name}` завершен"
+        return None
 
     if phase == "start":
         raw_input = _extract_tool_code_preview(str(event.get("input_preview", "")))
@@ -1075,11 +1113,6 @@ async def query_stream(
 
     async def event_generator():
         yield _sse_event("start", {"session_id": session_id})
-        if payload.include_reasoning:
-            yield _sse_event(
-                "reasoning",
-                "### Думаю\nПолучил задачу. Формирую план анализа и последовательность шагов.",
-            )
         agent_task = asyncio.create_task(run_agent())
         reasoning_task = asyncio.create_task(emit_live_reasoning())
         deferred_final: list[tuple[str, Any]] = []

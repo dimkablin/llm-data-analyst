@@ -249,6 +249,7 @@ class QueryMetrics(BaseModel):
     table_count: int
     plot_count: int
     value_count: int
+    json_count: int = 0
     model: str
 
 

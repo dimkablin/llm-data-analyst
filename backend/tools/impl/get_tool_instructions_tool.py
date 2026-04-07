@@ -46,12 +46,16 @@ class GetToolInstructionsTool(BaseTool):
             skill = self._skill_registry.get(str(tool_name).strip())
             return skill.instructions_markdown
         except Exception:
-            available = sorted(
-                s.skill_id
-                for s in self._skill_registry.list_skills()
-                if s.kind == "tool"
-            )
+            all_skills = self._skill_registry.list_skills()
+            tool_ids = sorted(s.skill_id for s in all_skills if s.kind == "tool")
+            analytical_ids = sorted(s.skill_id for s in all_skills if s.kind == "analytical")
+            parts = []
+            if tool_ids:
+                parts.append(f"tools: {', '.join(tool_ids)}")
+            if analytical_ids:
+                parts.append(f"analytical methods: {', '.join(analytical_ids)}")
+            available_str = "; ".join(parts) or "none"
             return (
-                f"Unknown tool '{tool_name}'. "
-                f"Available tool instructions: {', '.join(available) or 'none'}."
+                f"Unknown skill '{tool_name}'. "
+                f"Available: {available_str}."
             )

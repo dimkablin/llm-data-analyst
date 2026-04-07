@@ -9,7 +9,7 @@ import numpy as np
 class NumpyEncoder(json.JSONEncoder):
     """JSON encoder that handles numpy scalar and array types."""
 
-    def default(self, obj: Any) -> Any:
+    def default(self, obj: Any) -> Any:  # pylint: disable=arguments-renamed
         if isinstance(obj, np.integer):
             return int(obj)
         if isinstance(obj, np.floating):

@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 import json
 import re
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from backend.agent.prompts import value_tool_prompt
-from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.base_tool import BaseExecTool
+
+if TYPE_CHECKING:
+    from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 
 
 class ValueTool(BaseExecTool):
@@ -36,7 +41,7 @@ class ValueTool(BaseExecTool):
         df: pd.DataFrame,
         execution_timeout_sec: float = 25.0,
         tool_cache_size: int = 48,
-        db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
+        db_runtime_config: RuntimeDBConnectionConfig | None = None,
         sandbox: object | None = None,
         llm_base_url: str | None = None,
         llm_model: str | None = None,
