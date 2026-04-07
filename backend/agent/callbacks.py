@@ -503,9 +503,13 @@ class ToolCollector(BaseCallbackHandler):
     def absorb_tool_message(self, tool_name: str, result: ToolMessage) -> None:
         """Extract and store artifacts from a ToolMessage returned by tool.invoke().
 
-        LangChain 1.x calls on_tool_end(content_string) for content_and_artifact tools,
-        so the artifact payload in ToolMessage.artifact is never seen by on_tool_end.
-        This method recovers it without double-counting tool_calls or events.
+        LangChain 1.0.0 passes a ToolMessage to on_tool_end, so _normalize_output
+        already captures artifacts via ToolMessage.artifact.  This method is a
+        safety net for callers that have a ToolMessage but did not go through the
+        standard on_tool_end callback path (e.g. manual tool invocation loops).
+
+        NOTE: do NOT call this for tools already processed by on_tool_end — it
+        would create duplicate ExecutionArtifact entries.
         """
         artifact = getattr(result, "artifact", None)
         if not isinstance(artifact, dict):
@@ -600,7 +604,7 @@ class ToolCollector(BaseCallbackHandler):
             try:
                 parsed = json.loads(value)
             except Exception:
-                return None
+                return {"text": value}
             return parsed
 
         if isinstance(output, tuple) and len(output) >= 2:
@@ -610,7 +614,13 @@ class ToolCollector(BaseCallbackHandler):
         if isinstance(output, ToolMessage):
             artifact = getattr(output, "artifact", None)
             if isinstance(artifact, dict):
-                return artifact
+                payload = dict(artifact)
+                # Unwrap ToolResultEnvelope: {artifact_type, items} → {artifact_type: items, ...}
+                artifact_type = payload.get("artifact_type", "")
+                items = payload.get("items")
+                if artifact_type and isinstance(items, dict):
+                    payload[artifact_type] = items
+                return payload
             content = getattr(output, "content", "")
             if isinstance(content, str):
                 return _from_text(content)

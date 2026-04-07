@@ -27,6 +27,7 @@ RUN adduser --disabled-password --gecos "" --no-create-home appuser
 RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_storage
 
 COPY backend ./backend
+COPY skills ./skills
 
 RUN chown -R appuser:appuser /app /opt/certs
 USER appuser

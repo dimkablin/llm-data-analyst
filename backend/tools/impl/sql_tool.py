@@ -93,7 +93,9 @@ class SQLTool(BaseTool):
 
         result: dict[str, object] = {
             "text": text,
-            "table": payload["items"],
+            "schema_version": "1.0",
+            "artifact_type": "table",
+            "items": payload["items"],
         }
         if "source" in payload:
             result["source"] = payload["source"]
@@ -101,10 +103,6 @@ class SQLTool(BaseTool):
             result["recipe"] = payload["recipe"]
         if "meta" in payload:
             result["meta"] = payload["meta"]
-        if "schema_version" in payload:
-            result["schema_version"] = payload["schema_version"]
-        if "artifact_type" in payload:
-            result["artifact_type"] = payload["artifact_type"]
 
         self._log_to_notebook(question, payload)
         return text, result

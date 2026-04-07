@@ -45,36 +45,36 @@ EXPECTED_DEPTH_PROFILES = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _write_skill(tmp_path, folder: str, content: str) -> None:
+    d = tmp_path / folder
+    d.mkdir(exist_ok=True)
+    (d / "SKILL.md").write_text(textwrap.dedent(content), encoding="utf-8")
+
+
 @pytest.fixture()
 def skill_registry_with_skills(tmp_path):
     """Registry with one tool skill (sql_tool) and one analytical skill (cohort)."""
-    (tmp_path / "sql_skill.md").write_text(
-        textwrap.dedent("""\
-            ---
-            name: SQL Tool
-            description: Execute SQL queries against the database
-            kind: tool
-            tool_key: sql_tool
-            triggers: sql, query, database
-            ---
-            ## SQL Instructions
-            Use sql_tool to run SQL queries. Always end code with `tool_result`.
-        """),
-        encoding="utf-8",
-    )
-    (tmp_path / "cohort.md").write_text(
-        textwrap.dedent("""\
-            ---
-            name: Cohort Analysis
-            description: Run cohort retention analysis on user data
-            kind: analytical
-            triggers: cohort, retention, удержание
-            ---
-            ## Cohort Analysis Method
-            Steps: 1. Group users by acquisition date. 2. Compute retention matrix.
-        """),
-        encoding="utf-8",
-    )
+    _write_skill(tmp_path, "sql_tool", """\
+        ---
+        name: SQL Tool
+        description: Execute SQL queries against the database
+        kind: tool
+        tool_key: sql_tool
+        triggers: sql, query, database
+        ---
+        ## SQL Instructions
+        Use sql_tool to run SQL queries. Always end code with `tool_result`.
+    """)
+    _write_skill(tmp_path, "cohort_analysis", """\
+        ---
+        name: Cohort Analysis
+        description: Run cohort retention analysis on user data
+        kind: analytical
+        triggers: cohort, retention, удержание
+        ---
+        ## Cohort Analysis Method
+        Steps: 1. Group users by acquisition date. 2. Compute retention matrix.
+    """)
     reg = SkillRegistry.from_path(tmp_path)
     reg.load()
     return reg
@@ -142,56 +142,47 @@ class TestSkillsPolicy:
         assert len(skill_registry_with_skills.list_skills()) == before
 
     def test_skill_without_frontmatter_is_rejected(self, tmp_path):
-        (tmp_path / "bad.md").write_text("# No frontmatter\nText.", encoding="utf-8")
+        _write_skill(tmp_path, "bad_skill", "# No frontmatter\nText.")
         with pytest.raises(SkillValidationError):
             SkillRegistry.from_path(tmp_path).load()
 
     def test_invalid_skill_kind_is_rejected(self, tmp_path):
         """kind='react' must be rejected — only 'analytical' and 'tool' are valid."""
-        (tmp_path / "bad.md").write_text(
-            textwrap.dedent("""\
-                ---
-                name: Bad Skill
-                description: Uses removed ReAct pattern
-                kind: react
-                ---
-                Instructions.
-            """),
-            encoding="utf-8",
-        )
+        _write_skill(tmp_path, "bad_skill", """\
+            ---
+            name: Bad Skill
+            description: Uses removed ReAct pattern
+            kind: react
+            ---
+            Instructions.
+        """)
         with pytest.raises(SkillValidationError, match="kind"):
             SkillRegistry.from_path(tmp_path).load()
 
     def test_tool_skill_without_tool_key_is_rejected(self, tmp_path):
         """kind='tool' + no tool_key → rejected at load time (not silently ignored)."""
-        (tmp_path / "bad.md").write_text(
-            textwrap.dedent("""\
-                ---
-                name: Broken Tool Skill
-                description: Missing required tool_key
-                kind: tool
-                ---
-                Instructions.
-            """),
-            encoding="utf-8",
-        )
+        _write_skill(tmp_path, "bad_skill", """\
+            ---
+            name: Broken Tool Skill
+            description: Missing required tool_key
+            kind: tool
+            ---
+            Instructions.
+        """)
         with pytest.raises(SkillValidationError, match="tool_key"):
             SkillRegistry.from_path(tmp_path).load()
 
     def test_duplicate_skill_ids_are_rejected(self, tmp_path):
-        for filename in ("a.md", "b.md"):
-            (tmp_path / filename).write_text(
-                textwrap.dedent(f"""\
-                    ---
-                    id: shared_id
-                    name: Skill {filename}
-                    description: Duplicate id
-                    kind: analytical
-                    ---
-                    Instructions.
-                """),
-                encoding="utf-8",
-            )
+        for folder in ("skill_a", "skill_b"):
+            _write_skill(tmp_path, folder, f"""\
+                ---
+                id: shared_id
+                name: Skill {folder}
+                description: Duplicate id
+                kind: analytical
+                ---
+                Instructions.
+            """)
         with pytest.raises(SkillValidationError, match=r"[Dd]uplicate"):
             SkillRegistry.from_path(tmp_path).load()
 

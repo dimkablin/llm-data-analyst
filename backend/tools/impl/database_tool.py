@@ -228,9 +228,8 @@ class DatabaseTool(BaseTool):
 
     @staticmethod
     def _table_artifact(name: str, df: pd.DataFrame) -> dict[str, Any]:
-        # Use "table" key so ToolCollector in callbacks.py registers the artifact.
         return {
             "schema_version": "1.0",
             "artifact_type": "table",
-            "table": {name: df},
+            "items": {name: df},
         }

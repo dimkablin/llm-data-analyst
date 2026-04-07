@@ -7,10 +7,15 @@ giving the LLM full context exactly when it needs it.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
+
+from backend.skills.models import SkillError
+
+logger = logging.getLogger(__name__)
 
 
 class _Input(BaseModel):
@@ -45,17 +50,20 @@ class GetToolInstructionsTool(BaseTool):
         try:
             skill = self._skill_registry.get(str(tool_name).strip())
             return skill.instructions_markdown
+        except SkillError:
+            pass
         except Exception:
-            all_skills = self._skill_registry.list_skills()
-            tool_ids = sorted(s.skill_id for s in all_skills if s.kind == "tool")
-            analytical_ids = sorted(s.skill_id for s in all_skills if s.kind == "analytical")
-            parts = []
-            if tool_ids:
-                parts.append(f"tools: {', '.join(tool_ids)}")
-            if analytical_ids:
-                parts.append(f"analytical methods: {', '.join(analytical_ids)}")
-            available_str = "; ".join(parts) or "none"
-            return (
-                f"Unknown skill '{tool_name}'. "
-                f"Available: {available_str}."
-            )
+            logger.exception("Unexpected error looking up skill '%s'", tool_name)
+        all_skills = self._skill_registry.list_skills()
+        tool_ids = sorted(s.skill_id for s in all_skills if s.kind == "tool")
+        analytical_ids = sorted(s.skill_id for s in all_skills if s.kind == "analytical")
+        parts = []
+        if tool_ids:
+            parts.append(f"tools: {', '.join(tool_ids)}")
+        if analytical_ids:
+            parts.append(f"analytical methods: {', '.join(analytical_ids)}")
+        available_str = "; ".join(parts) or "none"
+        return (
+            f"Unknown skill '{tool_name}'. "
+            f"Available: {available_str}."
+        )

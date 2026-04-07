@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { deleteLastMessages, getSession, streamQuery } from "../lib/backend-api";
 import type {
@@ -516,8 +517,13 @@ export function useChatAgent({
                 prethinkPrefix = pendingIntentText;
                 pendingIntentText = "";
                 setStreamDraft("");
+                // Populate the live thinking block immediately so the user sees
+                // the full reasoning text (not just the 7-char buffer tail that
+                // arrives as the sole reasoning_token in vLLM mode).
+                setStreamReasoning(prethinkPrefix);
+              } else {
+                setStreamReasoning("");
               }
-              setStreamReasoning("");
             },
             onThinkingEnd: (text) => {
               // Prepend any tokens that arrived before thinking_start was detected
@@ -582,18 +588,6 @@ export function useChatAgent({
               }
 
               const toolBlockId = nextBlockId();
-              collectedBlocks.push({
-                type: "tool_use",
-                id: toolBlockId,
-                tool_name: event.tool_name,
-                input_summary: inputSummary,
-                input_code: event.input_code || undefined,
-                input_preview: event.input_preview || undefined,
-                status: "running",
-                started_at: Date.now(),
-              });
-              setStreamBlocks([...collectedBlocks]);
-
               const entry: StreamToolCall = {
                 id: callId,
                 tool_name: event.tool_name,
@@ -604,7 +598,23 @@ export function useChatAgent({
                 pre_reasoning: preReasoning || undefined,
               };
               collectedTools.push(entry);
-              setStreamTools((prev) => [...prev, entry]);
+              collectedBlocks.push({
+                type: "tool_use",
+                id: toolBlockId,
+                tool_name: event.tool_name,
+                input_summary: inputSummary,
+                input_code: event.input_code || undefined,
+                input_preview: event.input_preview || undefined,
+                status: "running",
+                started_at: Date.now(),
+              });
+              // Force immediate render so the "running" state is visible even if
+              // tool_end arrives in the same reader.read() chunk (React 18 would
+              // otherwise batch both updates and skip straight to "done").
+              flushSync(() => {
+                setStreamBlocks([...collectedBlocks]);
+                setStreamTools((prev) => [...prev, entry]);
+              });
             },
             onToolEnd: (event) => {
               if (META_TOOLS.has(event.tool_name)) return;

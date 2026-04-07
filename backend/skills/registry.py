@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 from backend.skills.models import (
     Skill,
@@ -64,18 +67,18 @@ class SkillRegistry:
         self._loaded = True
         self._skills_by_id = {}
         if not self.skills_dir.exists():
+            logger.warning("Skills directory '%s' not found — no skills loaded.", self.skills_dir.resolve())
             return self
         if not self.skills_dir.is_dir():
             raise SkillValidationError(f"Skills path is not a directory: {self.skills_dir}")
 
-        for pattern in ("*.md", "*/*.md"):
-            for md_file in sorted(self.skills_dir.glob(pattern)):
-                skill = self._parse_skill_file(md_file)
-                if skill.skill_id in self._skills_by_id:
-                    raise SkillValidationError(
-                        f"Duplicate skill id '{skill.skill_id}' in {md_file.name}."
-                    )
-                self._skills_by_id[skill.skill_id] = skill
+        for md_file in sorted(self.skills_dir.glob("*/SKILL.md")):
+            skill = self._parse_skill_file(md_file)
+            if skill.skill_id in self._skills_by_id:
+                raise SkillValidationError(
+                    f"Duplicate skill id '{skill.skill_id}' in {md_file.parent.name}/SKILL.md."
+                )
+            self._skills_by_id[skill.skill_id] = skill
         return self
 
     def list_skills(self) -> tuple[Skill, ...]:
@@ -271,7 +274,7 @@ class SkillRegistry:
         if not body:
             raise SkillValidationError(f"Skill file {path.name} must contain markdown instructions.")
 
-        default_id = _slugify_skill_id(path.stem)
+        default_id = _slugify_skill_id(path.parent.name)
         skill_id = str(raw_frontmatter.get("id") or default_id).strip().lower()
         if not _SKILL_ID_RE.match(skill_id):
             raise SkillValidationError(

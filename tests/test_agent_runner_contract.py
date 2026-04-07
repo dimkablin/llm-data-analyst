@@ -71,35 +71,35 @@ def settings():
     )
 
 
+def _write_skill(tmp_path, folder: str, content: str) -> None:
+    d = tmp_path / folder
+    d.mkdir(exist_ok=True)
+    (d / "SKILL.md").write_text(textwrap.dedent(content), encoding="utf-8")
+
+
 @pytest.fixture()
 def skill_registry_with_skills(tmp_path):
-    (tmp_path / "sql_skill.md").write_text(
-        textwrap.dedent("""\
-            ---
-            name: SQL Tool
-            description: Execute SQL queries against the database
-            kind: tool
-            tool_key: sql_tool
-            triggers: sql, query, database
-            ---
-            ## SQL Instructions
-            Use sql_tool to run SQL queries.
-        """),
-        encoding="utf-8",
-    )
-    (tmp_path / "cohort.md").write_text(
-        textwrap.dedent("""\
-            ---
-            name: Cohort Analysis
-            description: Run cohort retention analysis
-            kind: analytical
-            triggers: cohort, retention, удержание
-            ---
-            ## Cohort Analysis Method
-            Steps: 1. Group users by date. 2. Compute retention.
-        """),
-        encoding="utf-8",
-    )
+    _write_skill(tmp_path, "sql_tool", """\
+        ---
+        name: SQL Tool
+        description: Execute SQL queries against the database
+        kind: tool
+        tool_key: sql_tool
+        triggers: sql, query, database
+        ---
+        ## SQL Instructions
+        Use sql_tool to run SQL queries.
+    """)
+    _write_skill(tmp_path, "cohort_analysis", """\
+        ---
+        name: Cohort Analysis
+        description: Run cohort retention analysis
+        kind: analytical
+        triggers: cohort, retention, удержание
+        ---
+        ## Cohort Analysis Method
+        Steps: 1. Group users by date. 2. Compute retention.
+    """)
     reg = SkillRegistry.from_path(tmp_path)
     reg.load()
     return reg
@@ -616,13 +616,13 @@ class TestDepthProfileContract:
 class TestAgentResponseContract:
     """AgentResponse must always carry a valid route value."""
 
-    VALID_ROUTES: ClassVar[set[str]] = {"chat", "analysis", "rag", "summary"}
+    VALID_ROUTES: ClassVar[set[str]] = {"chat", "analysis", "summary"}
 
     def test_default_route_is_valid(self):
         r = AgentResponse(final_text="", reasoning=None, artifacts=[])
         assert r.route in self.VALID_ROUTES
 
-    @pytest.mark.parametrize("route", ["chat", "analysis", "rag", "summary"])
+    @pytest.mark.parametrize("route", ["chat", "analysis", "summary"])
     def test_all_canonical_routes_accepted(self, route: str):
         r = AgentResponse(final_text="", reasoning=None, artifacts=[], route=route)
         assert r.route == route
@@ -630,31 +630,12 @@ class TestAgentResponseContract:
     def test_quick_route_returns_none_for_analysis_prompt(self):
         """_quick_route must return None for analysis prompts (fall-through to agent)."""
         result = AgentRunner._quick_route(
-            "покажи топ-10 продаж по регионам", has_rag=False, has_data=True
+            "покажи топ-10 продаж по регионам", has_data=True
         )
         assert result is None
 
     def test_quick_route_returns_chat_for_greeting(self):
-        assert AgentRunner._quick_route("привет", has_rag=False, has_data=False) == "chat"
+        assert AgentRunner._quick_route("привет") == "chat"
 
     def test_quick_route_returns_summary_for_management_note(self):
-        assert (
-            AgentRunner._quick_route(
-                "подведи итог анализа", has_rag=False, has_data=False
-            )
-            == "summary"
-        )
-
-    def test_quick_route_returns_rag_when_rag_available(self):
-        assert (
-            AgentRunner._quick_route(
-                "что написано в документации", has_rag=True, has_data=False
-            )
-            == "rag"
-        )
-
-    def test_quick_route_never_returns_rag_without_service(self):
-        result = AgentRunner._quick_route(
-            "что написано в документации", has_rag=False, has_data=False
-        )
-        assert result != "rag"
+        assert AgentRunner._quick_route("подведи итог анализа") == "summary"
