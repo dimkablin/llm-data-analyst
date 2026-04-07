@@ -471,25 +471,3 @@ LLM → tool_call: {text: "User is a data analyst..."}
 | `memory` | plain text | нет | нет | ✓ нет артефактов |
 | `session_note` | plain text | нет | нет | ✓ нет артефактов |
 
----
-
-## Исправленные несоответствия
-
-### 1. `_normalize_output` — envelope unwrapping (`callbacks.py`)
-Добавлена нормализация: если `ToolMessage.artifact` содержит `{artifact_type, items}`,
-то `payload[artifact_type] = items` добавляется до возврата.
-Теперь `on_tool_end` корректно находит `"table"`/`"plot"`/`"json"` ключи
-для любого инструмента, использующего стандартный `ToolResultEnvelope`.
-
-### 2. `database_tool._table_artifact` — стандартный `"items"` (`database_tool.py`)
-Было: `"table": {name: df}` (прямой ключ, нарушал `ToolResultEnvelope`).
-Стало: `"items": {name: df}` — разворачивается через fix #1 в `on_tool_end`.
-
-### 3. `sql_tool` — явный envelope (`sql_tool.py`)
-Было: `"table": payload["items"]` + условный `artifact_type`.
-Стало: `"artifact_type": "table", "items": payload["items"]` — всегда явный,
-разворачивается через fix #1.
-
-### 4. `absorb_tool_message` — обновлён комментарий
-Метод корректен как safety net для ручных вызовов инструментов вне callback-пути.
-Не вызывать для инструментов, уже обработанных `on_tool_end` (дублирование артефактов).
