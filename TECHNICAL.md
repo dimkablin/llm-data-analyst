@@ -1,44 +1,40 @@
 # Техническое описание LLM Data Analyst
 
-## 1. Архитектура агента (Reason-Action)
+## 1. Архитектура агента
 
-Оркестрация на LangGraph (`StateGraph`) с шестью узлами:
+Оркестрация на LangGraph (`StateGraph`) — три узла:
 
 ```
-START → route ─┬─ chat → finalize → END
-               │
-               └─ think → act → evaluate → decide ─┬─ finalize → END
-                    ↑                                │
-                    └────────────────────────────────┘
-                              (done=False)
+START → dispatch ─┬─ (chat/summary) ──────────────► finalize → END
+                  │
+                  └─ (analysis) ──► agent ──────────► finalize → END
 ```
 
 | Узел | Назначение |
 |------|------------|
-| `route` | Классификация запроса: `chat` (простой вопрос) или `analysis` (работа с данными) |
-| `chat` | Прямой ответ LLM без инструментов |
-| `think` | Chain of Thought — план действий, выбор инструмента. Результат показывается в панели активности, не в чате |
-| `act` | Вызов инструмента (PandasTool / PlotlyTool / ValueTool) |
-| `evaluate` | Проверка результата: соответствует ли он запросу пользователя. Управляется `AGENT_EVALUATE_ENABLED` |
-| `decide` | Решение: повторить цикл (`done=False` → `think`) или завершить (`done=True` → `finalize`) |
-| `finalize` | Формирование финального текстового ответа для пользователя |
+| `dispatch` | Детерминированный keyword pre-check (без LLM). Лёгкие bypass: `chat` (приветствия, вопросы о боте), `summary` (управленческая записка). Всё остальное → строит tools, sandbox, capability_context и передаёт в `agent` |
+| `agent` | Единственный execution engine: нативный tool-calling через `bind_tools`. Получает полный system prompt (policy + skills + data context), гоняет tool loop до финального текста без вызовов |
+| `finalize` | Перезаписывает ответ если нужно, запускает `review_tool` для проверки качества |
 
-Ограничения цикла:
-- `AGENT_MAX_STEPS` — максимум шагов think-act-evaluate-decide (по умолчанию 10)
+Ограничения:
+- `AGENT_MAX_STEPS` — максимум tool-вызовов за один запрос (по умолчанию 10)
 - `AGENT_STEP_TIMEOUT_SEC` — таймаут на один шаг (по умолчанию 45с)
-- `AGENT_INNER_RECURSION_LIMIT` — лимит рекурсии LangGraph (по умолчанию 6)
 
 При ошибке или таймауте — graceful fallback с текстовым ответом, без 5xx.
 
+### Skills-система
+
+Skills — markdown-инструкции в `skills/{name}/SKILL.md`, загружаются через `SkillRegistry` и инжектируются в system prompt агента. Позволяют расширять поведение агента без изменения кода.
+
 ### Глубина анализа
 
-Три режима влияют на детальность плана и потребление токенов:
+Три режима влияют на детальность system prompt и потребление токенов:
 
 | Режим | Поведение |
 |-------|-----------|
-| `light` | Короткий план, минимум шагов (по умолчанию) |
+| `light` | Короткий plan prompt, минимум шагов (по умолчанию) |
 | `medium` | Средняя детализация |
-| `deep` | Развёрнутый план, больше итераций |
+| `deep` | Развёрнутый план, больше токенов reasoning |
 
 Настраивается через `AGENT_ANALYSIS_DEPTH` в `.env` или в UI (боковая панель настроек).
 
@@ -64,15 +60,25 @@ START → route ─┬─ chat → finalize → END
 
 ## 3. Инструменты и песочница
 
-Три инструмента:
+Инструменты регистрируются через `ToolRegistry` / `ToolCatalog` и подбираются в `dispatch` исходя из режима источника данных.
 
 | Инструмент | Возвращает | Применение |
 |------------|------------|------------|
 | `PandasTool` | `pd.DataFrame` / `pd.Series` | Таблицы, агрегации, фильтрация |
 | `PlotlyTool` | `plotly.graph_objects.Figure` | Графики и визуализации |
 | `ValueTool` | `float` / `int` / `str` / `bool` | Скалярные метрики |
+| `SQLTool` | результат запроса | SQL через DuckDB (CSV в памяти) |
+| `DatabaseTool` | результат запроса | SQL через внешнее DB-подключение |
+| `PlannerTool` | план / текст | LLM-планировщик (опциональный шаг) |
+| `ReviewTool` | оценка / правки | Проверка качества ответа |
+| `SearchTool` | результаты поиска | Веб-поиск |
+| `RAGTool` | фрагменты | Retrieval-Augmented Generation |
+| `ForecastTool` | прогноз | Временные ряды |
+| `AnomalyPlanfactTool` | аномалии | План-факт анализ |
+| `MemoryTool` | текст | Пользовательская память |
+| `GetToolInstructionsTool` | markdown | Динамическая загрузка skill-инструкций |
 
-Безопасность исполнения:
+Безопасность исполнения (code-executing tools):
 - Код выполняется в отдельном подпроцессе (`forkserver` / `spawn`, не `fork`)
 - Таймаут `TOOL_EXEC_TIMEOUT_SEC` (по умолчанию 25с)
 - Ограниченные builtins и импорты
@@ -208,17 +214,23 @@ React + TypeScript + Vite.
 | Модуль | Назначение |
 |--------|------------|
 | `backend/api/app.py` | FastAPI app wiring, routes, SSE, timeout/fallback |
-| `backend/agent_runner.py` | LangGraph-агент, узлы ReAct, построение LLM |
-| `backend/config.py` | `Settings` dataclass, чтение всех env-переменных |
-| `backend/session_store.py` | Хранение сессий, DataFrame, артефактов |
-| `backend/auth_db.py` | SQLite auth, роли, пользовательские настройки |
-| `backend/callbacks.py` | LangChain callbacks: токены, reasoning, фазы |
-| `agent/tools/base_tool.py` | Песочница для исполнения кода |
-| `agent/tools/pandas_tool.py` | PandasTool |
-| `agent/tools/plotly_tool.py` | PlotlyTool |
-| `agent/tools/value_tool.py` | ValueTool |
-| `agent/pandas_agent.py` | Фабрика агента |
-| `agent/agent_callback.py` | PhaseTokenStreamHandler, PhaseCollector |
+| `backend/agent/runner.py` | LangGraph-агент, узлы `dispatch / agent / finalize`, построение LLM |
+| `backend/agent/callbacks.py` | LangChain callbacks: токены, reasoning, фазы, прогресс |
+| `backend/agent/llm_client.py` | `ThinkingAwareChatOpenAI` — обёртка с поддержкой thinking-режима |
+| `backend/agent/prompts.py` | System prompts: chat, execution, data-context |
+| `backend/core/config.py` | `Settings` dataclass, чтение всех env-переменных |
+| `backend/sessions/session_store.py` | Хранение сессий, DataFrame, артефактов |
+| `backend/auth/auth_db.py` | SQLite auth, роли, пользовательские настройки |
+| `backend/skills/registry.py` | `SkillRegistry` — загрузка и инжекция skills в system prompt |
+| `backend/tools/impl/base_tool.py` | Песочница для исполнения кода |
+| `backend/tools/impl/pandas_tool.py` | PandasTool |
+| `backend/tools/impl/plotly_tool.py` | PlotlyTool |
+| `backend/tools/impl/value_tool.py` | ValueTool |
+| `backend/tools/impl/sql_tool.py` | SQLTool (DuckDB) |
+| `backend/tools/impl/database_tool.py` | DatabaseTool (внешние БД) |
+| `backend/tools/registry.py` | `ToolRegistry` — каталог и фабрика инструментов |
+| `backend/tools/policy.py` | Политика доступа к инструментам |
+| `backend/tools/sandbox_manager.py` | Управление пулом sandbox-процессов |
 | `frontend/src/api.ts` | HTTP/SSE клиент |
 | `frontend/src/hooks/useChatAgent.ts` | React hook для стриминга и состояния чата |
 | `frontend/src/components/ChatPanel.tsx` | Основной UI чата с per-message активностью |

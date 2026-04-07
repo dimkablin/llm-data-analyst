@@ -88,7 +88,6 @@ flowchart TD
 
 **`dispatch`** — детерминированный keyword pre-check (без LLM). Три лёгких bypass'а:
 - `chat` — приветствия, вопросы о боте
-- `rag` — запросы к базе знаний
 - `summary` — управленческая записка по итогам сессии
 
 Всё остальное → строит `tools`, `sandbox`, `capability_context` и передаёт в `agent`.
