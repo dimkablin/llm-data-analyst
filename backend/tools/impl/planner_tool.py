@@ -68,6 +68,10 @@ class PlannerTool(BaseTool):
         self._llm_api_key = llm_api_key
         self._tool_descriptions = tool_descriptions
 
+    def set_tool_descriptions(self, descriptions: str) -> None:
+        """Inject available tool descriptions after the tool registry is built."""
+        self._tool_descriptions = descriptions
+
     def _run(self, question: str) -> str:
         system_content = _PLANNER_SYSTEM_PROMPT
         if self._tool_descriptions:

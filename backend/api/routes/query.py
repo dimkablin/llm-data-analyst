@@ -557,19 +557,40 @@ def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None
             return f"{icon} Инструкция {label} загружена"
         return None
 
-    # Meta-tools that return plain text (no artifacts) — show compact one-liner,
-    # never show misleading "status=empty_output, artifacts=none".
-    _META_TOOLS = {"planner_tool", "review_tool"}
-    if tool_name in _META_TOOLS:
+    if tool_name == "planner_tool":
         if phase == "start":
-            return f"🧠 `{tool_name}` запущен"
+            question = ""
+            try:
+                question = json.loads(str(event.get("input_preview", ""))).get("question", "")
+            except Exception:
+                pass
+            hint = f": {_trim_preview(question, 120)}" if question else ""
+            return f"🗂 `planner_tool` составляет план{hint}"
         if phase == "end":
             status = str(event.get("status", "")).strip()
             if status == "error":
                 error_text = str(event.get("error", "")).strip()
                 hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
-                return f"❌ `{tool_name}` завершен с ошибкой{hint}"
-            return f"✅ `{tool_name}` завершен"
+                return f"❌ `planner_tool` завершен с ошибкой{hint}"
+            plan = _trim_preview(str(event.get("output_preview", "")), 600)
+            if plan:
+                return f"✅ `planner_tool` план готов:\n{plan}"
+            return "✅ `planner_tool` план готов"
+        return None
+
+    if tool_name == "review_tool":
+        if phase == "start":
+            return f"🔍 `review_tool` проверяет ответ"
+        if phase == "end":
+            status = str(event.get("status", "")).strip()
+            if status == "error":
+                error_text = str(event.get("error", "")).strip()
+                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
+                return f"❌ `review_tool` завершен с ошибкой{hint}"
+            result = _trim_preview(str(event.get("output_preview", "")), 300)
+            if result:
+                return f"✅ `review_tool` проверка пройдена: {result}"
+            return "✅ `review_tool` проверка пройдена"
         return None
 
     if phase == "start":

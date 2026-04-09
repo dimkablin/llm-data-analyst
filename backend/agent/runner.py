@@ -1952,6 +1952,16 @@ class AgentRunner:
         tools = self._tool_registry.build_tools(_ctx)
         tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
 
+        # Inject tool descriptions into planner_tool, excluding itself to avoid
+        # the planner recommending a recursive planner_tool call.
+        _planner_descriptions = "\n".join(
+            line for line in tool_descriptions.splitlines()
+            if "planner_tool" not in line
+        ).strip()
+        for _tool in tools:
+            if hasattr(_tool, "set_tool_descriptions"):
+                _tool.set_tool_descriptions(_planner_descriptions)
+
         depth_inner_limit = self._depth_profile.get("inner_recursion_limit")
         max_steps = max(
             1,

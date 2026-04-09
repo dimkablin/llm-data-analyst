@@ -470,4 +470,3 @@ LLM → tool_call: {text: "User is a data analyst..."}
 | `review_tool` | plain text | нет | нет | ✓ нет артефактов |
 | `memory` | plain text | нет | нет | ✓ нет артефактов |
 | `session_note` | plain text | нет | нет | ✓ нет артефактов |
-

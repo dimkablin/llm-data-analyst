@@ -13,7 +13,7 @@ import type {
   StreamToolCall,
 } from "../lib/backend-types";
 
-const META_TOOLS = new Set(["get_tool_instructions", "planner_tool", "review_tool"]);
+const META_TOOLS = new Set(["get_tool_instructions"]);
 
 function parseInputSummary(toolName: string, raw: string): string {
   if (META_TOOLS.has(toolName)) return "";
@@ -23,6 +23,8 @@ function parseInputSummary(toolName: string, raw: string): string {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     if (typeof parsed.code === "string") return parsed.code.split("\n")[0]?.slice(0, 60) ?? "";
     if (typeof parsed.query === "string") return parsed.query.slice(0, 60);
+    if (typeof parsed.question === "string") return parsed.question.slice(0, 60);
+    if (typeof parsed.answer === "string") return parsed.answer.split("\n")[0]?.slice(0, 60) ?? "";
     if (typeof parsed.path === "string") return parsed.path;
     if (typeof parsed.file_path === "string") return parsed.file_path;
     if (typeof parsed.dataset === "string") return parsed.dataset;

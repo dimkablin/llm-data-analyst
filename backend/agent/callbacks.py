@@ -263,6 +263,10 @@ class ToolCollector(BaseCallbackHandler):
                 if isinstance(candidate, str) and candidate.strip():
                     first_line = candidate.strip().split("\n")[0][:80]
                     return first_line
+            for key in ("question", "answer"):
+                candidate = parsed.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()[:80]
             for key in ("path", "file_path", "dataset", "alias", "pattern", "tool_name"):
                 candidate = parsed.get(key)
                 if isinstance(candidate, str) and candidate.strip():
