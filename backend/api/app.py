@@ -113,8 +113,8 @@ kernel_manager = KernelManager(
     storage_dir=settings.storage_dir,
 )
 search_integration_service = SearchIntegrationService.from_env()
-forecast_integration_service = ForecastIntegrationService.from_env()
-anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env()
+forecast_integration_service = ForecastIntegrationService.from_env(settings=settings)
+anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env(settings=settings)
 rag_service = RAGService.from_env()
 runner = AgentRunner(
     settings,

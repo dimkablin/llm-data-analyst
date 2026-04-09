@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from backend.api.deps import get_current_user
 from backend.api.models import UploadResponse
@@ -46,6 +48,26 @@ def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState
         raise HTTPException(status_code=404, detail="Session not found")
     return state
 
+_READ_ONLY_SQL_RE = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
+_FORBIDDEN_SQL_RE = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|truncate|replace|pragma|vacuum|call)\b",
+    re.IGNORECASE,
+)
+
+
+def _ensure_safe_readonly_sql(sql: str) -> str:
+    clean = str(sql or "").strip()
+    if not clean:
+        raise HTTPException(status_code=400, detail="sql must not be empty")
+    if not _READ_ONLY_SQL_RE.match(clean):
+        raise HTTPException(status_code=400, detail="Only SELECT/WITH queries are allowed")
+    if _FORBIDDEN_SQL_RE.search(clean):
+        raise HTTPException(status_code=400, detail="Only read-only queries are allowed")
+    return clean
+
+
+def _df_to_json_rows(df) -> list[dict]:
+    return json.loads(df.to_json(orient="records", date_format="iso"))
 
 @router.post("/sessions/{session_id}/data", response_model=UploadResponse)
 async def upload_data(
@@ -104,3 +126,61 @@ async def upload_data(
         rows=len(df),
         columns=len(df.columns),
     )
+
+
+# for predict service
+@router.get("/csv/schema")
+async def csv_schema(
+    session_id: Annotated[str, Query()],
+) -> dict:
+    try:
+        info = _csv_runtime.get_session_info(session_id)
+        tables = _csv_runtime.list_tables(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"CSV session not found: {exc}") from exc
+
+    if not tables:
+        raise HTTPException(status_code=404, detail="No tables found in CSV session")
+
+    main_table = str(tables[0].get("table_name") or "").strip()
+    if not main_table:
+        raise HTTPException(status_code=500, detail="CSV session returned invalid table metadata")
+
+    columns_meta = _csv_runtime.describe_table(session_id, main_table)
+
+    return {
+        "session_id": session_id,
+        "table_name": main_table,
+        "table_names": [str(t.get("table_name") or "") for t in tables if t.get("table_name")],
+        "columns": [
+            {
+                "name": str(col.get("column_name") or ""),
+                "type": str(col.get("data_type") or ""),
+                "nullable": bool(col.get("is_nullable")),
+                "ordinal_position": int(col.get("ordinal_position") or 0),
+            }
+            for col in columns_meta
+        ],
+        "expires_at": int(info.expires_at),
+    }
+
+
+@router.get("/csv/query")
+async def query_table(
+    session_id: Annotated[str, Query()],
+    sql: Annotated[str, Query()],
+) -> dict:
+    safe_sql = _ensure_safe_readonly_sql(sql)
+
+    try:
+        df = _csv_runtime.query_dataframe(session_id, safe_sql)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to execute query: {exc}") from exc
+
+    rows = _df_to_json_rows(df)
+
+    return {
+        "result": rows,
+        "row_count": len(rows),
+        "columns": [str(c) for c in df.columns],
+    }

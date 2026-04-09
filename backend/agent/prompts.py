@@ -106,49 +106,38 @@ Rules:
 """
 
 
-forecast_tool_prompt = """Forecasting tool for compact univariate time series.
+forecast_tool_prompt = """Forecasting tool backed by predict-service.
 Input: Python code with helper `forecast` and base dataset `df`.
 If a DB source is attached, helper objects `db` and `db_connection` are also available.
 
-First-version input contract:
-- `rows`: a compact history as `list[dict]` or a DataFrame-like object
-- `time_col`: name of the timestamp/date column
-- `value_col`: name of the numeric target column
-- `horizon`: forecast horizon as an integer number of future points
-- optional: `frequency`, `target_name`, `artifact_name`
-
 Use it for:
-- `forecast.forecast(...)` -> normalized forecast response as a Python object
-- `forecast.forecast_result(...)` -> ready table artifact with `source/recipe/provenance`
+- `forecast.forecast("построй прогноз ...", horizon=12)` -> normalized response
+- `forecast.forecast_result("построй прогноз ...", artifact_name="forecast_result", horizon=12)` -> ready table artifact, and may also include plot artifact
 
 Rules:
-- keep the history compact and ordered by time before sending it to `forecast`
-- first version supports only a single time column and a single numeric target column
-- if the session is DB-backed, you may fetch a compact history inside the same tool call through `db.query_dataframe(...)`
+- this tool works only through predict-service
+- pass a direct natural-language analytical question
+- if table name is known, mention it explicitly in the question
+- if schema is unknown, first use `database_tool`
+- prefer `forecast.forecast_result(...)` for final artifacts
 - keep the last code line exactly `tool_result`
 - do not perform manual network calls; use only helper `forecast`
 """
 
-
-anomaly_planfact_tool_prompt = """Anomaly / plan-fact analysis tool for compact aligned time series.
+anomaly_planfact_tool_prompt = """Anomaly / plan-fact analysis tool backed by predict-service.
 Input: Python code with helper `anomaly_planfact` and base dataset `df`.
 If a DB source is attached, helper objects `db` and `db_connection` are also available.
 
-First-version input contract:
-- `rows`: a compact aligned history as `list[dict]` or a DataFrame-like object
-- `time_col`: name of the timestamp/date/period column
-- `plan_col`: name of the baseline / expected / plan numeric column
-- `fact_col`: name of the actual / fact numeric column
-- optional: `target_name`, `artifact_name`
-
 Use it for:
-- `anomaly_planfact.analyze(...)` -> normalized anomaly / plan-fact response as a Python object
-- `anomaly_planfact.analyze_result(...)` -> ready table artifact with `source/recipe/provenance`
+- `anomaly_planfact.analyze("найди аномалии ...")` -> normalized response
+- `anomaly_planfact.analyze_result("найди аномалии ...", artifact_name="anomaly_planfact_result")` -> ready table artifact, and may also include plot artifact
 
 Rules:
-- keep the input compact and already aligned by period before sending it to `anomaly_planfact`
-- first version supports only one aligned series with one plan column and one fact column
-- if the session is DB-backed, you may fetch the aligned input inside the same tool call through `db.query_dataframe(...)`
+- this tool works only through predict-service
+- pass a direct natural-language analytical question
+- if table name is known, mention it explicitly in the question
+- if schema is unknown, first use `database_tool`
+- prefer `anomaly_planfact.analyze_result(...)` for final artifacts
 - keep the last code line exactly `tool_result`
 - do not perform manual network calls; use only helper `anomaly_planfact`
 """

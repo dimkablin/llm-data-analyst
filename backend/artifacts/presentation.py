@@ -114,6 +114,8 @@ def _serialize_chart_data(artifact: ExecutionArtifact) -> dict[str, Any]:
     fig = artifact.data
     if fig is None:
         return {"format": "plotly-json", "data": {}}
+    if isinstance(fig, dict):
+        return {"format": "plotly-json", "data": fig}
     if hasattr(fig, "to_plotly_json"):
         return {"format": "plotly-json", "data": fig.to_plotly_json()}
     if hasattr(fig, "to_json"):

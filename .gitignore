@@ -266,3 +266,6 @@ release/
 .env.local
 .env.local.*
 .*
+
+test.py
+dump.txt

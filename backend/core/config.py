@@ -195,6 +195,10 @@ class Settings:
 
     csv_session_ttl_sec: int = int(os.getenv("CSV_SESSION_TTL_SEC", "7200"))
 
+    backend_public_api_url: str = os.getenv("BACKEND_PUBLIC_API_URL", "http://10.9.168.20:8605").strip()
+    predict_backend_url: str = os.getenv("PREDICT_BACKEND_URL", "http://10.9.168.20:8802").strip()
+    predict_theme: str = os.getenv("PREDICT_THEME", "dark").strip()
+
     cors_allow_origins: str = os.getenv("BACKEND_CORS_ALLOW_ORIGINS", "*")
     phoenix_enabled: bool = _get_bool("PHOENIX_ENABLED", True)
     phoenix_project_name: str = os.getenv("PHOENIX_PROJECT_NAME", "llm-data-analyst")

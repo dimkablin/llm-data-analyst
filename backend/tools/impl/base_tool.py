@@ -438,7 +438,8 @@ class BaseExecTool(BaseTool):
             )
             return False, f"SyntaxError: {e.msg}\n{error_line}", {}
         except Exception as e:
-            return False, sanitize_error_text(str(e) or e.__class__.__name__), {}
+            logger.exception("Tool %s failed while executing code", self.name)
+            return False, str(e) or e.__class__.__name__, {}
 
     def _fix_with_llm(self, code: str, error: str, attempt: int) -> str | None:
         """Ask LLM to fix broken code given the error message. Returns fixed code or None."""

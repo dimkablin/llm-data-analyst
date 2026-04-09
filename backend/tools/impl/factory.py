@@ -89,6 +89,7 @@ class ForecastToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            csv_session_id=ctx.csv_session_id if ctx.csv_loaded else None,
             sandbox=ctx.sandbox,
         )
 
@@ -113,6 +114,7 @@ class AnomalyPlanfactToolFactory:
             execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
+            csv_session_id=ctx.csv_session_id if ctx.csv_loaded else None,
             sandbox=ctx.sandbox,
         )
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import anyio
 from langchain_core.tools import BaseTool
 
 from backend.integrations.rag import RAGService
@@ -67,4 +68,4 @@ class RagTool(BaseTool):
         return answer
 
     async def _arun(self, query: str, *args: Any, **_kwargs: Any) -> str:
-        return self._run(query)
+        return await anyio.to_thread.run_sync(self._run, query)
