@@ -127,7 +127,6 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
         className={`flex items-baseline gap-1.5 font-mono text-[12px] leading-5 ${hasDetail ? "cursor-pointer" : ""}`}
         onClick={hasDetail ? () => setExpanded((v) => !v) : undefined}
       >
-        <span className="select-none text-muted-foreground/30">{connector}</span>
         <span className="w-3 shrink-0 text-center">{dot}</span>
         <span className={`font-semibold ${isRunning ? "text-foreground" : "text-muted-foreground"}`}>
           {call.tool_name}

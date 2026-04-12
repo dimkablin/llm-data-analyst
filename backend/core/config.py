@@ -7,6 +7,18 @@ from urllib.parse import urlparse, urlunparse
 
 _log = logging.getLogger(__name__)
 
+# Single source of truth for analysis depth limits.
+# inner_recursion_limit — max tool-call iterations inside one agent step.
+DEPTH_PROFILES: dict[str, dict[str, int]] = {
+    "light":  {"inner_recursion_limit": 8},
+    "medium": {"inner_recursion_limit": 16},
+    "deep":   {"inner_recursion_limit": 30},
+}
+# Maximum agent_max_steps allowed per depth (mirrors inner_recursion_limit).
+DEPTH_MAX_STEPS: dict[str, int] = {
+    k: v["inner_recursion_limit"] for k, v in DEPTH_PROFILES.items()
+}
+
 
 def _clear_missing_tls_env_path(name: str, *, expect_dir: bool = False) -> None:
     raw_value = os.getenv(name)

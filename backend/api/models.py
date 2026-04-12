@@ -4,6 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.core.config import DEPTH_MAX_STEPS
+
+_MAX_STEPS = max(DEPTH_MAX_STEPS.values())
+
 
 class AuthRegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
@@ -43,7 +47,7 @@ class UserSettingsResponse(BaseModel):
     llm_max_tokens_default: int = Field(default=1200, ge=128, le=32768)
     llm_max_tokens_reasoning: int = Field(default=2200, ge=128, le=32768)
     backend_query_timeout_sec: int = Field(default=180, ge=15, le=1800)
-    agent_max_steps: int = Field(default=20, ge=2, le=50)
+    agent_max_steps: int = Field(default=DEPTH_MAX_STEPS["light"], ge=2, le=_MAX_STEPS)
     agent_step_timeout_sec: int = Field(default=45, ge=5, le=600)
     agent_inner_recursion_limit: int = Field(default=14, ge=2, le=30)
     ui_scale: int = Field(default=100, ge=70, le=150)
@@ -65,7 +69,7 @@ class UserSettingsUpdateRequest(BaseModel):
     llm_max_tokens_default: int | None = Field(default=None, ge=128, le=32768)
     llm_max_tokens_reasoning: int | None = Field(default=None, ge=128, le=32768)
     backend_query_timeout_sec: int | None = Field(default=None, ge=15, le=1800)
-    agent_max_steps: int | None = Field(default=None, ge=2, le=50)
+    agent_max_steps: int | None = Field(default=None, ge=2, le=_MAX_STEPS)
     agent_step_timeout_sec: int | None = Field(default=None, ge=5, le=600)
     agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=30)
     ui_scale: int | None = Field(default=None, ge=70, le=150)

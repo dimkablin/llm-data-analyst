@@ -139,11 +139,11 @@ export type AuthResult = {
 
 export type AnalysisDepth = "light" | "medium" | "deep";
 
-/** Upper bound on outer ReAct steps enforced server-side per analysis depth. */
+/** Inner tool-call loop limit enforced server-side per analysis depth (mirrors runner.DEPTH_PROFILES). */
 export const ANALYSIS_DEPTH_STEP_CEILING: Record<AnalysisDepth, number> = {
-  light: 20,
-  medium: 30,
-  deep: 50,
+  light: 8,
+  medium: 16,
+  deep: 30,
 };
 
 export function clampAgentMaxStepsForDepth(depth: AnalysisDepth, value: number): number {

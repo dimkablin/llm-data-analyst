@@ -31,7 +31,7 @@ from backend.agent.prompts import (
 )
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
-from backend.core.config import Settings
+from backend.core.config import DEPTH_PROFILES, Settings
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
@@ -258,13 +258,7 @@ _LLM_UNAVAILABLE_USER_TEXT = (
     "LLM_MODEL_API_URL доступен из контейнера backend."
 )
 
-# Depth profiles control the inner tool-calling loop iteration limit.
-# "light" runs up to 4 tool calls, "medium" up to 8, "deep" up to 15.
-DEPTH_PROFILES: dict[str, dict[str, Any]] = {
-    "light": {"inner_recursion_limit": 4},
-    "medium": {"inner_recursion_limit": 8},
-    "deep": {"inner_recursion_limit": 15},
-}
+# DEPTH_PROFILES imported from backend.core.config — single source of truth.
 
 
 @dataclass

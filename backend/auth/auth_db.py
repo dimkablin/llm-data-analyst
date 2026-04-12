@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from backend.core.config import DEPTH_MAX_STEPS
+
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 THEME_VALUES = {"light", "dark"}
 ANSWER_STYLE_VALUES = {"concise", "detailed"}
 ANALYSIS_DEPTH_VALUES = {"light", "medium", "deep"}
-# Must match agent.runner.DEPTH_PROFILES max_steps_cap.
-ANALYSIS_DEPTH_MAX_OUTER_STEPS = {"light": 20, "medium": 30, "deep": 50}
+ANALYSIS_DEPTH_MAX_OUTER_STEPS = DEPTH_MAX_STEPS
 
 
 @dataclass(frozen=True)
