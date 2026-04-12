@@ -180,6 +180,22 @@ def _build_tool_message_text(result: object) -> str:
 
         return []
 
+    def _table_schema(obj: object) -> dict[str, str]:
+        try:
+            if isinstance(obj, pd.DataFrame):
+                return {col: str(dtype) for col, dtype in obj.dtypes.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _row_count(obj: object) -> int | None:
+        try:
+            if isinstance(obj, pd.DataFrame):
+                return len(obj)
+        except Exception:
+            pass
+        return None
+
     content_text = ""
     artifact = None
 
@@ -203,10 +219,19 @@ def _build_tool_message_text(result: object) -> str:
         if artifact_type == "table" and isinstance(items, dict):
             previews = []
             for name, payload in items.items():
-                rows = _preview_rows(payload, max_rows=5)
-                previews.append({"name": name, "rows_preview": rows})
+                schema = _table_schema(payload)
+                total_rows = _row_count(payload)
+                rows = _preview_rows(payload, max_rows=10)
+                header = name
+                if total_rows is not None:
+                    header += f" — {total_rows} rows × {len(schema)} cols"
+                previews.append({
+                    "table": header,
+                    "schema": schema,
+                    f"sample_{min(10, len(rows))}_of_{total_rows or '?'}_rows": rows,
+                })
             if previews:
-                parts.append("TABLE_RESULT:\n" + _short(previews))
+                parts.append("TABLE_RESULT:\n" + _short(previews, limit=2000))
 
         elif artifact_type == "value" and isinstance(items, dict):
             parts.append("VALUE_RESULT:\n" + _short(items))
@@ -2086,6 +2111,35 @@ class AgentRunner:
             tool_db_runtime=tool_db_runtime,
         )
 
+        # ── Pre-call planner_tool outside the iteration budget ───────────────
+        # Invoke planner_tool before _direct_tool_loop so it does NOT consume
+        # an iteration from max_steps. The plan is injected into the system
+        # prompt so the LLM receives it at the start of the execution loop.
+        # tool.invoke() still fires on_tool_start/on_tool_end callbacks, so
+        # the UI planner block appears exactly as before.
+        planner = next((t for t in tools if getattr(t, "name", "") == "planner_tool"), None)
+        tools_for_loop = tools
+        if planner is not None:
+            planner_runtime_config: dict[str, Any] = {"callbacks": callbacks}
+            if tc := state.get("trace_context"):
+                planner_runtime_config["metadata"] = self._build_runtime_metadata(tc)
+            try:
+                plan_result = planner.invoke(
+                    {
+                        "name": "planner_tool",
+                        "args": {"question": state.get("prompt", "")},
+                        "id": "pre_plan_0",
+                        "type": "tool_call",
+                    },
+                    config=planner_runtime_config,
+                )
+                plan_text = str(plan_result).strip()
+                if plan_text:
+                    execution_system_prompt += f"\n\n## Предварительный план анализа\n{plan_text}"
+            except Exception as _plan_exc:
+                logger.warning("Pre-loop planner_tool failed: %s", _plan_exc)
+            tools_for_loop = [t for t in tools if getattr(t, "name", "") != "planner_tool"]
+
         self._emit_phase_event(
             callbacks, phase="act", title="Выполнение анализа",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
@@ -2106,7 +2160,7 @@ class AgentRunner:
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
                 include_reasoning=state.get("include_reasoning", False),
-                tools=tools,
+                tools=tools_for_loop,
                 execution_system_prompt=execution_system_prompt,
                 callbacks=callbacks,
                 max_iterations=max_steps,
