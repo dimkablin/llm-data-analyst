@@ -128,6 +128,40 @@ class RAGServiceTests(unittest.TestCase):
             },
         )
 
+    def test_retrieve_sends_only_need_context(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_transport(
+            url: str,
+            payload: dict[str, object],
+            timeout_sec: float,
+            verify_ssl: bool,
+        ) -> dict[str, object]:
+            captured["url"] = url
+            captured["payload"] = dict(payload)
+            return {"data": "Chunk A\n-----\nChunk B"}
+
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            transport=fake_transport,
+        )
+
+        result = service.retrieve(query="what is X?", mode="local", top_k=3)
+
+        self.assertEqual(captured["payload"]["only_need_context"], True)
+        self.assertNotIn("include_references", captured["payload"])
+        self.assertEqual(result.answer, "Chunk A\n-----\nChunk B")
+        self.assertEqual(result.references, [])
+
     def test_format_for_user_handles_empty_answer(self) -> None:
         service = RAGService(
             RAGConfig(

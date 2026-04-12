@@ -53,17 +53,13 @@ class RagTool(BaseTool):
 
         svc: RAGService = object.__getattribute__(self, "_rag_service")
         try:
-            result = svc.search(query=query, include_references=True)
+            result = svc.retrieve(query=query)
         except Exception as exc:
             return f"Knowledge base unavailable: {exc}"
 
         answer = (result.answer or "").strip()
         if not answer:
-            return "The knowledge base returned no answer for this query."
-
-        if result.references:
-            refs = "\n".join(f"- {ref}" for ref in result.references[:5])
-            return f"{answer}\n\n**Sources:**\n{refs}"
+            return "The knowledge base returned no context for this query."
 
         return answer
 

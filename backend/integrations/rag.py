@@ -401,6 +401,57 @@ class RAGService:
             payload=payload,
         )
 
+    def retrieve(
+        self,
+        *,
+        query: str,
+        mode: str | None = None,
+        top_k: int | None = None,
+    ) -> RAGQueryResult:
+        """Retrieve raw context chunks from LightRAG without LLM generation.
+
+        Uses ``only_need_context=True`` so LightRAG skips the expensive
+        LLM-summarisation step and returns the retrieved passages directly.
+        """
+        if not self.is_enabled:
+            raise RAGIntegrationError("RAG integration is disabled or not configured.")
+
+        clean_query = _clean_str(query)
+        if not clean_query:
+            raise RAGIntegrationError("RAG query must not be empty.")
+
+        request_params: dict[str, Any] = {
+            "query": clean_query,
+            "mode": _clean_str(mode) or self.config.query_mode_default,
+            "top_k": _coerce_positive_int(
+                top_k,
+                default=self.config.top_k_default,
+            ),
+            "only_need_context": True,
+        }
+        payload = self._request(self.config.query_endpoint, request_params)
+
+        # LightRAG returns raw context in `data` field when only_need_context=True
+        raw_context = (
+            payload.get("data")
+            or payload.get("response")
+            or payload.get("answer")
+            or payload.get("content")
+            or ""
+        )
+        answer = _clean_str(raw_context)
+        warnings: list[str] = []
+        if not answer:
+            warnings.append("RAG backend returned no context chunks.")
+        return RAGQueryResult(
+            query=clean_query,
+            answer=answer,
+            references=[],
+            warnings=warnings,
+            request_params=copy.deepcopy(request_params),
+            raw_payload=copy.deepcopy(payload),
+        )
+
     def stream_search(
         self,
         *,
