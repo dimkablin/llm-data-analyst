@@ -506,7 +506,7 @@ export function DashboardPanel(props: Props) {
                 <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-2">
                   <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
                     {visibleArtifacts.map((artifact) => (
-                      <motion.div key={artifact.id} layout initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+                      <motion.div key={artifact.id} layout className="min-w-0" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
                         <div className="mb-2 flex justify-end">
                           {pinnedSet.has(artifact.id) ? (
                             <button
