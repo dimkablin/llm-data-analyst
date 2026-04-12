@@ -145,6 +145,106 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
   );
 }
 
+const PLOTLY_COLORWAY = [
+  "#2563eb",  // blue
+  "#7c3aed",  // violet
+  "#0f766e",  // teal
+  "#ea580c",  // orange
+] as const;
+
+type PlotlyTraceLike = Record<string, unknown> & {
+  name?: unknown;
+  type?: unknown;
+  mode?: unknown;
+  fill?: unknown;
+  line?: Record<string, unknown>;
+  marker?: Record<string, unknown>;
+  fillcolor?: unknown;
+};
+
+function withAlpha(hex: string, alpha: number): string {
+  const normalized = hex.replace("#", "");
+  const full =
+    normalized.length === 3
+      ? normalized
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : normalized;
+
+  const value = Number.parseInt(full, 16);
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function resolveTraceColor(nameRaw: unknown, index: number): string {
+  const name = String(nameRaw ?? "").toLowerCase();
+
+  if (/(anomaly|outlier|alert|аномал)/.test(name)) {
+    return "#dc2626";
+  }
+
+  if (/(forecast|prediction|pred|yhat|plan|expected|прогноз|план)/.test(name)) {
+    return "#7c3aed";
+  }
+
+  if (/(fact|actual|real|observed|факт)/.test(name) || name === "y") {
+    return "#2563eb";
+  }
+
+  if (/(lower|upper|bound|interval|confidence|band|ci)/.test(name)) {
+    return "#94a3b8";
+  }
+
+  return PLOTLY_COLORWAY[index % PLOTLY_COLORWAY.length];
+}
+
+function normalizePlotlyTraces(traces: unknown[], isDark: boolean): Plotly.Data[] {
+  return traces.map((raw, index) => {
+    const trace = { ...((raw as PlotlyTraceLike) ?? {}) };
+    const name = String(trace.name ?? "").toLowerCase();
+    const traceType = String(trace.type ?? "scatter").toLowerCase();
+    const fill = String(trace.fill ?? "").toLowerCase();
+    const color = resolveTraceColor(trace.name, index);
+
+    const isBand =
+      /(lower|upper|bound|interval|confidence|band|ci)/.test(name) ||
+      fill === "tonexty" ||
+      fill === "tozeroy";
+
+    if (traceType === "scatter" || traceType === "") {
+      trace.line = {
+        ...(trace.line ?? {}),
+        color,
+        width: isBand ? 1.6 : 2.4,
+      };
+
+      if (String(trace.mode ?? "").includes("markers")) {
+        trace.marker = {
+          ...(trace.marker ?? {}),
+          color,
+          line: { width: 0 },
+        };
+      }
+
+      if (isBand) {
+        trace.fillcolor = withAlpha(color, isDark ? 0.18 : 0.12);
+      }
+    } else if (traceType === "bar" || traceType === "histogram") {
+      trace.marker = {
+        ...(trace.marker ?? {}),
+        color,
+        line: { width: 0 },
+      };
+    }
+
+    return trace as Plotly.Data;
+  });
+}
+
 function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -160,22 +260,93 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
       config?: Record<string, unknown>;
     };
 
+    const traces = normalizePlotlyTraces(
+      Array.isArray(payload.data) ? payload.data : [],
+      isDark,
+    );
+
     const frameBg = isDark ? "#09090b" : "#ffffff";
-    const plotBg  = isDark ? "#18181b" : "#ffffff";
-    const text    = isDark ? "#fafafa" : "#18181b";
-    const muted   = isDark ? "#a1a1aa" : "#717182";
-    const grid    = isDark ? "rgba(63,63,70,0.5)"  : "rgba(0,0,0,0.10)";
-    const zero    = isDark ? "#3f3f46"              : "rgba(0,0,0,0.18)";
+    const plotBg = frameBg
+    const text = isDark ? "#fafafa" : "#18181b";
+    const muted = isDark ? "#a1a1aa" : "#717182";
+    const grid = isDark ? "rgba(63,63,70,0.5)" : "rgba(0,0,0,0.10)";
+    const zero = isDark ? "#3f3f46" : "rgba(0,0,0,0.18)";
 
     const baseLayout = (payload.layout || {}) as Record<string, unknown>;
     const layout = {
       ...baseLayout,
+      colorway: [...PLOTLY_COLORWAY],
       paper_bgcolor: frameBg,
-      plot_bgcolor:  plotBg,
-      font:   { ...(baseLayout.font   as object || {}), color: text,  family: "ui-sans-serif, system-ui, sans-serif" },
-      legend: { ...(baseLayout.legend as object || {}), bgcolor: "transparent", font: { color: muted } },
-      xaxis:  { ...(baseLayout.xaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
-      yaxis:  { ...(baseLayout.yaxis  as object || {}), gridcolor: grid, zerolinecolor: zero, tickfont: { color: muted } },
+      plot_bgcolor: plotBg,
+      font: {
+        ...((baseLayout.font as object) || {}),
+        color: text,
+        family: "ui-sans-serif, system-ui, sans-serif",
+      },
+      title: {
+        ...((baseLayout.title as object) || {}),
+        font: {
+          ...(((baseLayout.title as Record<string, unknown>)?.font as object) || {}),
+          color: text,
+          family: "ui-sans-serif, system-ui, sans-serif",
+        },
+      },
+      legend: {
+        ...((baseLayout.legend as object) || {}),
+        bgcolor: "transparent",
+        font: {
+          ...(((baseLayout.legend as Record<string, unknown>)?.font as object) || {}),
+          color: muted,
+        },
+        title: {
+          ...((((baseLayout.legend as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
+          font: {
+            ...((((((baseLayout.legend as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            color: muted,
+          },
+        },
+      },
+      xaxis: {
+        ...((baseLayout.xaxis as object) || {}),
+        gridcolor: grid,
+        zerolinecolor: zero,
+        tickfont: {
+          ...(((baseLayout.xaxis as Record<string, unknown>)?.tickfont as object) || {}),
+          color: muted,
+        },
+        title: {
+          ...((((baseLayout.xaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
+          font: {
+            ...((((((baseLayout.xaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            color: text,
+          },
+        },
+      },
+      yaxis: {
+        ...((baseLayout.yaxis as object) || {}),
+        gridcolor: grid,
+        zerolinecolor: zero,
+        tickfont: {
+          ...(((baseLayout.yaxis as Record<string, unknown>)?.tickfont as object) || {}),
+          color: muted,
+        },
+        title: {
+          ...((((baseLayout.yaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
+          font: {
+            ...((((((baseLayout.yaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            color: text,
+          },
+        },
+      },
+      annotations: Array.isArray((baseLayout as Record<string, unknown>).annotations)
+        ? ((baseLayout as Record<string, unknown>).annotations as Array<Record<string, unknown>>).map((ann) => ({
+            ...ann,
+            font: {
+              ...((ann.font as object) || {}),
+              color: text,
+            },
+          }))
+        : (baseLayout as Record<string, unknown>).annotations,
       autosize: true,
       margin: { l: 44, r: 28, t: 44, b: 44 },
     };
@@ -185,9 +356,14 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
       if (cancelled || !containerRef.current) return;
       Plotly.newPlot(
         container,
-        (payload.data || []) as Plotly.Data[],
+        traces,
         layout as Partial<Plotly.Layout>,
-        { responsive: true, displaylogo: false, scrollZoom: true, ...(payload.config || {}) },
+        {
+          responsive: true,
+          displaylogo: false,
+          scrollZoom: true,
+          ...(payload.config || {}),
+        },
       );
     });
 
@@ -204,7 +380,6 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
     />
   );
 }
-
 export function ArtifactSurface({
   artifact,
   showCode = false,

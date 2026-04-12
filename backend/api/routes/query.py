@@ -161,10 +161,14 @@ def _session_runtime_source_payload(state: SessionState) -> dict[str, Any]:
 def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionState:
     if _session_source_type(state) != "csv":
         return state
-    # Consider the session valid only if it exists AND has not expired (with 60s buffer).
+    # Consider the session valid only if it exists, has not expired, AND the DuckDB file is present.
+    db_file_exists = (
+        bool(state.csv_session_id)
+        and _csv_runtime._db_path(state.csv_session_id).exists()
+    )
     session_still_valid = (
         state.csv_loaded
-        and bool(state.csv_session_id)
+        and db_file_exists
         and (state.csv_expires_at is None or state.csv_expires_at > int(time.time()) + 60)
     )
     if session_still_valid:
@@ -580,7 +584,7 @@ def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None
 
     if tool_name == "review_tool":
         if phase == "start":
-            return f"🔍 `review_tool` проверяет ответ"
+            return "🔍 `review_tool` проверяет ответ"
         if phase == "end":
             status = str(event.get("status", "")).strip()
             if status == "error":

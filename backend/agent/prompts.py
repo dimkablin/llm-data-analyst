@@ -110,16 +110,38 @@ forecast_tool_prompt = """Forecasting tool backed by predict-service.
 Input: Python code with helper `forecast` and base dataset `df`.
 If a DB source is attached, helper objects `db` and `db_connection` are also available.
 
-Use it for:
-- `forecast.forecast("построй прогноз ...", horizon=12)` -> normalized response
-- `forecast.forecast_result("построй прогноз ...", artifact_name="forecast_result", horizon=12)` -> ready table artifact, and may also include plot artifact
+Preferred final call:
+- `tool_result = forecast.forecast_result("...", artifact_name="forecast_result", horizon=12)`
+
+Use `forecast.forecast(...)` only for quick intermediate inspection.
+
+Write the request as ONE precise natural-language instruction to PREPARE DATA FOR FORECASTING:
+- ask to prepare data for a forecast, not to produce the final forecast in the wording
+- explicitly name the metric / target for forecasting
+- explicitly name the time field / date / period if known
+- if the table name is known, mention it explicitly
+- if grouping is needed, mention the segment / category / region
+- if filters matter, mention them directly in the question
+- if horizon is known from the user request, pass it via `horizon=...`
+- do not invent a horizon if the user did not ask for one
+- do not mention columns or tables you are not sure about
+
+Use formulations like:
+- "Подготовь данные для прогноза ..."
+- "Подготовь временной ряд для прогноза ..."
+- "Подготовь данные для дальнейшего прогноза ..."
+
+Good examples:
+- `tool_result = forecast.forecast_result("Подготовь данные для прогноза выручки по дням из таблицы orders по полю order_date", horizon=30)`
+- `tool_result = forecast.forecast_result("Подготовь временной ряд для прогноза количества заказов по неделям из таблицы sales, фильтр country = 'RU'", horizon=12)`
+- `tool_result = forecast.forecast_result("Подготовь данные для дальнейшего прогноза числа регистраций по месяцам из таблицы users по полю created_at", horizon=6)`
 
 Rules:
 - this tool works only through predict-service
-- pass a direct natural-language analytical question
-- if table name is known, mention it explicitly in the question
+- do not build the forecast manually with pandas or plotly
 - if schema is unknown, first use `database_tool`
-- prefer `forecast.forecast_result(...)` for final artifacts
+- prefer `forecast.forecast_result(...)` for the final answer
+- the natural-language request should describe data preparation for forecasting, not the final forecast itself
 - keep the last code line exactly `tool_result`
 - do not perform manual network calls; use only helper `forecast`
 """
@@ -128,16 +150,37 @@ anomaly_planfact_tool_prompt = """Anomaly / plan-fact analysis tool backed by pr
 Input: Python code with helper `anomaly_planfact` and base dataset `df`.
 If a DB source is attached, helper objects `db` and `db_connection` are also available.
 
-Use it for:
-- `anomaly_planfact.analyze("найди аномалии ...")` -> normalized response
-- `anomaly_planfact.analyze_result("найди аномалии ...", artifact_name="anomaly_planfact_result")` -> ready table artifact, and may also include plot artifact
+Preferred final call:
+- `tool_result = anomaly_planfact.analyze_result("...", artifact_name="anomaly_planfact_result")`
+
+Use `anomaly_planfact.analyze(...)` only for quick intermediate inspection.
+
+Write the request as ONE precise natural-language instruction to PREPARE DATA FOR ANOMALY OR PLAN-FACT ANALYSIS:
+- ask to prepare data for anomaly / plan-fact analysis, not to produce the final analysis in the wording
+- explicitly name the fact / actual metric
+- explicitly name the plan / expected / baseline metric if known
+- explicitly name the time field / date / period if known
+- if the table name is known, mention it explicitly
+- if anomalies are needed by segment, mention the grouping dimension
+- if filters matter, mention them directly in the question
+- do not mention columns or tables you are not sure about
+
+Use formulations like:
+- "Подготовь данные для анализа аномалий ..."
+- "Подготовь данные для план-факт анализа ..."
+- "Подготовь временной ряд для поиска аномальных отклонений ..."
+
+Good examples:
+- `tool_result = anomaly_planfact.analyze_result("Подготовь данные для анализа аномалий факта выручки относительно плана по дням из таблицы sales по полю dt")`
+- `tool_result = anomaly_planfact.analyze_result("Подготовь данные для план-факт анализа по заказам по неделям из таблицы orders, сегмент country, фильтр channel = 'web'")`
+- `tool_result = anomaly_planfact.analyze_result("Подготовь временной ряд для поиска аномальных отклонений фактического количества заявок от ожидаемого по месяцам из таблицы leads по полю created_at")`
 
 Rules:
 - this tool works only through predict-service
-- pass a direct natural-language analytical question
-- if table name is known, mention it explicitly in the question
+- do not calculate anomalies manually with pandas or plotly
 - if schema is unknown, first use `database_tool`
-- prefer `anomaly_planfact.analyze_result(...)` for final artifacts
+- prefer `anomaly_planfact.analyze_result(...)` for the final answer
+- the natural-language request should describe data preparation for anomaly / plan-fact analysis, not the final analysis itself
 - keep the last code line exactly `tool_result`
 - do not perform manual network calls; use only helper `anomaly_planfact`
 """

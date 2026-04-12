@@ -150,6 +150,79 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
     else:
         logger.exception("%s failed", where)
 
+def _build_tool_message_text(result: object) -> str:
+    import json
+
+    def _short(obj: object, limit: int = 1600) -> str:
+        try:
+            text = json.dumps(obj, ensure_ascii=False, default=str, indent=2)
+        except Exception:
+            text = str(obj)
+        return text[:limit]
+
+    def _preview_rows(table_obj: object, max_rows: int = 15) -> list[dict]:
+        try:
+            import pandas as pd
+
+            if isinstance(table_obj, pd.DataFrame):
+                return table_obj.head(max_rows).to_dict(orient="records")
+        except Exception:
+            pass
+
+        if isinstance(table_obj, list):
+            return table_obj[:max_rows]
+
+        if isinstance(table_obj, dict):
+            # sometimes already row-like or serialized table payload
+            if "rows" in table_obj and isinstance(table_obj["rows"], list):
+                return table_obj["rows"][:max_rows]
+            return [table_obj]
+
+        return []
+
+    content_text = ""
+    artifact = None
+
+    if hasattr(result, "content") and hasattr(result, "artifact"):
+        content_text = str(getattr(result, "content", "") or "")
+        artifact = getattr(result, "artifact", None)
+    elif isinstance(result, tuple):
+        content_text = str(result[0] or "")
+        artifact = result[1] if len(result) > 1 else None
+    else:
+        content_text = str(result)
+
+    parts: list[str] = []
+    if content_text.strip():
+        parts.append(content_text.strip())
+
+    if isinstance(artifact, dict):
+        artifact_type = artifact.get("artifact_type")
+        items = artifact.get("items")
+
+        if artifact_type == "table" and isinstance(items, dict):
+            previews = []
+            for name, payload in items.items():
+                rows = _preview_rows(payload, max_rows=5)
+                previews.append({"name": name, "rows_preview": rows})
+            if previews:
+                parts.append("TABLE_RESULT:\n" + _short(previews))
+
+        elif artifact_type == "value" and isinstance(items, dict):
+            parts.append("VALUE_RESULT:\n" + _short(items))
+
+        elif artifact_type == "json" and isinstance(items, dict):
+            parts.append("JSON_RESULT:\n" + _short(items))
+
+        elif artifact_type == "plot" and isinstance(items, dict):
+            plot_names = list(items.keys())[:5]
+            parts.append("PLOT_RESULT:\n" + _short({"plot_names": plot_names}))
+
+        else:
+            parts.append("ARTIFACT_RESULT:\n" + _short(artifact))
+
+    return "\n\n".join(p for p in parts if p).strip()
+
 
 RECOVERY_TEXT_PREFIX = "Шаг анализа завершился с ограничением итераций модели"
 GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефакты построены"
@@ -1721,7 +1794,7 @@ class AgentRunner:
 
                 tool = tool_map.get(tool_name)
                 if tool is None:
-                    result_text = f"Unknown tool: {tool_name}"
+                    tool_message_text = f"Unknown tool: {tool_name}"
                 else:
                     try:
                         tool_call_input = {
@@ -1731,16 +1804,11 @@ class AgentRunner:
                             "type": "tool_call",
                         }
                         result = tool.invoke(tool_call_input, config=runtime_config)
-                        if hasattr(result, "content") and hasattr(result, "artifact"):
-                            result_text = str(getattr(result, "content", "") or "")
-                        elif isinstance(result, tuple):
-                            result_text = str(result[0]) if result[0] else str(result[1])
-                        else:
-                            result_text = str(result)
+                        tool_message_text = _build_tool_message_text(result)
                     except Exception as tool_exc:
-                        result_text = f"Tool error: {tool_exc}"
+                        tool_message_text = f"Tool error: {tool_exc}"
 
-                messages.append(ToolMessage(content=result_text, tool_call_id=tool_call_id))
+                messages.append(ToolMessage(content=tool_message_text, tool_call_id=tool_call_id))
         else:
             # Max iterations reached — try to recover text from collector.
             text_collector = next(
