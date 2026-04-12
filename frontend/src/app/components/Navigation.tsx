@@ -31,8 +31,10 @@ export function Navigation() {
         <div className="flex min-w-0 items-center gap-3 sm:gap-4">
           <Link to="/" className="group flex shrink-0 items-center gap-2 transition-all">
             <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary shadow-lg shadow-primary/25 transition-all group-hover:shadow-primary/40">
-              <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5 text-primary-foreground" strokeWidth="2">
-                <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM17.5 14v7M14 17.5h7" stroke="currentColor" strokeLinecap="round"/>
+              <svg viewBox="83 130 320 230" fill="currentColor" className="h-5 w-5 text-primary-foreground">
+                <rect x="175.67" y="135" width="44.662" height="220.553"/>
+                <rect x="353.215" y="135" width="44.662" height="220.553"/>
+                <rect x="88" y="223.221" width="220.553" height="44.662"/>
               </svg>
             </div>
             <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:block lg:text-[16px]">

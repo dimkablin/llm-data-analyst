@@ -31,6 +31,7 @@ import type { AccentId } from "../lib/accent";
 import { getStoredAccent, setStoredAccent } from "../lib/accent";
 import type { SpinnerId } from "../lib/spinner";
 import { SPINNER_OPTIONS, getStoredSpinner, setStoredSpinner } from "../lib/spinner";
+import { SpinnerDisplay } from "../components/SpinnerDisplay";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -306,7 +307,9 @@ export function Account() {
                               onClick={() => setSpinnerId(option.id)}
                               className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${isActive ? "border-primary/60 bg-primary/15 text-primary ring-1 ring-primary/30" : "border-border/50 bg-secondary/30 text-muted-foreground hover:bg-secondary/60 hover:text-foreground"}`}
                             >
-                              <span className="font-mono text-base leading-none">{option.frames[0]}</span>
+                              <span className="flex h-4 w-6 items-center justify-center text-primary">
+                                <SpinnerDisplay id={option.id} size="icon" />
+                              </span>
                               <span>{option.label}</span>
                               {isActive ? <Check className="h-3.5 w-3.5" /> : null}
                             </button>

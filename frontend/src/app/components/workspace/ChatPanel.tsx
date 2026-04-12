@@ -27,7 +27,8 @@ import type {
   Skill,
   StreamToolCall,
 } from "../../lib/backend-types";
-import { AgentActivityFeed, ToolCallList, useSpinnerFrame } from "./AgentActivityFeed";
+import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
+import { SpinnerDisplay } from "../SpinnerDisplay";
 import { BlockTimeline } from "./blocks";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
@@ -108,7 +109,6 @@ export function ChatPanel({
   selectedSkillIds = [],
   onToggleSkill,
 }: Props) {
-  const spinner = useSpinnerFrame();
   const [input, setInput] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -252,8 +252,8 @@ export function ChatPanel({
               className="flex gap-3 lg:gap-4"
             >
               {/* Spinner avatar */}
-              <div className="animate-ring-pulse mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 font-mono text-sm text-primary select-none">
-                {spinner}
+              <div className="animate-ring-pulse mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary select-none">
+                <SpinnerDisplay />
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-2">
                 {/* Block timeline (new) or legacy tool list */}
