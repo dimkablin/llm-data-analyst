@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { motion } from "motion/react";
 import type { StreamToolCall } from "../../lib/backend-types";
 import { getStoredSpinner, getSpinnerFrames, SPINNER_CHANGED_EVENT } from "../../lib/spinner";
@@ -143,9 +144,11 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
           </span>
         ) : null}
         {hasDetail ? (
-          <span className="ml-auto shrink-0 select-none text-[10px] text-muted-foreground/25">
-            {expanded ? "▲" : "▼"}
-          </span>
+          <ChevronDown
+            className={`ml-auto h-3 w-3 shrink-0 text-muted-foreground/25 transition-transform duration-200 ${
+              expanded ? "rotate-180" : ""
+            }`}
+          />
         ) : null}
       </div>
 

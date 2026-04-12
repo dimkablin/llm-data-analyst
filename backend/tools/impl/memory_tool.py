@@ -22,24 +22,31 @@ from langchain_core.tools import BaseTool
 # ── User Memory Tool ──────────────────────────────────────────────────────────
 
 _USER_MEMORY_DESCRIPTION = """\
-Save a long-term fact about the user that will be useful in future \
-conversations. Call this when you notice something about the user's \
-name, role, expertise, preferences, communication style, or recurring \
-patterns.
+Persist a long-term insight about the user that will be useful across \
+future conversations. Call this when you infer something meaningful \
+about the user — their role, domain, expertise level, analytical \
+goals, preferred output format, communication style, or recurring \
+patterns in how they work.
 
-Do NOT use this for session-specific data (datasets, findings, schemas) \
-— use session_note for that.
-Do NOT use this to recall or repeat a previous request — conversation \
-history is already available in the system prompt; reading it does not \
-require a tool call.
-Do NOT use this as a substitute for re-executing an analysis — if the \
-user asks to repeat something, call the appropriate data tool directly.
+Write a distilled, semantic note — NOT a verbatim quote. Capture \
+*what it means*, not *what was said*. For example, instead of \
+"User said they work in retail", write "User is a retail industry \
+analyst focused on sales performance".
 
-Input: plain text (1-3 sentences max).
+Guidelines:
+- Infer and abstract: translate observations into durable facts.
+- Be specific: "prefers Plotly bar charts with monthly granularity" \
+  is better than "likes charts".
+- One atomic fact per call; call multiple times for multiple facts.
+- Do NOT save session-specific data (datasets, schemas, findings) \
+  — use session_note for that.
+- Do NOT call this to recall history — it is already in the prompt.
+
+Input: 1–2 sentences of distilled insight.
 Output: confirmation message.
 
-Example: memory.save_note("User is a data analyst at a retail company. \
-Prefers monthly aggregations and Plotly bar charts.")
+Example: memory("User is a retail data analyst. \
+Prefers concise monthly aggregations and Plotly bar charts over tables.")
 """
 
 
@@ -70,20 +77,33 @@ class MemoryTool(BaseTool):
 # ── Session Note Tool ─────────────────────────────────────────────────────────
 
 _SESSION_NOTE_DESCRIPTION = """\
-Save a note about the current analysis session — data descriptions, \
-key findings, intermediate conclusions, data-quality observations, \
-column semantics, or any context useful for follow-up questions in \
-this session.
+Persist a semantic insight about the current analysis session so it \
+can be referenced in follow-up questions without re-running analysis.
 
-Do NOT use this for facts about the user (preferences, role) — use \
-memory for that.
+Use this for:
+- The *meaning* of loaded data (domain, granularity, time range, \
+  business purpose) — not just column names.
+- Key findings and conclusions: what patterns, anomalies, or answers \
+  were discovered and *why they matter*.
+- Data-quality issues that affect interpretation (e.g., "Q2 revenue \
+  has 3% nulls — likely export gap, not zero sales").
+- Decisions made during analysis (filters applied, assumptions used).
 
-Input: plain text (1-3 sentences max).
+Write a distilled, semantic note — NOT a verbatim copy of data or \
+output. Capture *understanding*, not raw facts. For example, instead \
+of listing columns, explain what the dataset represents: "Monthly \
+retail sales by product and region, 2023 — used to analyze \
+regional revenue trends".
+
+Do NOT use this for facts about the user (role, preferences) \
+— use memory for that.
+
+Input: 1–3 sentences of distilled context or insight.
 Output: confirmation message.
 
-Example: session_note.save_note("Dataset contains 12 months of sales \
-data with columns: date, product_id, revenue, region. Revenue has \
-3% null values in Q2.")
+Example: session_note("Sales dataset covers Jan–Dec 2023 with \
+revenue by product and region. Q2 revenue has 3% nulls likely \
+due to a data export gap, not actual zero sales.")
 """
 
 
