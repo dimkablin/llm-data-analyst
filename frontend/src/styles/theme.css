@@ -2,6 +2,9 @@
 
 :root {
   color-scheme: light;
+  --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Instrument Serif', Georgia, serif;
+  --font-mono: 'DM Mono', ui-monospace, 'Cascadia Code', monospace;
   --font-size: clamp(12.5px, calc(9.4px + 0.42vw), 16px);
   --spacing: clamp(0.19rem, calc(0.08rem + 0.16vw), 0.25rem);
   --text-3xl: clamp(1.42rem, calc(0.95rem + 0.92vw), 1.875rem);
@@ -213,10 +216,15 @@ html[data-accent="violet"] {
 
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
     transition:
       background-color 220ms ease,
       color 220ms ease,
       border-color 220ms ease;
+  }
+
+  code, pre, kbd, samp {
+    font-family: var(--font-mono);
   }
 
   /**
