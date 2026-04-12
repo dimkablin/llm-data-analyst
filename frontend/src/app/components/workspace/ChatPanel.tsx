@@ -24,6 +24,7 @@ import type {
   ExecutionGraph,
   PhaseEvent,
   SessionSourceState,
+  Skill,
   StreamToolCall,
 } from "../../lib/backend-types";
 import { AgentActivityFeed, ToolCallList, useSpinnerFrame } from "./AgentActivityFeed";
@@ -73,6 +74,9 @@ type Props = {
   onUploadClick: () => void;
   onExportChat: () => void;
   onPinArtifact: (artifact: ArtifactPayload) => void;
+  availableSkills?: Skill[];
+  selectedSkillIds?: string[];
+  onToggleSkill?: (skillId: string) => void;
 };
 
 export function ChatPanel({
@@ -100,6 +104,9 @@ export function ChatPanel({
   onUploadClick,
   onExportChat,
   onPinArtifact,
+  availableSkills = [],
+  selectedSkillIds = [],
+  onToggleSkill,
 }: Props) {
   const spinner = useSpinnerFrame();
   const [input, setInput] = useState("");
@@ -300,6 +307,29 @@ export function ChatPanel({
                 {suggestion}
               </button>
             ))}
+          </div>
+        ) : null}
+
+        {availableSkills.length > 0 ? (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {availableSkills.map((skill) => {
+              const active = selectedSkillIds.includes(skill.skill_id);
+              return (
+                <button
+                  key={skill.skill_id}
+                  type="button"
+                  title={skill.description}
+                  onClick={() => onToggleSkill?.(skill.skill_id)}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                    active
+                      ? "border-primary/60 bg-primary/10 text-primary"
+                      : "border-border/50 bg-secondary/60 text-muted-foreground hover:border-border hover:text-foreground"
+                  }`}
+                >
+                  {skill.name}
+                </button>
+              );
+            })}
           </div>
         ) : null}
 

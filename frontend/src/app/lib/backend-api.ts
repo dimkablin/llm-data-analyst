@@ -13,6 +13,7 @@ import type {
   SessionState,
   SessionSourceState,
   SessionSummary,
+  Skill,
   ToolAvailability,
   UserMemory,
   UserSettings,
@@ -147,6 +148,12 @@ export async function updateUserMemory(payload: Partial<UserMemory>): Promise<Us
   });
   await assertOk(response);
   return (await response.json()) as UserMemory;
+}
+
+export async function listSkills(): Promise<Skill[]> {
+  const response = await authFetch("/skills");
+  await assertOk(response);
+  return (await response.json()) as Skill[];
 }
 
 export async function getUserTools(): Promise<ToolAvailability[]> {
@@ -497,6 +504,7 @@ export async function streamQuery(
   handlers: StreamHandlers,
   signal?: AbortSignal,
   analysisDepth?: string,
+  selectedSkillIds?: string[],
 ): Promise<void> {
   const body: Record<string, unknown> = {
     query,
@@ -505,6 +513,9 @@ export async function streamQuery(
   };
   if (analysisDepth) {
     body.analysis_depth = analysisDepth;
+  }
+  if (selectedSkillIds && selectedSkillIds.length > 0) {
+    body.selected_skill_ids = selectedSkillIds;
   }
   const response = await authFetch(`/sessions/${sessionId}/query/stream`, {
     method: "POST",

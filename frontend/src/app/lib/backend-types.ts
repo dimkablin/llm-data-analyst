@@ -61,6 +61,7 @@ export type SessionState = {
   source_mode?: string | null;
   sources?: SessionSource[];
   session_memory?: string;
+  selected_skill_ids?: string[];
 };
 
 export type SessionSourceState = {
@@ -377,4 +378,11 @@ export type PhoenixOverview = {
 export type UserMemory = {
   profile: string;
   notes: string;
+};
+
+export type Skill = {
+  skill_id: string;
+  name: string;
+  description: string;
+  triggers: string[];
 };

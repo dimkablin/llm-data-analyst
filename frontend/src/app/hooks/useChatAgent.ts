@@ -228,6 +228,7 @@ type UseChatAgentArgs = {
   includeReasoning: boolean;
   useHistory: boolean;
   analysisDepth?: string;
+  selectedSkillIds?: string[];
 };
 
 type UseChatAgentResult = {
@@ -262,6 +263,7 @@ export function useChatAgent({
   includeReasoning,
   useHistory,
   analysisDepth,
+  selectedSkillIds,
 }: UseChatAgentArgs): UseChatAgentResult {
   // Per-session storage: messages and artifacts are keyed by session ID.
   const [sessionData, setSessionData] = useState<Map<string, SessionSlot>>(new Map());
@@ -678,6 +680,7 @@ export function useChatAgent({
           },
           controller.signal,
           analysisDepth,
+          selectedSkillIds,
         );
       } catch (err) {
         if ((err as Error)?.name === "AbortError") {
