@@ -223,8 +223,14 @@ export function ChatPanel({
       >
         <div className="space-y-4 xl:space-y-6">
           {messages.length === 0 ? (
-            <div className="rounded-3xl border border-dashed border-border/40 bg-secondary/20 p-6 text-sm text-muted-foreground">
-              Начните диалог с аналитиком. Новый frontend остается основным, а live backend-сценарий уже подключен.
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border/40 bg-secondary/50 text-muted-foreground/60">
+                <Bot className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="text-[14px] font-medium text-foreground/70">Аналитик готов к работе</p>
+                <p className="mt-1 text-[12px] text-muted-foreground/60">Задайте вопрос о данных или загрузите CSV</p>
+              </div>
             </div>
           ) : null}
 
@@ -296,14 +302,15 @@ export function ChatPanel({
           <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div>
         ) : null}
         {messages.length === 0 && !isStreaming ? (
-          <div className="mb-4 flex flex-wrap items-center gap-2">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
             {QUICK_SUGGESTIONS.map((suggestion) => (
               <button
                 key={suggestion}
                 type="button"
                 onClick={() => setInput(suggestion)}
-                className="rounded-full border border-border/50 bg-secondary px-4 py-1.5 text-[12px] font-medium text-muted-foreground hover:text-foreground"
+                className="group flex items-center gap-1.5 rounded-full border border-border/40 bg-card/60 px-3.5 py-1.5 text-[12px] font-medium text-muted-foreground backdrop-blur-sm transition-all duration-150 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
               >
+                <span className="h-1 w-1 rounded-full bg-primary/40 transition-colors group-hover:bg-primary/70" />
                 {suggestion}
               </button>
             ))}
@@ -333,7 +340,7 @@ export function ChatPanel({
           </div>
         ) : null}
 
-        <div className="group relative rounded-2xl border border-border/60 bg-card shadow-xl focus-within:border-primary/50 focus-within:ring-4 focus-within:ring-primary/10">
+        <div className="group relative rounded-3xl border border-border/50 bg-card/80 backdrop-blur-sm shadow-lg shadow-black/5 transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:ring-4 focus-within:ring-primary/8">
           <textarea
             value={input}
             onChange={(event) => setInput(event.target.value)}
@@ -344,7 +351,7 @@ export function ChatPanel({
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
-            className="min-h-[72px] w-full resize-none bg-transparent p-3 pl-12 pr-14 text-[13px] outline-none lg:p-4 lg:pl-14 lg:pr-16 lg:text-[15px] xl:min-h-[100px]"
+            className="min-h-[80px] w-full resize-none bg-transparent p-4 pl-12 pr-14 text-[13.5px] leading-relaxed outline-none placeholder:text-muted-foreground/50 lg:p-5 lg:pl-14 lg:pr-16 lg:text-[15px] xl:min-h-[108px]"
           />
 
           {/* "+" action menu — bottom left */}
