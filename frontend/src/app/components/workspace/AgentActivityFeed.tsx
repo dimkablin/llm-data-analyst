@@ -2,29 +2,8 @@ import React, { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { motion } from "motion/react";
 import type { StreamToolCall } from "../../lib/backend-types";
-import { getStoredSpinner, getSpinnerFrames, SPINNER_CHANGED_EVENT } from "../../lib/spinner";
 import { MarkdownBlock } from "../MarkdownBlock";
-
-// ─── Spinner (выбирается в настройках аккаунта) ───────────────────────────────
-
-export function useSpinnerFrame() {
-  const [frames, setFrames] = useState<string[]>(() => getSpinnerFrames(getStoredSpinner()));
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    const onChanged = () => setFrames(getSpinnerFrames(getStoredSpinner()));
-    window.addEventListener(SPINNER_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(SPINNER_CHANGED_EVENT, onChanged);
-  }, []);
-
-  useEffect(() => {
-    setFrame(0);
-    const t = setInterval(() => setFrame((f) => (f + 1) % frames.length), 120);
-    return () => clearInterval(t);
-  }, [frames]);
-
-  return frames[frame] ?? frames[0] ?? "◐";
-}
+import { SpinnerDisplay } from "../SpinnerDisplay";
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
 
@@ -77,9 +56,14 @@ function ReasoningText({ text }: { text: string }) {
   const line = firstMeaningfulLine(text);
   if (!line) return null;
   return (
-    <p className="pl-1 text-[13px] text-muted-foreground/75 leading-5 select-none">
+    <motion.p
+      initial={{ opacity: 0, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="pl-1 text-[13px] text-muted-foreground/75 leading-5 select-none"
+    >
       <InlineMarkdown text={line} />
-    </p>
+    </motion.p>
   );
 }
 
@@ -95,7 +79,6 @@ function LiveReasoningText({ text }: { text: string }) {
 // ─── Tool row ─────────────────────────────────────────────────────────────────
 
 function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
-  const spinner = useSpinnerFrame();
   const [elapsed, setElapsed] = useState(0);
   const [expanded, setExpanded] = useState(false);
 
@@ -115,7 +98,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
   const hasDetail = !!(inputCode || call.output_preview || call.artifact_keys?.length);
 
   const dot = isRunning ? (
-    <span className="text-primary">{spinner}</span>
+    <span className="inline-flex items-center"><SpinnerDisplay size="dot" /></span>
   ) : call.status === "error" ? (
     <span className="text-destructive">●</span>
   ) : (
@@ -248,8 +231,6 @@ type Props = {
 };
 
 export function AgentActivityFeed({ tools, reasoning, draft }: Props) {
-  const spinner = useSpinnerFrame();
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -257,8 +238,8 @@ export function AgentActivityFeed({ tools, reasoning, draft }: Props) {
       className="flex gap-3 lg:gap-4"
     >
       {/* Spinner avatar */}
-      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 font-mono text-sm text-primary select-none">
-        {spinner}
+      <div className="animate-ring-pulse mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary select-none">
+        <SpinnerDisplay />
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-2">
