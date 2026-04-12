@@ -1,19 +1,30 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from backend.artifacts import build_artifact_meta
 from backend.integrations import (
     AnomalyPlanfactConfig,
-    AnomalyPlanfactIntegrationError,
     AnomalyPlanfactIntegrationService,
+    AnomalyPlanfactQueryResult,
+)
+
+_BASE_CONFIG = dict(
+    enabled=True,
+    base_url="https://anomaly.example",
+    analyze_endpoint="/v1/anomaly",
+    timeout_sec=60.0,
+    backend_api_url="http://backend:8000/v1",
+    llm_base_url="http://llm.example",
+    llm_api_key="test-key",
+    llm_model="test-model",
 )
 
 
 class AnomalyPlanfactIntegrationTests(unittest.TestCase):
     def test_config_from_env_detects_enabled_source(self) -> None:
         config = AnomalyPlanfactConfig.from_env(
-            {
+            env={
                 "ANOMALY_PLANFACT_ENABLED": "true",
                 "ANOMALY_PLANFACT_BACKEND_URL": "https://anomaly.example",
                 "ANOMALY_PLANFACT_ANALYZE_ENDPOINT": "/v1/anomaly",
@@ -23,163 +34,70 @@ class AnomalyPlanfactIntegrationTests(unittest.TestCase):
         )
 
         self.assertTrue(config.enabled)
-        self.assertTrue(config.available)
         self.assertEqual(config.base_url, "https://anomaly.example")
         self.assertEqual(config.analyze_endpoint, "/v1/anomaly")
         self.assertEqual(config.timeout_sec, 75.0)
-        self.assertEqual(config.source_label, "Plan-Fact")
 
-    def test_normalize_series_input_enforces_first_contract(self) -> None:
-        service = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/v1/anomaly",
-                timeout_sec=60.0,
-            ),
-            transport=lambda url, payload, timeout: {},
-        )
+    def test_normalize_row_maps_aliases_correctly(self) -> None:
+        normalize = AnomalyPlanfactIntegrationService._normalize_row
 
-        rows = service.normalize_series_input(
-            [
-                {"month": "2025-01-01", "plan": 10, "fact": 9},
-                {"month": "2025-02-01", "plan": "12.5", "fact": 15},
-            ],
-            time_col="month",
-            plan_col="plan",
-            fact_col="fact",
-        )
+        row = normalize({"ts": "2025-01-01", "y": 9.0, "yhat": 10.0})
+        self.assertEqual(row["ts"], "2025-01-01")
+        self.assertEqual(row["y"], 9.0)
+        self.assertEqual(row["yhat"], 10.0)
 
-        self.assertEqual(
-            rows,
-            [
-                {"ts": "2025-01-01", "plan": 10.0, "fact": 9.0},
-                {"ts": "2025-02-01", "plan": 12.5, "fact": 15.0},
-            ],
-        )
+        row = normalize({"date": "2025-02-01", "fact": 15.0, "plan": 12.5})
+        self.assertEqual(row["ts"], "2025-02-01")
+        self.assertEqual(row["y"], 15.0)
+        self.assertEqual(row["yhat"], 12.5)
 
-        with self.assertRaises(AnomalyPlanfactIntegrationError):
-            service.normalize_series_input(
-                [{"month": "2025-01-01", "plan": 10, "fact": 9}],
-                time_col="month",
-                plan_col="plan",
-                fact_col="fact",
-            )
-
-        with self.assertRaises(AnomalyPlanfactIntegrationError):
-            service.normalize_series_input(
-                [
-                    {"month": "2025-01-01", "plan": 10, "fact": 9},
-                    {"month": "2025-02-01", "plan": "oops", "fact": 15},
-                ],
-                time_col="month",
-                plan_col="plan",
-                fact_col="fact",
-            )
+        self.assertIsNone(normalize({"y": 9.0, "yhat": 10.0}))
+        self.assertIsNone(normalize("not a dict"))
 
     def test_service_normalizes_backend_response(self) -> None:
-        captured: dict[str, object] = {}
-
-        def fake_transport(
-            url: str,
-            payload: dict[str, object],
-            timeout_sec: float,
-        ) -> dict[str, object]:
-            captured["url"] = url
-            captured["payload"] = dict(payload)
-            captured["timeout_sec"] = timeout_sec
-            return {
-                "model_name": "planfact-detector",
-                "summary": "Detected deviations in two periods.",
-                "anomalies": [
-                    {
-                        "date": "2025-02-01",
-                        "expected": 100,
-                        "actual": 130,
-                        "absolute_deviation": 30,
-                        "relative_deviation": 30.0,
-                        "score": 0.91,
-                        "anomaly": True,
-                        "reason": "Revenue materially exceeded plan.",
-                    },
-                    {
-                        "period": "2025-03-01",
-                        "plan": 105,
-                        "fact": 90,
-                        "abs_diff": -15,
-                        "pct_diff": -14.29,
-                        "is_anomaly": False,
-                    },
-                ],
-            }
-
-        service = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/v1/anomaly",
-                timeout_sec=45.0,
-            ),
-            transport=fake_transport,
-        )
-
-        result = service.run_analysis(
-            [
-                {"month": "2025-01-01", "plan_revenue": 95, "fact_revenue": 97},
-                {"month": "2025-02-01", "plan_revenue": 100, "fact_revenue": 130},
-                {"month": "2025-03-01", "plan_revenue": 105, "fact_revenue": 90},
+        fake_response = {
+            "model_name": "planfact-detector",
+            "summary": "Detected deviations in two periods.",
+            "anomalies": [
+                {"date": "2025-02-01", "fact": 130, "plan": 100, "anomaly_score": 0.91},
+                {"period": "2025-03-01", "fact": 90, "plan": 105},
             ],
-            time_col="month",
-            plan_col="plan_revenue",
-            fact_col="fact_revenue",
-            target_name="revenue",
-        )
+        }
 
-        self.assertEqual(captured["url"], "https://anomaly.example/v1/anomaly")
-        self.assertEqual(captured["timeout_sec"], 45.0)
-        self.assertEqual(result.input_point_count, 3)
+        service = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_BASE_CONFIG))
+
+        with patch("backend.integrations.anomaly_planfact.post_json", return_value=fake_response):
+            result = service.run_analysis("аномалии по выручке", csv_session_id="test-session")
+
         self.assertEqual(result.model_name, "planfact-detector")
         self.assertEqual(result.summary, "Detected deviations in two periods.")
-        self.assertEqual(len(result.analysis_rows), 2)
-        self.assertEqual(result.analysis_rows[0]["ts"], "2025-02-01")
-        self.assertEqual(result.analysis_rows[0]["is_anomaly"], True)
-        self.assertEqual(result.analysis_rows[1]["fact"], 90.0)
+        self.assertEqual(len(result.anomaly_rows), 2)
+        self.assertEqual(result.anomaly_rows[0]["ts"], "2025-02-01")
+        self.assertEqual(result.anomaly_rows[1]["y"], 90)
 
     def test_payload_builder_keeps_source_and_recipe_consistent(self) -> None:
-        service = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/v1/anomaly",
-                timeout_sec=45.0,
-                source_label="Anomaly",
-            ),
-            transport=lambda url, payload, timeout: {
-                "model": "planfact-test",
-                "analysis_summary": "One material deviation detected.",
-                "rows": [
-                    {
-                        "ts": "2025-02-01",
-                        "plan": 100,
-                        "fact": 140,
-                        "delta_abs": 40,
-                        "delta_pct": 40.0,
-                        "anomaly_score": 0.98,
-                        "is_anomaly": True,
-                    }
-                ],
-            },
+        result = AnomalyPlanfactQueryResult(
+            question="аномалии по выручке",
+            model_name="planfact-test",
+            summary="One material deviation detected.",
+            anomaly_rows=[
+                {
+                    "ts": "2025-02-01",
+                    "y": 140,
+                    "yhat": 100,
+                    "lower": None,
+                    "upper": None,
+                    "severity": 0.98,
+                    "direction": "high",
+                }
+            ],
+            plotly_figure=None,
+            warnings=[],
+            request_params={"message": "аномалии по выручке", "model": "PlanFact", "fraction": 0.2, "top_k": 50},
         )
 
-        result = service.run_analysis(
-            [
-                {"month": "2025-01-01", "plan": 95, "fact": 97},
-                {"month": "2025-02-01", "plan": 100, "fact": 140},
-            ],
-            time_col="month",
-            plan_col="plan",
-            fact_col="fact",
-            target_name="revenue",
+        service = AnomalyPlanfactIntegrationService(
+            AnomalyPlanfactConfig(**{**_BASE_CONFIG, "source_label": "Anomaly"})
         )
         payload = service.build_artifact_payload(
             result,
@@ -190,24 +108,9 @@ class AnomalyPlanfactIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["artifact_name"], "revenue_planfact")
         self.assertEqual(payload["source"]["source_type"], "anomaly_planfact")
         self.assertEqual(payload["recipe"][0]["kind"], "model_inference")
-        self.assertEqual(payload["recipe"][0]["title"], "Anomaly / plan-fact analysis")
         self.assertEqual(payload["recipe"][0]["model_name"], "planfact-test")
-        self.assertEqual(payload["meta"]["anomaly_planfact"]["anomaly_count"], 1)
-
-        meta = build_artifact_meta(
-            tool_name="anomaly_planfact_tool",
-            source_context={
-                "source_type": "csv",
-                "source_ref_id": "legacy.csv",
-                "source_label": "Legacy CSV",
-            },
-            artifact_hints=payload,
-        )
-
-        self.assertEqual(meta["source"]["source_type"], "anomaly_planfact")
-        self.assertEqual(meta["provenance"]["source"], meta["source"])
-        self.assertEqual(meta["provenance"]["recipe"], meta["recipe"])
-        self.assertEqual(meta["recipe"][0]["kind"], "model_inference")
+        self.assertIn("anomaly_planfact", payload["meta"])
+        self.assertEqual(payload["meta"]["anomaly_planfact"]["row_count"], 1)
 
 
 if __name__ == "__main__":

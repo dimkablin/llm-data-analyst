@@ -164,7 +164,7 @@ def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionSt
     # Consider the session valid only if it exists, has not expired, AND the DuckDB file is present.
     db_file_exists = (
         bool(state.csv_session_id)
-        and _csv_runtime._db_path(state.csv_session_id).exists()
+        and _csv_runtime.db_exists(state.csv_session_id)
     )
     session_still_valid = (
         state.csv_loaded

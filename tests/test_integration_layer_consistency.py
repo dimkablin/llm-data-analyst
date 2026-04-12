@@ -1,20 +1,45 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from backend.integrations import (
     AnomalyPlanfactConfig,
-    AnomalyPlanfactIntegrationError,
     AnomalyPlanfactIntegrationService,
+    AnomalyPlanfactQueryResult,
     ForecastConfig,
-    ForecastIntegrationError,
     ForecastIntegrationService,
+    ForecastQueryResult,
     RAGConfig,
     RAGIntegrationError,
     RAGService,
     SearchIntegrationConfig,
     SearchIntegrationError,
     SearchIntegrationService,
+)
+from backend.integrations.predict_common import PredictIntegrationError
+
+_FORECAST_CONFIG = dict(
+    enabled=True,
+    base_url="https://forecast.example",
+    predict_endpoint="/forecast",
+    timeout_sec=45.0,
+    horizon_default=3,
+    backend_api_url="http://backend:8000/v1",
+    llm_base_url="http://llm.example",
+    llm_api_key="test-key",
+    llm_model="test-model",
+)
+
+_ANOMALY_CONFIG = dict(
+    enabled=True,
+    base_url="https://anomaly.example",
+    analyze_endpoint="/anomaly",
+    timeout_sec=50.0,
+    backend_api_url="http://backend:8000/v1",
+    llm_base_url="http://llm.example",
+    llm_api_key="test-key",
+    llm_model="test-model",
 )
 
 
@@ -43,23 +68,8 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 top_k_default=5,
             )
         )
-        forecast = ForecastIntegrationService(
-            ForecastConfig(
-                enabled=True,
-                base_url="https://forecast.example",
-                predict_endpoint="/forecast",
-                timeout_sec=45.0,
-                horizon_default=3,
-            )
-        )
-        anomaly = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/anomaly",
-                timeout_sec=50.0,
-            )
-        )
+        forecast = ForecastIntegrationService(ForecastConfig(**_FORECAST_CONFIG))
+        anomaly = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_ANOMALY_CONFIG))
 
         descriptors = [
             search.source_descriptor(),
@@ -115,54 +125,34 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
                 "references": ["https://docs.example/auth"],
             },
         )
-        forecast = ForecastIntegrationService(
-            ForecastConfig(
-                enabled=True,
-                base_url="https://forecast.example",
-                predict_endpoint="/forecast",
-                timeout_sec=45.0,
-                horizon_default=3,
-            ),
-            transport=lambda url, payload, timeout: {
-                "forecast": [{"ts": "2025-04-01", "yhat": 18}]
-            },
+
+        forecast_result = ForecastQueryResult(
+            question="прогноз выручки",
+            horizon=3,
+            model_name="chronos",
+            summary=None,
+            forecast_rows=[{"ts": "2025-04-01", "yhat": 18, "lower": None, "upper": None}],
+            plotly_figure=None,
+            warnings=[],
+            request_params={"message": "прогноз выручки", "fh": 3},
         )
-        anomaly = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/anomaly",
-                timeout_sec=50.0,
-            ),
-            transport=lambda url, payload, timeout: {
-                "rows": [{"ts": "2025-01-01", "plan": 10, "fact": 12, "is_anomaly": True}]
-            },
+        anomaly_result = AnomalyPlanfactQueryResult(
+            question="аномалии",
+            model_name="PlanFact",
+            summary=None,
+            anomaly_rows=[{"ts": "2025-01-01", "y": 12, "yhat": 10, "lower": None, "upper": None, "severity": None, "direction": None}],
+            plotly_figure=None,
+            warnings=[],
+            request_params={"message": "аномалии", "model": "PlanFact", "fraction": 0.2, "top_k": 50},
         )
+
+        forecast_svc = ForecastIntegrationService(ForecastConfig(**_FORECAST_CONFIG))
+        anomaly_svc = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_ANOMALY_CONFIG))
 
         payloads = [
             search.build_artifact_payload(search.search("agents")),
-            forecast.build_artifact_payload(
-                forecast.run_forecast(
-                    [
-                        {"month": "2025-01-01", "revenue": 10},
-                        {"month": "2025-02-01", "revenue": 12},
-                        {"month": "2025-03-01", "revenue": 15},
-                    ],
-                    time_col="month",
-                    value_col="revenue",
-                )
-            ),
-            anomaly.build_artifact_payload(
-                anomaly.run_analysis(
-                    [
-                        {"month": "2025-01-01", "plan": 10, "fact": 9},
-                        {"month": "2025-02-01", "plan": 12, "fact": 15},
-                    ],
-                    time_col="month",
-                    plan_col="plan",
-                    fact_col="fact",
-                )
-            ),
+            forecast_svc.build_artifact_payload(forecast_result),
+            anomaly_svc.build_artifact_payload(anomaly_result),
         ]
 
         rag_result = rag.search(query="auth docs")
@@ -210,47 +200,22 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             rag.search(query="agents")
         self.assertIn("request timed out", str(rag_exc.exception).lower())
 
-        forecast = ForecastIntegrationService(
-            ForecastConfig(
-                enabled=True,
-                base_url="https://forecast.example",
-                predict_endpoint="/forecast",
-                timeout_sec=45.0,
-                horizon_default=3,
-            ),
-            transport=lambda url, payload, timeout: (_ for _ in ()).throw(TimeoutError()),
-        )
-        with self.assertRaises(ForecastIntegrationError) as forecast_exc:
-            forecast.run_forecast(
-                [
-                    {"month": "2025-01-01", "revenue": 10},
-                    {"month": "2025-02-01", "revenue": 12},
-                    {"month": "2025-03-01", "revenue": 15},
-                ],
-                time_col="month",
-                value_col="revenue",
-            )
+        forecast = ForecastIntegrationService(ForecastConfig(**_FORECAST_CONFIG))
+        with patch(
+            "backend.integrations.forecast.post_json",
+            side_effect=PredictIntegrationError("request timed out"),
+        ):
+            with self.assertRaises(PredictIntegrationError) as forecast_exc:
+                forecast.run_forecast("прогноз выручки", csv_session_id="test-session")
         self.assertIn("request timed out", str(forecast_exc.exception).lower())
 
-        anomaly = AnomalyPlanfactIntegrationService(
-            AnomalyPlanfactConfig(
-                enabled=True,
-                base_url="https://anomaly.example",
-                analyze_endpoint="/anomaly",
-                timeout_sec=50.0,
-            ),
-            transport=lambda url, payload, timeout: (_ for _ in ()).throw(TimeoutError()),
-        )
-        with self.assertRaises(AnomalyPlanfactIntegrationError) as anomaly_exc:
-            anomaly.run_analysis(
-                [
-                    {"month": "2025-01-01", "plan": 10, "fact": 9},
-                    {"month": "2025-02-01", "plan": 12, "fact": 15},
-                ],
-                time_col="month",
-                plan_col="plan",
-                fact_col="fact",
-            )
+        anomaly = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_ANOMALY_CONFIG))
+        with patch(
+            "backend.integrations.anomaly_planfact.post_json",
+            side_effect=PredictIntegrationError("request timed out"),
+        ):
+            with self.assertRaises(PredictIntegrationError) as anomaly_exc:
+                anomaly.run_analysis("аномалии по выручке", csv_session_id="test-session")
         self.assertIn("request timed out", str(anomaly_exc.exception).lower())
 
 

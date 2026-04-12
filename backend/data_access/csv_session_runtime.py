@@ -66,6 +66,9 @@ class CSVSessionRuntime:
     def _db_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session.duckdb"
 
+    def db_exists(self, session_id: str) -> bool:
+        return self._db_path(session_id).exists()
+
     def _meta_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "meta.json"
 
