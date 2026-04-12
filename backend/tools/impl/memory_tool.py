@@ -29,6 +29,11 @@ patterns.
 
 Do NOT use this for session-specific data (datasets, findings, schemas) \
 — use session_note for that.
+Do NOT use this to recall or repeat a previous request — conversation \
+history is already available in the system prompt; reading it does not \
+require a tool call.
+Do NOT use this as a substitute for re-executing an analysis — if the \
+user asks to repeat something, call the appropriate data tool directly.
 
 Input: plain text (1-3 sentences max).
 Output: confirmation message.

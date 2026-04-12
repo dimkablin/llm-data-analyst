@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import type { StreamToolCall } from "../../lib/backend-types";
 import { getStoredSpinner, getSpinnerFrames, SPINNER_CHANGED_EVENT } from "../../lib/spinner";
+import { MarkdownBlock } from "../MarkdownBlock";
 
 // ─── Spinner (выбирается в настройках аккаунта) ───────────────────────────────
 
@@ -174,8 +175,8 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/35 select-none">
                 Output
               </span>
-              <div className="overflow-x-auto rounded border border-border/25 bg-muted/20 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/65 whitespace-pre-wrap">
-                {call.output_preview}
+              <div className="overflow-x-auto rounded border border-border/25 bg-muted/20 px-3 py-2 text-muted-foreground/65 tool-output-markdown">
+                <MarkdownBlock content={call.output_preview} />
               </div>
             </div>
           ) : call.artifact_keys?.length ? (

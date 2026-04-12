@@ -831,11 +831,11 @@ class AgentRunner:
         if system_parts:
             messages.append(SystemMessage(content="\n\n".join(system_parts)))
 
-        for item in recent:
+        for i, item in enumerate(recent):
             role = item.get("role")
             content = str(item.get("content", "")).strip()
             artifacts = item.get("artifacts")
-            if isinstance(artifacts, list) and artifacts:
+            if role != "user" and isinstance(artifacts, list) and artifacts:
                 labels: list[str] = []
                 for artifact in artifacts[:6]:
                     if not isinstance(artifact, dict):
@@ -847,9 +847,18 @@ class AgentRunner:
                     )
                 if labels:
                     labels_text = ", ".join(labels)
-                    content = (
-                        f"{content}\n\nКонтекст предыдущих артефактов: {labels_text}"
-                    ).strip()
+                    preceding_query = next(
+                        (
+                            self._truncate(str(recent[j].get("content", "")), 300)
+                            for j in range(i - 1, -1, -1)
+                            if recent[j].get("role") == "user"
+                        ),
+                        "",
+                    )
+                    artifact_ctx = f"Контекст предыдущих артефактов: {labels_text}"
+                    if preceding_query:
+                        artifact_ctx += f"\nЗапрос, породивший артефакты: {preceding_query}"
+                    content = f"{content}\n\n{artifact_ctx}".strip()
 
             if not content:
                 continue
@@ -1719,6 +1728,31 @@ class AgentRunner:
 
         return f"{RECOVERY_TEXT_PREFIX}, артефакты уже построены ({typed_counts})."
 
+    def _artifacts_summary_text(self, artifacts: list) -> str:
+        """Neutral summary when the loop ended normally but LLM returned empty text."""
+        if not artifacts:
+            return ""
+
+        counts: dict[str, int] = {}
+        labels: list[str] = []
+        for artifact in artifacts[:8]:
+            artifact_type = str(getattr(artifact, "artifact_type", "artifact")).strip() or "artifact"
+            counts[artifact_type] = counts.get(artifact_type, 0) + 1
+            label = str(getattr(artifact, "text", "")).strip()
+            if label:
+                labels.append(label)
+
+        typed_counts = ", ".join(
+            f"{name}: {value}" for name, value in sorted(counts.items(), key=lambda item: item[0])
+        )
+        if labels:
+            labels_preview = ", ".join(labels[:4])
+            if len(labels) > 4:
+                labels_preview += ", ..."
+            return f"Артефакты построены ({typed_counts}). Доступные артефакты: {labels_preview}."
+
+        return f"Артефакты построены ({typed_counts})."
+
     # ── Single execution engine: direct tool-calling loop ────────────────────
 
     def _direct_tool_loop(
@@ -1764,6 +1798,7 @@ class AgentRunner:
         total_tool_calls = 0
         final_text = ""
         reasoning = None
+        _limit_reached = False
 
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
@@ -1830,6 +1865,7 @@ class AgentRunner:
                 messages.append(ToolMessage(content=tool_message_text, tool_call_id=tool_call_id))
         else:
             # Max iterations reached — try to recover text from collector.
+            _limit_reached = True
             text_collector = next(
                 (cb for cb in callbacks if isinstance(cb, LLMTextCollector)), None
             )
@@ -1843,7 +1879,10 @@ class AgentRunner:
                 all_tool_names.append(name)
 
         if not final_text and artifacts:
-            final_text = self._artifacts_recovery_text(artifacts)
+            if _limit_reached:
+                final_text = self._artifacts_recovery_text(artifacts)
+            else:
+                final_text = self._artifacts_summary_text(artifacts)
 
         return AgentResponse(
             final_text=final_text.strip(),
@@ -2117,11 +2156,23 @@ class AgentRunner:
             planner_runtime_config: dict[str, Any] = {"callbacks": callbacks}
             if tc := state.get("trace_context"):
                 planner_runtime_config["metadata"] = self._build_runtime_metadata(tc)
+
+            history = state.get("history", [])
+            recent_history_snippet = "\n".join(
+                f"{'Пользователь' if h.get('role') == 'user' else 'Ассистент'}: "
+                f"{self._truncate(str(h.get('content', '')), 200)}"
+                for h in history[-4:]
+                if h.get("content", "").strip()
+            )
+
             try:
                 plan_result = planner.invoke(
                     {
                         "name": "planner_tool",
-                        "args": {"question": state.get("prompt", "")},
+                        "args": {
+                            "question": state.get("prompt", ""),
+                            "context": recent_history_snippet,
+                        },
                         "id": "pre_plan_0",
                         "type": "tool_call",
                     },

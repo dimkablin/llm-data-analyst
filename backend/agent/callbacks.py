@@ -334,15 +334,16 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self._last_tool_name = tool_name
             self.tool_names.append(tool_name)
+        input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
+        input_code = self._extract_input_code(input_str[:2000])
         event = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
             "input_preview": input_str[:360],
+            "input_summary": input_summary,
             "timestamp": datetime.now(UTC).isoformat(),
         }
         self.events.append(event)
-        input_code = self._extract_input_code(input_str[:2000])
-        input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
         push_data: dict[str, Any] = {
             "tool_name": event["tool_name"],
             "input_preview": event["input_preview"],
@@ -503,6 +504,44 @@ class ToolCollector(BaseCallbackHandler):
         if isinstance(raw_text, str) and raw_text.strip():
             push_payload["output_preview"] = raw_text.strip()[:800]
         self._push_event("tool_end", push_payload)
+
+    def to_persisted_activities(self) -> list[dict[str, Any]]:
+        """Merge start/end event pairs into PersistedToolCall records for storage.
+
+        Returns one dict per tool invocation with a stable schema independent
+        of the live streaming DTO (StreamToolCall).
+        """
+        activities: list[dict[str, Any]] = []
+        for event in self.events:
+            phase = event.get("phase")
+            tool_name = str(event.get("tool_name") or "unknown")
+            if phase == "start":
+                activities.append({
+                    "tool_name": tool_name,
+                    "status": "done",
+                    "input_summary": event.get("input_summary") or "",
+                    "input_preview": event.get("input_preview") or "",
+                    "artifact_keys": [],
+                    "started_at": event.get("timestamp"),
+                    "finished_at": None,
+                })
+            elif phase == "end":
+                # Pair with the last unfinished start for this tool name
+                for activity in reversed(activities):
+                    if activity["tool_name"] == tool_name and activity["finished_at"] is None:
+                        activity["status"] = "error" if event.get("status") == "error" else "done"
+                        activity["artifact_keys"] = list(event.get("artifact_keys") or [])
+                        activity["finished_at"] = event.get("timestamp")
+                        if event.get("error"):
+                            activity["error"] = str(event["error"])[:300]
+                        break
+        # Strip unpaired/empty entries and clean None finished_at
+        result = []
+        for a in activities:
+            if a.get("finished_at") is None:
+                a["finished_at"] = a["started_at"]
+            result.append(a)
+        return result
 
     def absorb_tool_message(self, tool_name: str, result: ToolMessage) -> None:
         """Extract and store artifacts from a ToolMessage returned by tool.invoke().

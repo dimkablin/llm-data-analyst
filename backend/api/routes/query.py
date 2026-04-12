@@ -1002,6 +1002,7 @@ async def query_stream(
                     response.final_text,
                     artifacts=artifacts,
                     reasoning=effective_reasoning,
+                    tools=tool_collector.to_persisted_activities() or None,
                 )
                 _store.add_artifacts(session_id, response.artifacts)
                 _auth_db.update_session_after_reply(

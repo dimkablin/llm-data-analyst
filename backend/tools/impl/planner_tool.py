@@ -43,6 +43,10 @@ class _Input(BaseModel):
     question: str = Field(
         description="Вопрос пользователя, для которого нужно составить план анализа."
     )
+    context: str = Field(
+        default="",
+        description="Краткий контекст последних сообщений чата (опционально).",
+    )
 
 
 class PlannerTool(BaseTool):
@@ -82,7 +86,7 @@ class PlannerTool(BaseTool):
         """Inject available tool descriptions after the tool registry is built."""
         self._tool_descriptions = descriptions
 
-    def _run(self, question: str) -> str:
+    def _run(self, question: str, context: str = "") -> str:
         system_content = _PLANNER_SYSTEM_PROMPT
         if self._tool_descriptions:
             system_content += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{self._tool_descriptions}\n"
@@ -96,10 +100,14 @@ class PlannerTool(BaseTool):
             streaming=False,
         )
 
+        user_content = question
+        if context:
+            user_content = f"[Контекст предыдущих сообщений]\n{context}\n\n[Текущий запрос]\n{question}"
+
         try:
             response = llm.invoke([
                 SystemMessage(content=system_content),
-                HumanMessage(content=question),
+                HumanMessage(content=user_content),
             ])
             plan = str(getattr(response, "content", "")).strip()
             reasoning = response.additional_kwargs.get("reasoning", "")

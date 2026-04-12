@@ -51,6 +51,7 @@ export type SessionState = {
     timestamp: string;
     reasoning?: string | null;
     artifacts?: ArtifactPayload[];
+    tools?: PersistedToolCall[];
   }>;
   artifacts: ArtifactPayload[];
   has_dataset: boolean;
@@ -229,6 +230,25 @@ export type GraphEdge = {
 export type ExecutionGraph = {
   nodes: GraphNode[];
   edges: GraphEdge[];
+};
+
+/**
+ * Persisted storage contract for a single tool invocation.
+ * Separate from StreamToolCall (live UI DTO) so they can evolve independently.
+ */
+export type PersistedToolCall = {
+  tool_name: string;
+  /** "done" | "error" */
+  status: string;
+  input_summary?: string;
+  /** Raw tool input (up to 360 chars). */
+  input_preview?: string;
+  artifact_keys?: string[];
+  /** ISO timestamp of tool_start. */
+  started_at?: string;
+  /** ISO timestamp of tool_end. */
+  finished_at?: string;
+  error?: string;
 };
 
 export type StreamToolCall = {
