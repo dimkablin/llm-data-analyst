@@ -444,6 +444,41 @@ html[data-accent="violet"] {
     font-weight: 700;
   }
 
+  .tool-output-markdown .markdown-body {
+    font-size: 11px;
+    line-height: 1.55;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+
+  .tool-output-markdown .markdown-body p,
+  .tool-output-markdown .markdown-body ul,
+  .tool-output-markdown .markdown-body ol,
+  .tool-output-markdown .markdown-body blockquote,
+  .tool-output-markdown .markdown-body pre,
+  .tool-output-markdown .markdown-body table {
+    margin: 0.3rem 0;
+  }
+
+  .tool-output-markdown .markdown-body h1,
+  .tool-output-markdown .markdown-body h2,
+  .tool-output-markdown .markdown-body h3,
+  .tool-output-markdown .markdown-body h4 {
+    font-size: 12px;
+    margin: 0.4rem 0 0.2rem;
+  }
+
+  .tool-output-markdown .markdown-body pre {
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.4rem;
+    font-size: 11px;
+  }
+
+  .tool-output-markdown .markdown-body code {
+    font-size: 0.95em;
+    padding: 0.05rem 0.3rem;
+    border-radius: 0.3rem;
+  }
+
   .markdown-invert a,
   .markdown-invert blockquote {
     color: inherit;

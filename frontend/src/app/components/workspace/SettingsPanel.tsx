@@ -132,7 +132,6 @@ return (
               value={draft.agent_max_steps}
               min={2}
               max={ANALYSIS_DEPTH_STEP_CEILING[draft.analysis_depth]}
-              hint={`Потолок по уровню глубины: ${ANALYSIS_DEPTH_STEP_CEILING[draft.analysis_depth]}. Фактически min(значение, потолок); раньше — остановка по решению модели.`}
               step={1}
               onChange={(value) =>
                 setDraft((prev) => ({
@@ -146,7 +145,6 @@ return (
             <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
               <div>
                 <span className="text-sm">Режим ReAct</span>
-                <p className="text-[10px] text-muted-foreground mt-0.5">Подробный пошаговый анализ (Thought/Action/Observation). Медленнее, но видны промежуточные шаги.</p>
               </div>
               <input
                 type="checkbox"
