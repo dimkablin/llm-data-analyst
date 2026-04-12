@@ -536,4 +536,13 @@ html[data-accent="violet"] {
   .markdown-invert th {
     background: rgba(255, 255, 255, 0.1);
   }
+
+  @keyframes ring-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 40%, transparent); }
+    50% { box-shadow: 0 0 0 6px color-mix(in oklab, var(--primary) 0%, transparent); }
+  }
+
+  .animate-ring-pulse {
+    animation: ring-pulse 2s ease-in-out infinite;
+  }
 }

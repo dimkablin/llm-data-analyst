@@ -252,7 +252,7 @@ export function ChatPanel({
               className="flex gap-3 lg:gap-4"
             >
               {/* Spinner avatar */}
-              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 font-mono text-sm text-primary select-none">
+              <div className="animate-ring-pulse mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 font-mono text-sm text-primary select-none">
                 {spinner}
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-2">

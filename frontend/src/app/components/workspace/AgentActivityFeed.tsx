@@ -77,9 +77,14 @@ function ReasoningText({ text }: { text: string }) {
   const line = firstMeaningfulLine(text);
   if (!line) return null;
   return (
-    <p className="pl-1 text-[13px] text-muted-foreground/75 leading-5 select-none">
+    <motion.p
+      initial={{ opacity: 0, y: 3 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="pl-1 text-[13px] text-muted-foreground/75 leading-5 select-none"
+    >
       <InlineMarkdown text={line} />
-    </p>
+    </motion.p>
   );
 }
 
