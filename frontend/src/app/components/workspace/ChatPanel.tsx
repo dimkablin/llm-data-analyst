@@ -179,7 +179,7 @@ export function ChatPanel({
         : "no dataset";
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-[28px] bg-card/40 backdrop-blur-md">
+    <div className="flex h-full flex-col overflow-hidden bg-card-sunken/30 dark:bg-card/15">
       <div className="flex items-center justify-between border-b border-border/50 p-3 lg:p-5">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-lg shadow-primary/20">
