@@ -249,6 +249,8 @@ export type PersistedToolCall = {
   /** ISO timestamp of tool_end. */
   finished_at?: string;
   error?: string;
+  /** Thinking text that preceded this tool call. */
+  pre_reasoning?: string;
 };
 
 export type StreamToolCall = {

@@ -182,6 +182,7 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
     artifact_keys: p.artifact_keys,
     started_at: p.started_at ? Date.parse(p.started_at) : 0,
     output_preview: p.error ? `Error: ${p.error}` : undefined,
+    pre_reasoning: p.pre_reasoning || undefined,
   };
 }
 

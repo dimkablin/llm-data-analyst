@@ -405,7 +405,7 @@ class RAGService:
         self,
         *,
         query: str,
-        mode: str | None = None,
+        mode: str =  "naive",
         top_k: int | None = None,
     ) -> RAGQueryResult:
         """Retrieve raw context chunks from LightRAG without LLM generation.
@@ -422,7 +422,7 @@ class RAGService:
 
         request_params: dict[str, Any] = {
             "query": clean_query,
-            "mode": _clean_str(mode) or self.config.query_mode_default,
+            "mode": _clean_str(mode),
             "top_k": _coerce_positive_int(
                 top_k,
                 default=self.config.top_k_default,

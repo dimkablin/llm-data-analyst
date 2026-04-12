@@ -29,7 +29,7 @@ import type {
 } from "../../lib/backend-types";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
 import { SpinnerDisplay } from "../SpinnerDisplay";
-import { BlockTimeline } from "./blocks";
+import { BlockTimeline, ThinkingBlock } from "./blocks";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
 function Tip({ label, children }: { label: string; children: React.ReactNode }) {
@@ -500,6 +500,13 @@ function MessageBubble({
           <BlockTimeline blocks={message.blocks} />
         ) : !isUser && message.tools?.length ? (
           <ToolCallList tools={message.tools} reasoning={message.reasoning ?? undefined} />
+        ) : null}
+        {/* Thinking block from history — shown when reasoning is stored but no blocks or tools carry it */}
+        {!isUser &&
+          message.reasoning &&
+          !message.blocks?.some((b) => b.type === "thinking") &&
+          !message.tools?.length ? (
+          <ThinkingBlock content={message.reasoning} defaultCollapsed />
         ) : null}
 
         <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>

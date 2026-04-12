@@ -195,6 +195,7 @@ class ToolCollector(BaseCallbackHandler):
         self.graph_tracker: Any | None = None  # Set externally for graph visualization
         self._step_index: int = 0
         self._phase_collector_ref: Any | None = None  # For graph version bumps
+        self.token_callback: Any | None = None  # Set externally to TokenStreamingCallback
 
     def _push_event(self, event_type: str, data: Any) -> None:
         """Push event directly to SSE queue if available."""
@@ -336,13 +337,20 @@ class ToolCollector(BaseCallbackHandler):
             self.tool_names.append(tool_name)
         input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
         input_code = self._extract_input_code(input_str[:2000])
-        event = {
+        pre_reasoning = (
+            self.token_callback.take_pending_thinking()
+            if self.token_callback is not None
+            else ""
+        )
+        event: dict[str, Any] = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
             "input_preview": input_str[:360],
             "input_summary": input_summary,
             "timestamp": datetime.now(UTC).isoformat(),
         }
+        if pre_reasoning:
+            event["pre_reasoning"] = pre_reasoning
         self.events.append(event)
         push_data: dict[str, Any] = {
             "tool_name": event["tool_name"],
@@ -516,7 +524,7 @@ class ToolCollector(BaseCallbackHandler):
             phase = event.get("phase")
             tool_name = str(event.get("tool_name") or "unknown")
             if phase == "start":
-                activities.append({
+                activity: dict[str, Any] = {
                     "tool_name": tool_name,
                     "status": "done",
                     "input_summary": event.get("input_summary") or "",
@@ -524,7 +532,10 @@ class ToolCollector(BaseCallbackHandler):
                     "artifact_keys": [],
                     "started_at": event.get("timestamp"),
                     "finished_at": None,
-                })
+                }
+                if event.get("pre_reasoning"):
+                    activity["pre_reasoning"] = event["pre_reasoning"]
+                activities.append(activity)
             elif phase == "end":
                 # Pair with the last unfinished start for this tool name
                 for activity in reversed(activities):
@@ -772,6 +783,8 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Cumulative across all LLM calls (for collected_reasoning())
         self._all_reasoning: list[str] = []
         self._thinking_started_this_call: bool = False
+        # Last completed thinking block — consumed by ToolCollector on tool_start
+        self._pending_thinking: str = ""
 
     def _emit_reasoning(self, text: str) -> None:
         if not text:
@@ -791,6 +804,16 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        # Ollama streams reasoning in chunk.additional_kwargs["reasoning"] deltas.
+        chunk = kwargs.get("chunk")
+        if chunk is not None:
+            chunk_ak = getattr(chunk, "additional_kwargs", {})
+            chunk_reasoning = chunk_ak.get("reasoning", "")
+            if chunk_reasoning:
+                print(f"[thinking-debug] chunk reasoning delta len={len(chunk_reasoning)}", flush=True)
+                self._emit_reasoning(chunk_reasoning)
+            elif chunk_ak:
+                print(f"[thinking-debug] chunk ak_keys={list(chunk_ak.keys())}", flush=True)
         if not token:
             return
         visible, reasoning = self._stream_parser.feed(token)
@@ -810,6 +833,24 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Reset per-call parser so the next LLM call starts clean.
         self._stream_parser = ThinkingOutputParser()
 
+        # Ollama + Qwen3 returns thinking in the `reasoning` field of the message
+        # (OpenAI-compatible API), not as <think> tags in the token stream.
+        # If no reasoning was captured via tag parsing, extract it from the response.
+        if not self.reasoning_chunks:
+            try:
+                gen = response.generations[0][0]  # type: ignore[union-attr]
+                ak = getattr(gen.message, "additional_kwargs", {})
+                print(
+                    f"[thinking-debug] on_llm_end ak_keys={list(ak.keys())} "
+                    f"reasoning_len={len(ak.get('reasoning', '') or '')}",
+                    flush=True,
+                )
+                ollama_reasoning = ak.get("reasoning", "")
+                if ollama_reasoning:
+                    self._emit_reasoning(ollama_reasoning)
+            except (AttributeError, IndexError, TypeError) as e:
+                print(f"[thinking-debug] on_llm_end error: {e}", flush=True)
+
         # Emit thinking_end with the complete thinking block for this LLM call.
         if self.reasoning_chunks:
             complete_thinking = "".join(self.reasoning_chunks)
@@ -817,6 +858,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
                 self.loop.call_soon_threadsafe(
                     self.queue.put_nowait, ("thinking_end", complete_thinking)
                 )
+            self._pending_thinking = complete_thinking
             self.reasoning_chunks = []
             self.reasoning_tokens_emitted = 0
         self._thinking_started_this_call = False
@@ -825,5 +867,13 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         """Return all reasoning collected across every LLM call."""
         merged = "".join(self._all_reasoning).strip()
         return merged or None
+
+    def take_pending_thinking(self) -> str:
+        """Return the last completed thinking block and clear it.
+
+        Called by ToolCollector on tool_start to associate per-tool pre-reasoning.
+        """
+        thinking, self._pending_thinking = self._pending_thinking, ""
+        return thinking
 
 
