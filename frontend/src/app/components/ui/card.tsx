@@ -81,6 +81,19 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
+function CardElevated({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card"
+      className={cn(
+        "bg-card-elevated text-card-elevated-foreground flex flex-col gap-6 rounded-xl border border-border/40 py-6 shadow-md shadow-black/5 transition-shadow duration-200 hover:shadow-lg hover:shadow-black/8",
+        className
+      )}
+      {...props}
+    />
+  );
+}
+
 export {
   Card,
   CardHeader,
@@ -89,4 +102,5 @@ export {
   CardAction,
   CardDescription,
   CardContent,
+  CardElevated,
 };
