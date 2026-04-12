@@ -16,7 +16,8 @@ from backend.agent.llm_client import ThinkingAwareChatOpenAI
 logger = logging.getLogger(__name__)
 
 _PLANNER_SYSTEM_PROMPT = (
-    "You are a planning specialist. You receive a user question and available tools, then produce a clear analysis plan.\n\n"
+    "You are a planning specialist. You receive a user question and available tools, "
+    "then produce a clear analysis plan.\n\n"
     "You must NOT execute anything. Only analyze and plan.\n\n"
     "## Goal\n"
     "One sentence summary of what needs to be done.\n\n"
