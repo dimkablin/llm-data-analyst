@@ -315,5 +315,181 @@ class TestThinkingAwareChatOpenAIInvoke(unittest.TestCase):
         self.assertEqual(final.additional_kwargs.get("existing_key"), "existing_val")
 
 
+# ---------------------------------------------------------------------------
+# LLMProviderPolicy
+# ---------------------------------------------------------------------------
+
+
+class TestLLMProviderPolicy(unittest.TestCase):
+    def setUp(self) -> None:
+        from backend.core.llm_provider import get_provider_policy
+
+        self.get = get_provider_policy
+
+    # --- thinking_control_mode capability ---
+
+    def test_vllm_supports_thinking_control(self) -> None:
+        self.assertEqual(self.get("vllm").thinking_control_mode, "chat_template_kwargs")
+
+    def test_ollama_supports_thinking_control(self) -> None:
+        self.assertEqual(self.get("ollama").thinking_control_mode, "chat_template_kwargs")
+
+    def test_vllm_may_emit_orphaned_tags(self) -> None:
+        self.assertTrue(self.get("vllm").may_emit_orphaned_think_close_tags)
+
+    def test_ollama_no_orphaned_tags(self) -> None:
+        self.assertFalse(self.get("ollama").may_emit_orphaned_think_close_tags)
+
+    # --- safe default for unknown providers ---
+
+    def test_unknown_provider_safe_default(self) -> None:
+        self.assertEqual(self.get("litellm").thinking_control_mode, "none")
+
+    # --- edge inputs: case-insensitive, empty, None ---
+
+    def test_case_insensitive_vllm(self) -> None:
+        self.assertEqual(self.get("VLLM").thinking_control_mode, "chat_template_kwargs")
+
+    def test_empty_string_safe_default(self) -> None:
+        self.assertEqual(self.get("").thinking_control_mode, "none")
+
+    def test_none_safe_default(self) -> None:
+        self.assertEqual(self.get(None).thinking_control_mode, "none")  # type: ignore[arg-type]
+
+    # --- build_extra_body ---
+
+    def test_build_extra_body_enable_false(self) -> None:
+        body = self.get("vllm").build_extra_body(enable_thinking=False)
+        self.assertEqual(body, {"chat_template_kwargs": {"enable_thinking": False}})
+
+    def test_build_extra_body_enable_true(self) -> None:
+        body = self.get("ollama").build_extra_body(enable_thinking=True)
+        self.assertEqual(body, {"chat_template_kwargs": {"enable_thinking": True}})
+
+    def test_build_extra_body_unsupported_returns_empty(self) -> None:
+        body = self.get("litellm").build_extra_body(enable_thinking=True)
+        self.assertEqual(body, {})
+
+    def test_update_preserves_existing_keys(self) -> None:
+        """build_extra_body() не затрагивает top_k / num_ctx при merge через update()."""
+        extra: dict = {"top_k": 20, "num_ctx": 32768}
+        extra.update(self.get("ollama").build_extra_body(enable_thinking=False))
+        self.assertEqual(extra["top_k"], 20)
+        self.assertEqual(extra["num_ctx"], 32768)
+        self.assertIn("chat_template_kwargs", extra)
+
+    # --- config regression: vllm bug fix ---
+
+    def test_config_default_vllm_now_true(self) -> None:
+        """Регрессионный тест: баг с vllm-исключением устранён."""
+        from backend.core.config import _default_chat_template_kwargs_enabled
+
+        self.assertTrue(_default_chat_template_kwargs_enabled("vllm"))
+
+    def test_config_default_ollama_true(self) -> None:
+        from backend.core.config import _default_chat_template_kwargs_enabled
+
+        self.assertTrue(_default_chat_template_kwargs_enabled("ollama"))
+
+
+# ---------------------------------------------------------------------------
+# Thinking policy: global app + tool-level
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingPolicy(unittest.TestCase):
+    """Tests for TOOL_ENABLE_THINKING AND global llm_enable_thinking logic."""
+
+    # --- runner.py: role="tool" now sends chat_template_kwargs ---
+
+    def test_runner_role_tool_sends_thinking_kwargs(self) -> None:
+        """role='tool' must send chat_template_kwargs just like role='chat'."""
+        import inspect
+        from backend.agent.runner import AgentRunner
+        src = inspect.getsource(AgentRunner._build_llm)
+        # The old guard "role != 'tool'" must be absent
+        self.assertNotIn("role != \"tool\"", src)
+        self.assertNotIn("role != 'tool'", src)
+
+    # --- BaseExecTool: TOOL_ENABLE_THINKING ---
+
+    def test_base_exec_tool_default_thinking_off(self) -> None:
+        from backend.tools.impl.base_tool import BaseExecTool
+        self.assertFalse(BaseExecTool.TOOL_ENABLE_THINKING)
+
+    def test_effective_thinking_global_off_tool_off(self) -> None:
+        """Global=False, tool=False → effective False."""
+        from backend.tools.impl.pandas_tool import PandasTool
+        import pandas as pd
+        tool = PandasTool(pd.DataFrame(), llm_enable_thinking=False)
+        self.assertFalse(tool._llm_enable_thinking)
+
+    def test_effective_thinking_global_on_tool_off(self) -> None:
+        """Global=True, tool=False → effective False (tool default wins)."""
+        from backend.tools.impl.pandas_tool import PandasTool
+        import pandas as pd
+        tool = PandasTool(pd.DataFrame(), llm_enable_thinking=True)
+        self.assertFalse(tool._llm_enable_thinking)
+
+    def test_effective_thinking_global_off_tool_on(self) -> None:
+        """Global=False, tool=True → effective False (global is master switch)."""
+        from backend.tools.impl.base_tool import BaseExecTool
+        import pandas as pd
+
+        class ThinkingTool(BaseExecTool):
+            name: str = "thinking_tool"
+            description: str = "test"
+            TOOL_ENABLE_THINKING = True
+
+            def _run(self, *a, **kw):  # type: ignore[override]
+                return "", {}
+
+        tool = ThinkingTool(pd.DataFrame(), llm_enable_thinking=False)
+        self.assertFalse(tool._llm_enable_thinking)
+
+    def test_effective_thinking_global_on_tool_on(self) -> None:
+        """Global=True, tool=True → effective True."""
+        from backend.tools.impl.base_tool import BaseExecTool
+        import pandas as pd
+
+        class ThinkingTool(BaseExecTool):
+            name: str = "thinking_tool2"
+            description: str = "test"
+            TOOL_ENABLE_THINKING = True
+
+            def _run(self, *a, **kw):  # type: ignore[override]
+                return "", {}
+
+        tool = ThinkingTool(pd.DataFrame(), llm_enable_thinking=True)
+        self.assertTrue(tool._llm_enable_thinking)
+
+    # --- per-tool defaults ---
+
+    def test_pandas_tool_thinking_off(self) -> None:
+        from backend.tools.impl.pandas_tool import PandasTool
+        self.assertFalse(PandasTool.TOOL_ENABLE_THINKING)
+
+    def test_plotly_tool_thinking_off(self) -> None:
+        from backend.tools.impl.plotly_tool import PlotlyTool
+        self.assertFalse(PlotlyTool.TOOL_ENABLE_THINKING)
+
+    def test_value_tool_thinking_off(self) -> None:
+        from backend.tools.impl.value_tool import ValueTool
+        self.assertFalse(ValueTool.TOOL_ENABLE_THINKING)
+
+    def test_sql_table_service_thinking_off(self) -> None:
+        from backend.data_access.sql_table_service import SQLTableService
+        self.assertFalse(SQLTableService.TOOL_ENABLE_THINKING)
+
+    # --- SQLTableService: effective thinking ---
+
+    def test_sql_service_global_on_tool_off_is_false(self) -> None:
+        """SQLTableService.TOOL_ENABLE_THINKING=False gates global setting."""
+        from backend.data_access.sql_table_service import SQLTableService
+        # global=True but TOOL_ENABLE_THINKING=False → effective False
+        effective = True and SQLTableService.TOOL_ENABLE_THINKING
+        self.assertFalse(effective)
+
+
 if __name__ == "__main__":
     unittest.main()

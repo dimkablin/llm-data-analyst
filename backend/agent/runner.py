@@ -32,6 +32,7 @@ from backend.agent.prompts import (
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
 from backend.core.config import DEPTH_PROFILES, Settings
+from backend.core.llm_provider import get_provider_policy
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
@@ -419,8 +420,11 @@ class AgentRunner:
             max_tokens = self.settings.llm_max_tokens_reasoning
 
         extra_body: dict[str, Any] = {}
-        if self.settings.llm_chat_template_kwargs_enabled and role != "tool":
-            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        if self.settings.llm_chat_template_kwargs_enabled:
+            extra_body.update(
+                get_provider_policy(self.settings.llm_provider)
+                .build_extra_body(enable_thinking=enable_thinking)
+            )
         if self.settings.llm_top_k > 0:
             extra_body["top_k"] = self.settings.llm_top_k
         if self.settings.llm_num_ctx > 0:

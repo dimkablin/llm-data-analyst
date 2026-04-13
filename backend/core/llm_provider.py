@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+
+@dataclass(frozen=True)
+class LLMProviderPolicy:
+    """Описывает provider-specific поведение для управления thinking-режимом.
+
+    Верхние слои (runner, tools, services) используют этот объект вместо
+    прямых проверок вида ``if provider == "vllm"``.
+    """
+
+    # "chat_template_kwargs" — провайдер принимает поле в extra_body.
+    # "none"               — thinking toggle не поддерживается / не нужен.
+    thinking_control_mode: Literal["chat_template_kwargs", "none"]
+
+    # Diagnostic-only: vllm стриппит <think> server-side → orphaned </think>.
+    # ThinkingOutputParser уже обрабатывает это генерически (коммит 34b408d).
+    # Поле документирует поведение провайдера, не управляет runtime-логикой.
+    may_emit_orphaned_think_close_tags: bool
+
+    def build_extra_body(self, *, enable_thinking: bool) -> dict[str, Any]:
+        """Возвращает provider-specific фрагмент extra_body для thinking-toggle.
+
+        Возвращает пустой dict, если провайдер не поддерживает управление thinking.
+        Caller: ``extra_body.update(policy.build_extra_body(enable_thinking=...))``.
+        """
+        if self.thinking_control_mode == "chat_template_kwargs":
+            return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        return {}
+
+
+_POLICIES: dict[str, LLMProviderPolicy] = {
+    "ollama": LLMProviderPolicy(
+        thinking_control_mode="chat_template_kwargs",
+        may_emit_orphaned_think_close_tags=False,
+    ),
+    "vllm": LLMProviderPolicy(
+        thinking_control_mode="chat_template_kwargs",
+        may_emit_orphaned_think_close_tags=True,
+    ),
+}
+
+# Safe default для неизвестных провайдеров (LiteLLM-прокси и т.п.).
+# thinking_control_mode="none" → build_extra_body() вернёт {} → no extra_body poisoning.
+_DEFAULT_POLICY = LLMProviderPolicy(
+    thinking_control_mode="none",
+    may_emit_orphaned_think_close_tags=False,
+)
+
+
+def get_provider_policy(provider: str | None) -> LLMProviderPolicy:
+    """Возвращает политику провайдера.
+
+    None / "" / неизвестное имя → safe default (thinking_control_mode="none").
+    """
+    return _POLICIES.get(str(provider or "").strip().lower(), _DEFAULT_POLICY)

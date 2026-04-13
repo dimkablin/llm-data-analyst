@@ -4,7 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,6 +13,7 @@ from backend.agent.callbacks import strip_thinking
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.core.config import settings
+from backend.core.llm_provider import get_provider_policy
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import (
@@ -168,6 +169,10 @@ def _shrink_for_cell_budget(
 
 
 class SQLTableService:
+    # Thinking default for SQL generation LLM calls.
+    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False
+
     def __init__(
         self,
         *,
@@ -176,6 +181,7 @@ class SQLTableService:
         llm_api_key: str | None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
@@ -198,9 +204,14 @@ class SQLTableService:
             "timeout": 120.0,
         }
         if llm_chat_template_kwargs_enabled:
-            llm_kwargs["extra_body"] = {
-                "chat_template_kwargs": {"enable_thinking": llm_enable_thinking}
-            }
+            # effective = global setting AND this service's class default
+            effective_thinking = llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING
+            _eb: dict[str, Any] = dict(llm_kwargs.get("extra_body") or {})
+            _eb.update(
+                get_provider_policy(llm_provider).build_extra_body(enable_thinking=effective_thinking)
+            )
+            if _eb:
+                llm_kwargs["extra_body"] = _eb
         self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
 
     def _db_helper(self) -> DBAnalyticsHelper:

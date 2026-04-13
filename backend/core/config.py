@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse, urlunparse
 
+from backend.core.llm_provider import get_provider_policy
+
 _log = logging.getLogger(__name__)
 
 # Single source of truth for analysis depth limits.
@@ -115,7 +117,7 @@ def _resolve_llm_api_key(provider: str) -> str:
 
 
 def _default_chat_template_kwargs_enabled(provider: str) -> bool:
-    return provider != "vllm"
+    return get_provider_policy(provider).thinking_control_mode != "none"
 
 
 _LLM_PROVIDER = _resolve_llm_provider()
