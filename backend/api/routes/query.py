@@ -698,6 +698,10 @@ async def _execute_query(
     user_memory = _user_memory_service.load(current_user.id)
     from backend.sessions.session_memory import SessionMemory as _SessionMemory
     session_memory = _SessionMemory(notes=state.session_memory or "")
+    # TODO(perf): A new AgentRunner (and a new compiled LangGraph) is built on every
+    # request because node functions are bound methods that capture `self`.  Fix:
+    # move all per-request data into AgentGraphState so nodes can be static and the
+    # compiled graph can be shared at class level.
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -915,6 +919,7 @@ async def query_stream(
     user_memory = _user_memory_service.load(current_user.id)
     from backend.sessions.session_memory import SessionMemory as _SessionMemory
     session_memory = _SessionMemory(notes=state.session_memory or "")
+    # TODO(perf): See same comment in query endpoint — graph recompilation per request.
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,

@@ -10,17 +10,14 @@ from utils.params_manager import params_manager
 
 load_dotenv()
 
+# set_page_config MUST be the first Streamlit call in the script.
+st.set_page_config(
+    page_title="LLM Data Analyst", layout="wide", initial_sidebar_state="expanded"
+)
+
+
 @st.cache_data
 def load_css(file_path: str) -> str:
-    """
-    Загружает CSS из файла.
-
-    Args:
-        file_path (str): Путь к CSS-файлу.
-
-    Returns:
-        str: Содержимое CSS-файла.
-    """
     with open(file_path, encoding="utf-8") as f:
         return f.read()
 
@@ -49,13 +46,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 def main() -> None:
-    """
-    Основная функция приложения. Запускает Streamlit-интерфейс и инициализирует агента.
-    """
-    st.set_page_config(
-        page_title="LLM Data Analyst", layout="wide", initial_sidebar_state="expanded"
-    )
 
     render_sidebar()
 

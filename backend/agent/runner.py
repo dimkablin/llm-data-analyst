@@ -152,8 +152,6 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
         logger.exception("%s failed", where)
 
 def _build_tool_message_text(result: object) -> str:
-    import json
-
     def _short(obj: object, limit: int = 1600) -> str:
         try:
             text = json.dumps(obj, ensure_ascii=False, default=str, indent=2)

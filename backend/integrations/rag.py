@@ -47,7 +47,12 @@ def _ssl_context_for_url(url: str, *, verify_ssl: bool) -> ssl.SSLContext | None
         return None
     if verify_ssl:
         return ssl.create_default_context()
-    return ssl._create_unverified_context()  # noqa: SLF001
+    # Intentionally bypass certificate verification for internal RAG endpoints.
+    # Use RAG_VERIFY_SSL=true in production when a valid cert is available.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 @dataclass(frozen=True)

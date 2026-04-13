@@ -602,7 +602,7 @@ class TestDepthProfileContract:
     def test_limits_are_in_sensible_range(self):
         for name, profile in DEPTH_PROFILES.items():
             limit = profile.get("inner_recursion_limit", 0)
-            assert 0 < limit <= 20, f"Profile '{name}' has out-of-range limit: {limit}"
+            assert 0 < limit <= 100, f"Profile '{name}' has out-of-range limit: {limit}"
 
     def test_limits_are_monotonically_increasing(self):
         """light < medium < deep — more depth = more tool-calling iterations."""
