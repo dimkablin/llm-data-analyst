@@ -120,7 +120,7 @@ export function ToolUseBlock({
                 {status === "error" ? "Error" : "Output"}
               </span>
               {status === "error" ? (
-                <div className="overflow-x-auto rounded border px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap border-destructive/20 bg-destructive/5 text-destructive/80">
+                <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
                   {output_preview}
                 </div>
               ) : (

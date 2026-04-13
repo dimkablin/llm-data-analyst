@@ -152,7 +152,10 @@ class PlotlyTool(BaseExecTool):
     artifact_name: str = "plot"
     human_name: str = "графиков"
     description: str = plotly_tool_prompt
-    allowed_libs: set[str] = {"plotly", "pandas", "numpy"}
+    allowed_libs: set[str] = {
+        "plotly", "pandas", "numpy",
+        "datetime", "math", "statistics", "calendar", "collections", "itertools", "re",
+    }
     allowed_artifact_types: tuple = (go.Figure,)
 
     def __init__(

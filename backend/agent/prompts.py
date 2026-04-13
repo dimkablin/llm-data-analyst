@@ -198,6 +198,9 @@ Variables you create (e.g. `agg = df.groupby("col").sum()`) are automatically av
 plotly_tool_prompt = """Plotly chart tool. Input: Python code executed in session sandbox.
 Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `px`, `go`, `chart`, `pd`, `np`. If DB connected: `db`, `db_connection`.
 All variables from previous tool calls persist in sandbox — use them directly instead of recalculating.
+Allowed stdlib modules: `datetime` (date/time parsing and formatting), `math` (sin, cos, log, ceil, floor, etc.),
+`statistics` (mean, median, stdev, etc.), `calendar` (month/week helpers), `collections` (Counter, defaultdict),
+`itertools` (groupby, combinations, etc.), `re` (regex for string field parsing).
 Create `fig` (plotly Figure), then: `tool_result = chart.result(fig, artifact_name="chart_name")`.
 Last line: `tool_result`.
 """

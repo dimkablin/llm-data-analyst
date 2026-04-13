@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 from langchain_core.messages import BaseMessage
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_openai import ChatOpenAI
 
 from backend.agent.callbacks import ThinkingOutputParser
@@ -35,6 +36,57 @@ class ThinkingAwareChatOpenAI(ChatOpenAI):
     * Case-insensitive tags (``<THINK>``, ``</Think>``, …)
     * No ``<think>`` at all — content passes through unchanged
     """
+
+    # ------------------------------------------------------------------
+    # Ollama reasoning extraction — inject into additional_kwargs so
+    # TokenStreamingCallback can emit thinking events via on_llm_new_token
+    # and on_llm_end.
+    # ------------------------------------------------------------------
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict,
+        default_chunk_class: type,
+        base_generation_info: dict | None,
+    ) -> ChatGenerationChunk | None:
+        gen_chunk = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if gen_chunk is None:
+            return None
+        try:
+            choices = chunk.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta") or {}
+                ollama_reasoning = delta.get("reasoning") or ""
+                if ollama_reasoning:
+                    gen_chunk.message.additional_kwargs["reasoning"] = ollama_reasoning
+        except (AttributeError, IndexError, TypeError):
+            pass
+        return gen_chunk
+
+    def _create_chat_result(
+        self,
+        response: dict | Any,
+        generation_info: dict | None = None,
+    ) -> ChatResult:
+        result = super()._create_chat_result(response, generation_info)
+        try:
+            response_dict = (
+                response if isinstance(response, dict) else response.model_dump()
+            )
+            ollama_reasoning = (
+                response_dict.get("choices", [{}])[0]
+                .get("message", {})
+                .get("reasoning", "")
+            ) or ""
+            if ollama_reasoning and result.generations:
+                ak = result.generations[0].message.additional_kwargs
+                if "reasoning" not in ak:
+                    ak["reasoning"] = ollama_reasoning
+        except (AttributeError, IndexError, TypeError):
+            pass
+        return result
 
     # ------------------------------------------------------------------
     # Sync / async single-response paths

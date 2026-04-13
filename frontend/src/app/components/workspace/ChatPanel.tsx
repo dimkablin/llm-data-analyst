@@ -219,7 +219,7 @@ export function ChatPanel({
 
       <div
         ref={scrollContainerRef}
-        className="custom-scrollbar flex-1 overflow-y-auto p-3 lg:p-4 xl:p-6"
+        className="custom-scrollbar flex-1 overflow-x-hidden overflow-y-auto p-3 lg:p-4 xl:p-6"
       >
         <div className="space-y-4 xl:space-y-6">
           {messages.length === 0 ? (

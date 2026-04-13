@@ -804,16 +804,13 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
-        # Ollama streams reasoning in chunk.additional_kwargs["reasoning"] deltas.
+        # Ollama streams reasoning in ChatGenerationChunk.message.additional_kwargs["reasoning"].
         chunk = kwargs.get("chunk")
         if chunk is not None:
-            chunk_ak = getattr(chunk, "additional_kwargs", {})
-            chunk_reasoning = chunk_ak.get("reasoning", "")
+            msg = getattr(chunk, "message", None)
+            chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
             if chunk_reasoning:
-                print(f"[thinking-debug] chunk reasoning delta len={len(chunk_reasoning)}", flush=True)
                 self._emit_reasoning(chunk_reasoning)
-            elif chunk_ak:
-                print(f"[thinking-debug] chunk ak_keys={list(chunk_ak.keys())}", flush=True)
         if not token:
             return
         visible, reasoning = self._stream_parser.feed(token)
@@ -840,16 +837,11 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             try:
                 gen = response.generations[0][0]  # type: ignore[union-attr]
                 ak = getattr(gen.message, "additional_kwargs", {})
-                print(
-                    f"[thinking-debug] on_llm_end ak_keys={list(ak.keys())} "
-                    f"reasoning_len={len(ak.get('reasoning', '') or '')}",
-                    flush=True,
-                )
-                ollama_reasoning = ak.get("reasoning", "")
+                ollama_reasoning = (ak or {}).get("reasoning", "")
                 if ollama_reasoning:
                     self._emit_reasoning(ollama_reasoning)
-            except (AttributeError, IndexError, TypeError) as e:
-                print(f"[thinking-debug] on_llm_end error: {e}", flush=True)
+            except (AttributeError, IndexError, TypeError):
+                pass
 
         # Emit thinking_end with the complete thinking block for this LLM call.
         if self.reasoning_chunks:
@@ -875,5 +867,3 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         """
         thinking, self._pending_thinking = self._pending_thinking, ""
         return thinking
-
-
