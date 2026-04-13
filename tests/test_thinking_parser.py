@@ -491,5 +491,181 @@ class TestThinkingPolicy(unittest.TestCase):
         self.assertFalse(effective)
 
 
+class TestReasoningSteps(unittest.TestCase):
+    """Tests for per-step reasoning persistence pipeline."""
+
+    # ── callbacks: all_reasoning_steps() ─────────────────────────────────────
+
+    def _make_handler(self):
+        import asyncio
+        from backend.agent.callbacks import TokenStreamCallbackHandler
+        loop = asyncio.new_event_loop()
+        q: asyncio.Queue = asyncio.Queue()
+        return TokenStreamCallbackHandler(q, loop, show_think=True)
+
+    def test_all_reasoning_steps_empty(self):
+        h = self._make_handler()
+        self.assertEqual(h.all_reasoning_steps(), [])
+
+    def test_all_reasoning_steps_one_step(self):
+        h = self._make_handler()
+        h.reasoning_chunks = ["think step 1"]
+        # Simulate on_llm_end completing the step
+        complete = "".join(h.reasoning_chunks)
+        h._pending_thinking = complete
+        h._per_step_reasoning.append(complete)
+        h.reasoning_chunks = []
+        self.assertEqual(h.all_reasoning_steps(), ["think step 1"])
+
+    def test_all_reasoning_steps_multiple(self):
+        h = self._make_handler()
+        h._per_step_reasoning = ["step A", "step B", "step C"]
+        self.assertEqual(h.all_reasoning_steps(), ["step A", "step B", "step C"])
+
+    def test_all_reasoning_steps_returns_copy(self):
+        """Mutation of returned list must not affect internal state."""
+        h = self._make_handler()
+        h._per_step_reasoning = ["step X"]
+        result = h.all_reasoning_steps()
+        result.append("injected")
+        self.assertEqual(h._per_step_reasoning, ["step X"])
+
+    # ── _build_reasoning_steps helper ────────────────────────────────────────
+
+    def _build(self, raw_steps, tool_names=None):
+        from backend.api.routes.query import _build_reasoning_steps
+        return _build_reasoning_steps(raw_steps, tool_names or [])
+
+    def test_build_steps_empty_input(self):
+        self.assertEqual(self._build([]), [])
+
+    def test_build_steps_single_step_no_tool(self):
+        steps = self._build(["final answer thinking"])
+        self.assertEqual(len(steps), 1)
+        # Single step with no tool call → treated as final_synthesis (is_last=True, has_tool=False)
+        self.assertEqual(steps[0].kind, "final_synthesis")
+        self.assertIsNone(steps[0].tool_name)
+
+    def test_build_steps_kinds_multi(self):
+        raw = ["plan thinking", "tool thinking", "final thinking"]
+        steps = self._build(raw, tool_names=["sql_tool", "plotly_tool"])
+        # first → planning, middle → tool_synthesis, last (no tool) → final_synthesis
+        self.assertEqual(steps[0].kind, "planning")
+        self.assertEqual(steps[1].kind, "tool_synthesis")
+        self.assertEqual(steps[2].kind, "final_synthesis")
+
+    def test_build_steps_tool_name_association(self):
+        raw = ["plan", "tool1 think", "tool2 think"]
+        steps = self._build(raw, tool_names=["sql_tool", "plotly_tool"])
+        self.assertEqual(steps[0].tool_name, "sql_tool")
+        self.assertEqual(steps[1].tool_name, "plotly_tool")
+        self.assertIsNone(steps[2].tool_name)
+
+    def test_build_steps_max_limit(self):
+        from backend.agent.reasoning import MAX_REASONING_STEPS
+        raw = [f"step {i}" for i in range(MAX_REASONING_STEPS + 5)]
+        steps = self._build(raw)
+        self.assertLessEqual(len(steps), MAX_REASONING_STEPS)
+
+    def test_build_steps_content_truncated(self):
+        from backend.agent.reasoning import MAX_STEP_CONTENT_LEN
+        long_content = "x" * (MAX_STEP_CONTENT_LEN + 100)
+        steps = self._build([long_content])
+        self.assertLessEqual(len(steps[0].content), MAX_STEP_CONTENT_LEN + 1)  # +1 for "…"
+        self.assertTrue(steps[0].content.endswith("…"))
+
+    def test_build_steps_empty_steps_skipped(self):
+        raw = ["real step", "   ", "", "another real"]
+        steps = self._build(raw, tool_names=["tool"])
+        contents = [s.content for s in steps]
+        self.assertNotIn("   ", contents)
+        self.assertNotIn("", contents)
+        self.assertEqual(len(steps), 2)
+
+    def test_build_steps_step_index_preserved(self):
+        raw = ["step0", "step1", "step2"]
+        steps = self._build(raw, tool_names=["t1", "t2"])
+        for i, step in enumerate(steps):
+            self.assertEqual(step.step_index, i)
+
+    # ── ReasoningStep serde ───────────────────────────────────────────────────
+
+    def test_reasoning_step_to_dict_round_trip(self):
+        from backend.agent.reasoning import ReasoningStep
+        original = ReasoningStep(step_index=2, kind="tool_synthesis", content="hello", tool_name="sql_tool")
+        restored = ReasoningStep.from_dict(original.to_dict())
+        self.assertEqual(original.step_index, restored.step_index)
+        self.assertEqual(original.kind, restored.kind)
+        self.assertEqual(original.content, restored.content)
+        self.assertEqual(original.tool_name, restored.tool_name)
+
+    def test_reasoning_step_to_dict_no_tool_name(self):
+        from backend.agent.reasoning import ReasoningStep
+        step = ReasoningStep(step_index=0, kind="planning", content="plan")
+        d = step.to_dict()
+        self.assertNotIn("tool_name", d)
+
+    def test_reasoning_step_from_dict_tolerant(self):
+        """from_dict must not raise on missing keys."""
+        from backend.agent.reasoning import ReasoningStep
+        step = ReasoningStep.from_dict({})
+        self.assertEqual(step.step_index, 0)
+        self.assertEqual(step.kind, "unknown")
+        self.assertEqual(step.content, "")
+        self.assertIsNone(step.tool_name)
+
+    def test_reasoning_step_truncated(self):
+        from backend.agent.reasoning import MAX_STEP_CONTENT_LEN, ReasoningStep
+        step = ReasoningStep(step_index=0, content="a" * (MAX_STEP_CONTENT_LEN + 50))
+        t = step.truncated()
+        self.assertEqual(len(t.content), MAX_STEP_CONTENT_LEN + 1)  # +1 for "…"
+        self.assertTrue(t.content.endswith("…"))
+
+    def test_reasoning_step_truncated_short_unchanged(self):
+        from backend.agent.reasoning import ReasoningStep
+        step = ReasoningStep(step_index=0, content="short")
+        self.assertIs(step.truncated(), step)  # same object returned
+
+    # ── persistence wiring ────────────────────────────────────────────────────
+
+    def test_session_store_persists_reasoning_steps(self):
+        import tempfile
+        from backend.sessions.session_store import SessionStore
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(root_dir=tmpdir, ttl_days=1)
+            created = store.create_session()
+            sid = created.session_id
+            steps = [{"step_index": 0, "kind": "planning", "content": "think"}]
+            store.add_chat_message(sid, "ai", "hello", reasoning_steps=steps)
+            state = store._load_state(sid)
+            last = state.chat_history[-1]
+            self.assertIn("reasoning_steps", last)
+            self.assertEqual(last["reasoning_steps"][0]["kind"], "planning")
+
+    def test_session_store_omits_reasoning_steps_when_none(self):
+        import tempfile
+        from backend.sessions.session_store import SessionStore
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(root_dir=tmpdir, ttl_days=1)
+            created = store.create_session()
+            sid = created.session_id
+            store.add_chat_message(sid, "ai", "hello")
+            state = store._load_state(sid)
+            last = state.chat_history[-1]
+            self.assertNotIn("reasoning_steps", last)
+
+    # ── backward compat ───────────────────────────────────────────────────────
+
+    def test_agentresponse_reasoning_steps_default_empty(self):
+        from backend.agent.runner import AgentResponse
+        resp = AgentResponse(final_text="hi", reasoning=None, artifacts=[])
+        self.assertEqual(resp.reasoning_steps, [])
+
+    def test_agentresponse_reasoning_steps_set(self):
+        from backend.agent.runner import AgentResponse
+        resp = AgentResponse(final_text="hi", reasoning="r", artifacts=[], reasoning_steps=["step1", "step2"])
+        self.assertEqual(resp.reasoning_steps, ["step1", "step2"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -306,6 +306,7 @@ class SessionStore:
         *,
         artifacts: list[dict[str, Any]] | None = None,
         reasoning: str | None = None,
+        reasoning_steps: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._get_session_lock(session_id):
@@ -322,6 +323,8 @@ class SessionStore:
                 payload["artifacts"] = artifacts
             if reasoning:
                 payload["reasoning"] = reasoning
+            if reasoning_steps:
+                payload["reasoning_steps"] = reasoning_steps
             if tools:
                 payload["tools"] = tools
             state.chat_history.append(payload)

@@ -495,19 +495,35 @@ function MessageBubble({
       </div>
 
       <div className={`flex min-w-0 max-w-[88%] flex-col gap-1.5 ${isUser ? "items-end" : ""}`}>
-        {/* Block timeline (new) or legacy tool list — Claude Code style */}
+        {/* Live streaming: BlockTimeline (thinking interleaved with tool calls) */}
         {!isUser && message.blocks?.length ? (
           <BlockTimeline blocks={message.blocks} />
-        ) : !isUser && message.tools?.length ? (
-          <ToolCallList tools={message.tools} reasoning={message.reasoning ?? undefined} />
-        ) : null}
-        {/* Thinking block from history — shown when reasoning is stored but no blocks or tools carry it */}
-        {!isUser &&
-          message.reasoning &&
-          !message.blocks?.some((b) => b.type === "thinking") &&
-          !message.tools?.length ? (
-          <ThinkingBlock content={message.reasoning} defaultCollapsed />
-        ) : null}
+        ) : (
+          <>
+            {/* Reload: per-step thinking blocks rendered above ToolCallList */}
+            {!isUser && message.reasoning_steps?.length
+              ? message.reasoning_steps.map((step) => (
+                  <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
+                ))
+              : null}
+            {/* Tool call list — reasoning omitted when reasoning_steps present (avoids CoT duplication) */}
+            {!isUser && message.tools?.length ? (
+              <ToolCallList
+                tools={message.tools}
+                reasoning={
+                  message.reasoning_steps?.length ? undefined : (message.reasoning ?? undefined)
+                }
+              />
+            ) : null}
+            {/* Backward compat: old messages without reasoning_steps and without tools */}
+            {!isUser &&
+              message.reasoning &&
+              !message.reasoning_steps?.length &&
+              !message.tools?.length ? (
+              <ThinkingBlock content={message.reasoning} defaultCollapsed />
+            ) : null}
+          </>
+        )}
 
         <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />

@@ -269,6 +269,7 @@ class AgentResponse:
     tool_calls: int = 0
     tool_names: list[str] = field(default_factory=list)
     llm_unreachable: bool = False
+    reasoning_steps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1800,6 +1801,7 @@ class AgentRunner:
         total_tool_calls = 0
         final_text = ""
         reasoning = None
+        reasoning_steps: list[str] = []
         _limit_reached = False
 
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
@@ -1822,6 +1824,7 @@ class AgentRunner:
                     return AgentResponse(
                         final_text=self._artifacts_recovery_text(artifacts) or _LLM_UNAVAILABLE_USER_TEXT,
                         reasoning=str(exc),
+                        reasoning_steps=[],
                         artifacts=artifacts,
                         route="analysis",
                         tool_calls=total_tool_calls + tc,
@@ -1830,8 +1833,11 @@ class AgentRunner:
                     )
                 raise
 
-            if reasoning is None:
-                reasoning = response.additional_kwargs.get("reasoning") or None
+            step_r = response.additional_kwargs.get("reasoning") or None
+            if step_r:
+                reasoning_steps.append(step_r)
+                if reasoning is None:
+                    reasoning = step_r  # backward compat: первый шаг → reasoning поле
 
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
@@ -1889,6 +1895,7 @@ class AgentRunner:
         return AgentResponse(
             final_text=final_text.strip(),
             reasoning=reasoning,
+            reasoning_steps=reasoning_steps,
             artifacts=artifacts,
             route="analysis",
             tool_calls=total_tool_calls,

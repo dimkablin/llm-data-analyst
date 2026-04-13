@@ -194,6 +194,7 @@ function toChatMessages(
     content: string;
     timestamp: string;
     reasoning?: string | null;
+    reasoning_steps?: import("../lib/backend-types").PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
     tools?: PersistedToolCall[];
   }>,
@@ -205,6 +206,7 @@ function toChatMessages(
     role: item.role === "user" ? "user" : ("assistant" as const),
     content: item.content,
     reasoning: item.reasoning ?? null,
+    reasoning_steps: item.reasoning_steps ?? null,
     artifacts: item.artifacts ?? [],
     tools: item.tools?.length ? item.tools.map(persistedToolToStream) : undefined,
   }));

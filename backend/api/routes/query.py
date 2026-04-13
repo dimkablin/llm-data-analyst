@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
+from backend.agent.reasoning import MAX_REASONING_STEPS, ReasoningStep
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
@@ -516,6 +517,39 @@ def _merge_reasoning_text(*parts: str | None) -> str | None:
     return "\n\n".join(normalized)
 
 
+def _build_reasoning_steps(
+    raw_steps: list[str],
+    tool_names: list[str],
+) -> list[ReasoningStep]:
+    """Преобразует list[str] в list[ReasoningStep] с авто-детекцией kind.
+
+    tool_names — список инструментов, вызванных в ходе ответа (по порядку).
+    Шаг i предшествовал вызову tool_names[i], если i < len(tool_names).
+    Последний шаг без следующего tool_call = final_synthesis.
+    """
+    steps = raw_steps[:MAX_REASONING_STEPS]
+    result: list[ReasoningStep] = []
+    for i, content in enumerate(steps):
+        if not content.strip():
+            continue
+        has_tool = i < len(tool_names)
+        is_last = i == len(steps) - 1
+        if i == 0 and len(steps) > 1:
+            kind: str = "planning"
+        elif is_last and not has_tool:
+            kind = "final_synthesis"
+        else:
+            kind = "tool_synthesis"
+        step = ReasoningStep(
+            step_index=i,
+            kind=kind,  # type: ignore[arg-type]
+            content=content,
+            tool_name=tool_names[i] if has_tool else None,
+        ).truncated()
+        result.append(step)
+    return result
+
+
 def _extract_tool_code_preview(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -987,6 +1021,8 @@ async def query_stream(
                 response.reasoning,
                 streamed_reasoning,
             )
+            raw_steps = token_collector.all_reasoning_steps() or response.reasoning_steps
+            reasoning_steps = _build_reasoning_steps(raw_steps, response.tool_names)
             try:
                 from backend.artifacts.bridge import execution_to_api_payload
 
@@ -1008,6 +1044,7 @@ async def query_stream(
                     response.final_text,
                     artifacts=artifacts,
                     reasoning=effective_reasoning,
+                    reasoning_steps=[s.to_dict() for s in reasoning_steps] or None,
                     tools=tool_collector.to_persisted_activities() or None,
                 )
                 _store.add_artifacts(session_id, response.artifacts)

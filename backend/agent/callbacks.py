@@ -785,6 +785,8 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self._thinking_started_this_call: bool = False
         # Last completed thinking block — consumed by ToolCollector on tool_start
         self._pending_thinking: str = ""
+        # Per-step reasoning: one entry per on_llm_end that had thinking
+        self._per_step_reasoning: list[str] = []
 
     def _emit_reasoning(self, text: str) -> None:
         if not text:
@@ -851,6 +853,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
                     self.queue.put_nowait, ("thinking_end", complete_thinking)
                 )
             self._pending_thinking = complete_thinking
+            self._per_step_reasoning.append(complete_thinking)
             self.reasoning_chunks = []
             self.reasoning_tokens_emitted = 0
         self._thinking_started_this_call = False
@@ -859,6 +862,10 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         """Return all reasoning collected across every LLM call."""
         merged = "".join(self._all_reasoning).strip()
         return merged or None
+
+    def all_reasoning_steps(self) -> list[str]:
+        """Raw reasoning text per LLM call (one entry per on_llm_end with thinking)."""
+        return list(self._per_step_reasoning)
 
     def take_pending_thinking(self) -> str:
         """Return the last completed thinking block and clear it.
