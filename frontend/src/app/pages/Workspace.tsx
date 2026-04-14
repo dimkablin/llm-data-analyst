@@ -17,7 +17,6 @@ import {
   getRuntimeModelProfile,
   getSession,
   listSessions,
-  listSkills,
   uploadCsv,
 } from "../lib/backend-api";
 import { exportChatHistory } from "../lib/chat-export";
@@ -26,7 +25,6 @@ import type {
   RuntimeModelProfile,
   SessionSourceState,
   SessionState,
-  Skill,
 } from "../lib/backend-types";
 import { summarizeError } from "../lib/format";
 
@@ -48,8 +46,6 @@ export function Workspace() {
   const [pinnedArtifactIds, setPinnedArtifactIds] = useState<string[]>([]);
   const [modelProfile, setModelProfile] = useState<RuntimeModelProfile | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [availableSkills, setAvailableSkills] = useState<Skill[]>([]);
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
 
   const {
     bindChatAgent,
@@ -81,29 +77,15 @@ export function Workspace() {
   }, []);
 
   useEffect(() => {
-    listSkills()
-      .then(setAvailableSkills)
-      .catch(() => {/* skills unavailable — не блокируем UI */});
-  }, []);
-
-  const handleToggleSkill = useCallback((skillId: string) => {
-    setSelectedSkillIds((prev) =>
-      prev.includes(skillId) ? prev.filter((id) => id !== skillId) : [...prev, skillId],
-    );
-  }, []);
-
-  useEffect(() => {
     bindChatAgent({
       sessionId,
       includeReasoning: settings.default_include_reasoning,
       useHistory: true,
       analysisDepth: settings.analysis_depth,
-      selectedSkillIds,
     });
   }, [
     bindChatAgent,
     sessionId,
-    selectedSkillIds,
     settings.analysis_depth,
     settings.default_include_reasoning,
   ]);
@@ -268,7 +250,7 @@ return (
     <div className="relative overflow-hidden bg-background font-sans text-foreground" style={{ height: "calc(100vh / var(--ui-zoom, 1))" }}>
       <Navigation />
 
-      <div className="absolute inset-x-0 bottom-0 top-14 flex min-h-0 overflow-hidden px-2 pb-2 pt-2 sm:top-16 lg:px-3 lg:pb-3 lg:pt-3 xl:px-6 xl:pb-6 xl:pt-5">
+      <div className="absolute inset-x-0 bottom-0 top-14 flex min-h-0 overflow-hidden sm:top-16">
         <ResizablePanelGroup
           direction="horizontal"
           autoSaveId="workspace-layout-v2"
@@ -278,7 +260,7 @@ return (
             <motion.div
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="h-full min-h-0 overflow-hidden rounded-2xl border border-border/40 bg-card/70 p-3 pt-4 shadow-none lg:rounded-[28px] lg:p-5 lg:pt-6 xl:p-8 xl:pt-10 dark:bg-card/10 dark:shadow-[0_16px_48px_rgba(0,0,0,0.14)]"
+              className="h-full min-h-0 overflow-hidden p-3 pt-3 lg:p-5 lg:pt-4 xl:p-8 xl:pt-6"
             >
               <DashboardPanel
                 sessionId={sessionId}
@@ -299,16 +281,13 @@ return (
             </motion.div>
           </ResizablePanel>
 
-          <ResizableHandle
-            withHandle
-            className="mx-1 my-2 w-2 bg-transparent after:w-2 after:rounded-full after:bg-border/50 transition-colors hover:after:bg-primary/40 data-[resize-handle-state=drag]:after:bg-primary/70 lg:mx-3"
-          />
+          <ResizableHandle className="w-px bg-border/40 transition-colors hover:bg-primary/40 data-[resize-handle-state=drag]:bg-primary/60" />
 
           <ResizablePanel defaultSize={38} minSize={26} maxSize={60}>
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border/40 bg-card/75 shadow-none backdrop-blur-3xl lg:rounded-[28px] dark:bg-card/20 dark:shadow-2xl"
+              className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden border-l border-border/30"
             >
               <ChatPanel
                 title={user.username}
@@ -340,9 +319,6 @@ return (
                 }}
                 onExportChat={handleExportChat}
                 onPinArtifact={handlePinArtifact}
-                availableSkills={availableSkills}
-                selectedSkillIds={selectedSkillIds}
-                onToggleSkill={handleToggleSkill}
               />
 
               <AnimatePresence>

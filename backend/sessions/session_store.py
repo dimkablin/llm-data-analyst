@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import tempfile
 import threading
 import uuid
 from collections import OrderedDict
@@ -167,9 +168,22 @@ class SessionStore:
             "csv_expires_at": state.csv_expires_at,
             "session_memory": state.session_memory or "",
         }
-        self._state_path(state.session_id).write_text(
-            json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
-        )
+        # Atomic write: flush to a temp file in the same directory, then rename.
+        # This prevents a truncated/empty state file if the process is interrupted
+        # mid-write (crash or SIGKILL).
+        target = self._state_path(state.session_id)
+        content = json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
+        fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def save_dataframe(self, session_id: str, df: pd.DataFrame) -> None:
         data_path = self._data_path(session_id)
@@ -292,6 +306,8 @@ class SessionStore:
         *,
         artifacts: list[dict[str, Any]] | None = None,
         reasoning: str | None = None,
+        reasoning_steps: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._get_session_lock(session_id):
             state = self._load_state(session_id)
@@ -307,6 +323,10 @@ class SessionStore:
                 payload["artifacts"] = artifacts
             if reasoning:
                 payload["reasoning"] = reasoning
+            if reasoning_steps:
+                payload["reasoning_steps"] = reasoning_steps
+            if tools:
+                payload["tools"] = tools
             state.chat_history.append(payload)
             state.last_access = self._now_iso()
             self._save_state(state)

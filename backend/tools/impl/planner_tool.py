@@ -16,22 +16,37 @@ from backend.agent.llm_client import ThinkingAwareChatOpenAI
 logger = logging.getLogger(__name__)
 
 _PLANNER_SYSTEM_PROMPT = (
-    "Ты — планировщик аналитического агента. Составь КРАТКИЙ план действий.\n\n"
-    "## Формат плана\n"
-    "Для каждого шага укажи: номер, tool, что получить.\n"
-    "Пример: 1. `pandas_tool` → показать первые строки таблицы.\n\n"
-    "## Правила\n"
-    "- Используй ТОЛЬКО инструменты из списка доступных.\n"
-    "- Минимум шагов: не добавляй лишние.\n"
-    "- Для простых запросов (показать данные, структура) → 1 шаг.\n"
-    "- Для графиков → обязательно `plotly_tool`.\n"
-    "- Не путай `value_tool` (метрики из df) с `search_tool` (веб-поиск).\n"
+    "You are a planning specialist. You receive a user question and available tools, "
+    "then produce a clear analysis plan.\n\n"
+    "You must NOT execute anything. Only analyze and plan.\n\n"
+    "## Goal\n"
+    "One sentence summary of what needs to be done.\n\n"
+    "## Plan\n"
+    "Numbered steps, each small and actionable:\n"
+    "1. Step one - which tool to use and what to get\n"
+    "2. Step two - which tool to use and what to get\n"
+    "3. ...\n\n"
+    "## Tools to Use\n"
+    "- `tool_name` - what for\n\n"
+    "## Risks\n"
+    "Anything to watch out for.\n\n"
+    "Keep the plan concrete. The agent will execute it step by step.\n\n"
+    "Rules:\n"
+    "- Use ONLY tools from the available tools list.\n"
+    "- Minimum steps: don't add unnecessary ones.\n"
+    "- For simple requests (show data, structure) → 1 step.\n"
+    "- For charts → always use `plotly_tool`.\n"
+    "- Don't confuse `value_tool` (df metrics) with `search_tool` (web search).\n"
 )
 
 
 class _Input(BaseModel):
     question: str = Field(
         description="Вопрос пользователя, для которого нужно составить план анализа."
+    )
+    context: str = Field(
+        default="",
+        description="Краткий контекст последних сообщений чата (опционально).",
     )
 
 
@@ -72,7 +87,7 @@ class PlannerTool(BaseTool):
         """Inject available tool descriptions after the tool registry is built."""
         self._tool_descriptions = descriptions
 
-    def _run(self, question: str) -> str:
+    def _run(self, question: str, context: str = "") -> str:
         system_content = _PLANNER_SYSTEM_PROMPT
         if self._tool_descriptions:
             system_content += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{self._tool_descriptions}\n"
@@ -86,10 +101,14 @@ class PlannerTool(BaseTool):
             streaming=False,
         )
 
+        user_content = question
+        if context:
+            user_content = f"[Контекст предыдущих сообщений]\n{context}\n\n[Текущий запрос]\n{question}"
+
         try:
             response = llm.invoke([
                 SystemMessage(content=system_content),
-                HumanMessage(content=question),
+                HumanMessage(content=user_content),
             ])
             plan = str(getattr(response, "content", "")).strip()
             reasoning = response.additional_kwargs.get("reasoning", "")

@@ -50,7 +50,9 @@ export type SessionState = {
     content: string;
     timestamp: string;
     reasoning?: string | null;
+    reasoning_steps?: PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
+    tools?: PersistedToolCall[];
   }>;
   artifacts: ArtifactPayload[];
   has_dataset: boolean;
@@ -139,11 +141,11 @@ export type AuthResult = {
 
 export type AnalysisDepth = "light" | "medium" | "deep";
 
-/** Upper bound on outer ReAct steps enforced server-side per analysis depth. */
+/** Inner tool-call loop limit enforced server-side per analysis depth (mirrors runner.DEPTH_PROFILES). */
 export const ANALYSIS_DEPTH_STEP_CEILING: Record<AnalysisDepth, number> = {
-  light: 20,
-  medium: 30,
-  deep: 50,
+  light: 8,
+  medium: 16,
+  deep: 30,
 };
 
 export function clampAgentMaxStepsForDepth(depth: AnalysisDepth, value: number): number {
@@ -231,6 +233,27 @@ export type ExecutionGraph = {
   edges: GraphEdge[];
 };
 
+/**
+ * Persisted storage contract for a single tool invocation.
+ * Separate from StreamToolCall (live UI DTO) so they can evolve independently.
+ */
+export type PersistedToolCall = {
+  tool_name: string;
+  /** "done" | "error" */
+  status: string;
+  input_summary?: string;
+  /** Raw tool input (up to 360 chars). */
+  input_preview?: string;
+  artifact_keys?: string[];
+  /** ISO timestamp of tool_start. */
+  started_at?: string;
+  /** ISO timestamp of tool_end. */
+  finished_at?: string;
+  error?: string;
+  /** Thinking text that preceded this tool call. */
+  pre_reasoning?: string;
+};
+
 export type StreamToolCall = {
   /** Client-side ID (uuid generated on tool_start). */
   id: string;
@@ -293,6 +316,14 @@ export type AssistantBlock =
   | ToolUseBlock
   | ToolResultBlock;
 
+/** One LLM call's thinking block, persisted per-step for accurate reload rendering. */
+export type PersistedReasoningStep = {
+  step_index: number;
+  kind: "planning" | "tool_synthesis" | "final_synthesis" | "unknown";
+  content: string;
+  tool_name?: string | null;
+};
+
 // ─── Chat message ────────────────────────────────────────────────────────────
 
 export type ChatMessage = {
@@ -304,6 +335,8 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   reasoning?: string | null;
+  /** Per-step LLM thinking blocks for accurate multi-block rendering on reload. */
+  reasoning_steps?: PersistedReasoningStep[] | null;
   phases?: PhaseEvent[];
   /** Tool calls that happened during this message (for inline display, Claude Code style). */
   tools?: StreamToolCall[];
@@ -385,4 +418,5 @@ export type Skill = {
   name: string;
   description: string;
   triggers: string[];
+  enabled_for_user: boolean;
 };

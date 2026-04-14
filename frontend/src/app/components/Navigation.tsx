@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Link, useLocation } from "react-router";
 import { Bell, Search, User } from "lucide-react";
+import { motion } from "motion/react";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAppSession } from "../context/AppSessionContext";
 
@@ -29,10 +30,14 @@ export function Navigation() {
       <div className="mx-auto grid h-14 max-w-[1600px] grid-cols-[1fr_auto_1fr] items-center px-3 sm:h-16 sm:px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-3 sm:gap-4">
           <Link to="/" className="group flex shrink-0 items-center gap-2 transition-all">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground shadow-lg shadow-primary/20 transition-transform group-hover:scale-105 sm:text-xl">
-              A
+            <div className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-primary shadow-lg shadow-primary/25 transition-all group-hover:shadow-primary/40">
+              <svg viewBox="83 130 320 230" fill="currentColor" className="h-5 w-5 text-primary-foreground">
+                <rect x="175.67" y="135" width="44.662" height="220.553"/>
+                <rect x="353.215" y="135" width="44.662" height="220.553"/>
+                <rect x="88" y="223.221" width="220.553" height="44.662"/>
+              </svg>
             </div>
-            <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:block lg:text-[17px]">
+            <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:block lg:text-[16px]">
               Генеративная аналитика
             </span>
           </Link>
@@ -45,13 +50,18 @@ export function Navigation() {
               <Link
                 key={item.path}
                 to={item.path}
-                className={`shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium transition-all duration-200 xl:px-4 xl:text-[14px] 2xl:px-5 ${
-                  isActive
-                    ? "bg-card text-foreground shadow-sm ring-1 ring-border/20"
-                    : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                }`}
+                className="relative shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors duration-200 xl:px-4 xl:text-[14px] 2xl:px-5"
               >
-                {item.label}
+                {isActive && (
+                  <motion.span
+                    layoutId="nav-pill"
+                    className="absolute inset-0 rounded-lg bg-card shadow-sm ring-1 ring-border/20"
+                    transition={{ type: "spring", stiffness: 400, damping: 35 }}
+                  />
+                )}
+                <span className={`relative z-10 transition-colors duration-200 ${isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+                  {item.label}
+                </span>
               </Link>
             );
           })}

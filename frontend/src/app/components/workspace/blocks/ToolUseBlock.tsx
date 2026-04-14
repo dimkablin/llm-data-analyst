@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
+import { MarkdownBlock } from "../../MarkdownBlock";
 
 type Props = {
   tool_name: string;
@@ -118,9 +119,15 @@ export function ToolUseBlock({
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/30 select-none">
                 {status === "error" ? "Error" : "Output"}
               </span>
-              <div className={`overflow-x-auto rounded border px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap ${status === "error" ? "border-destructive/20 bg-destructive/5 text-destructive/80" : "border-border/20 bg-muted/15 text-muted-foreground/60"}`}>
-                {output_preview}
-              </div>
+              {status === "error" ? (
+                <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
+                  {output_preview}
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-border/20 bg-muted/15 px-3 py-2 text-muted-foreground/70 tool-output-markdown">
+                  <MarkdownBlock content={output_preview} />
+                </div>
+              )}
             </div>
           ) : !output_preview && artifact_keys?.length ? (
             <div className="flex flex-col gap-0.5">

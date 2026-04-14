@@ -31,7 +31,8 @@ from backend.agent.prompts import (
 )
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
-from backend.core.config import Settings
+from backend.core.config import DEPTH_PROFILES, Settings
+from backend.core.llm_provider import get_provider_policy
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
@@ -151,8 +152,6 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
         logger.exception("%s failed", where)
 
 def _build_tool_message_text(result: object) -> str:
-    import json
-
     def _short(obj: object, limit: int = 1600) -> str:
         try:
             text = json.dumps(obj, ensure_ascii=False, default=str, indent=2)
@@ -180,6 +179,22 @@ def _build_tool_message_text(result: object) -> str:
 
         return []
 
+    def _table_schema(obj: object) -> dict[str, str]:
+        try:
+            if isinstance(obj, pd.DataFrame):
+                return {col: str(dtype) for col, dtype in obj.dtypes.items()}
+        except Exception:
+            pass
+        return {}
+
+    def _row_count(obj: object) -> int | None:
+        try:
+            if isinstance(obj, pd.DataFrame):
+                return len(obj)
+        except Exception:
+            pass
+        return None
+
     content_text = ""
     artifact = None
 
@@ -203,10 +218,19 @@ def _build_tool_message_text(result: object) -> str:
         if artifact_type == "table" and isinstance(items, dict):
             previews = []
             for name, payload in items.items():
-                rows = _preview_rows(payload, max_rows=5)
-                previews.append({"name": name, "rows_preview": rows})
+                schema = _table_schema(payload)
+                total_rows = _row_count(payload)
+                rows = _preview_rows(payload, max_rows=10)
+                header = name
+                if total_rows is not None:
+                    header += f" — {total_rows} rows × {len(schema)} cols"
+                previews.append({
+                    "table": header,
+                    "schema": schema,
+                    f"sample_{min(10, len(rows))}_of_{total_rows or '?'}_rows": rows,
+                })
             if previews:
-                parts.append("TABLE_RESULT:\n" + _short(previews))
+                parts.append("TABLE_RESULT:\n" + _short(previews, limit=2000))
 
         elif artifact_type == "value" and isinstance(items, dict):
             parts.append("VALUE_RESULT:\n" + _short(items))
@@ -233,13 +257,7 @@ _LLM_UNAVAILABLE_USER_TEXT = (
     "LLM_MODEL_API_URL доступен из контейнера backend."
 )
 
-# Depth profiles control the inner tool-calling loop iteration limit.
-# "light" runs up to 4 tool calls, "medium" up to 8, "deep" up to 15.
-DEPTH_PROFILES: dict[str, dict[str, Any]] = {
-    "light": {"inner_recursion_limit": 4},
-    "medium": {"inner_recursion_limit": 8},
-    "deep": {"inner_recursion_limit": 15},
-}
+# DEPTH_PROFILES imported from backend.core.config — single source of truth.
 
 
 @dataclass
@@ -251,6 +269,7 @@ class AgentResponse:
     tool_calls: int = 0
     tool_names: list[str] = field(default_factory=list)
     llm_unreachable: bool = False
+    reasoning_steps: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -400,8 +419,11 @@ class AgentRunner:
             max_tokens = self.settings.llm_max_tokens_reasoning
 
         extra_body: dict[str, Any] = {}
-        if self.settings.llm_chat_template_kwargs_enabled and role != "tool":
-            extra_body["chat_template_kwargs"] = {"enable_thinking": enable_thinking}
+        if self.settings.llm_chat_template_kwargs_enabled:
+            extra_body.update(
+                get_provider_policy(self.settings.llm_provider)
+                .build_extra_body(enable_thinking=enable_thinking)
+            )
         if self.settings.llm_top_k > 0:
             extra_body["top_k"] = self.settings.llm_top_k
         if self.settings.llm_num_ctx > 0:
@@ -812,11 +834,11 @@ class AgentRunner:
         if system_parts:
             messages.append(SystemMessage(content="\n\n".join(system_parts)))
 
-        for item in recent:
+        for i, item in enumerate(recent):
             role = item.get("role")
             content = str(item.get("content", "")).strip()
             artifacts = item.get("artifacts")
-            if isinstance(artifacts, list) and artifacts:
+            if role != "user" and isinstance(artifacts, list) and artifacts:
                 labels: list[str] = []
                 for artifact in artifacts[:6]:
                     if not isinstance(artifact, dict):
@@ -828,9 +850,18 @@ class AgentRunner:
                     )
                 if labels:
                     labels_text = ", ".join(labels)
-                    content = (
-                        f"{content}\n\nКонтекст предыдущих артефактов: {labels_text}"
-                    ).strip()
+                    preceding_query = next(
+                        (
+                            self._truncate(str(recent[j].get("content", "")), 300)
+                            for j in range(i - 1, -1, -1)
+                            if recent[j].get("role") == "user"
+                        ),
+                        "",
+                    )
+                    artifact_ctx = f"Контекст предыдущих артефактов: {labels_text}"
+                    if preceding_query:
+                        artifact_ctx += f"\nЗапрос, породивший артефакты: {preceding_query}"
+                    content = f"{content}\n\n{artifact_ctx}".strip()
 
             if not content:
                 continue
@@ -1700,6 +1731,31 @@ class AgentRunner:
 
         return f"{RECOVERY_TEXT_PREFIX}, артефакты уже построены ({typed_counts})."
 
+    def _artifacts_summary_text(self, artifacts: list) -> str:
+        """Neutral summary when the loop ended normally but LLM returned empty text."""
+        if not artifacts:
+            return ""
+
+        counts: dict[str, int] = {}
+        labels: list[str] = []
+        for artifact in artifacts[:8]:
+            artifact_type = str(getattr(artifact, "artifact_type", "artifact")).strip() or "artifact"
+            counts[artifact_type] = counts.get(artifact_type, 0) + 1
+            label = str(getattr(artifact, "text", "")).strip()
+            if label:
+                labels.append(label)
+
+        typed_counts = ", ".join(
+            f"{name}: {value}" for name, value in sorted(counts.items(), key=lambda item: item[0])
+        )
+        if labels:
+            labels_preview = ", ".join(labels[:4])
+            if len(labels) > 4:
+                labels_preview += ", ..."
+            return f"Артефакты построены ({typed_counts}). Доступные артефакты: {labels_preview}."
+
+        return f"Артефакты построены ({typed_counts})."
+
     # ── Single execution engine: direct tool-calling loop ────────────────────
 
     def _direct_tool_loop(
@@ -1745,6 +1801,8 @@ class AgentRunner:
         total_tool_calls = 0
         final_text = ""
         reasoning = None
+        reasoning_steps: list[str] = []
+        _limit_reached = False
 
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
@@ -1766,6 +1824,7 @@ class AgentRunner:
                     return AgentResponse(
                         final_text=self._artifacts_recovery_text(artifacts) or _LLM_UNAVAILABLE_USER_TEXT,
                         reasoning=str(exc),
+                        reasoning_steps=[],
                         artifacts=artifacts,
                         route="analysis",
                         tool_calls=total_tool_calls + tc,
@@ -1774,8 +1833,11 @@ class AgentRunner:
                     )
                 raise
 
-            if reasoning is None:
-                reasoning = response.additional_kwargs.get("reasoning") or None
+            step_r = response.additional_kwargs.get("reasoning") or None
+            if step_r:
+                reasoning_steps.append(step_r)
+                if reasoning is None:
+                    reasoning = step_r  # backward compat: первый шаг → reasoning поле
 
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
@@ -1811,6 +1873,7 @@ class AgentRunner:
                 messages.append(ToolMessage(content=tool_message_text, tool_call_id=tool_call_id))
         else:
             # Max iterations reached — try to recover text from collector.
+            _limit_reached = True
             text_collector = next(
                 (cb for cb in callbacks if isinstance(cb, LLMTextCollector)), None
             )
@@ -1824,11 +1887,15 @@ class AgentRunner:
                 all_tool_names.append(name)
 
         if not final_text and artifacts:
-            final_text = self._artifacts_recovery_text(artifacts)
+            if _limit_reached:
+                final_text = self._artifacts_recovery_text(artifacts)
+            else:
+                final_text = self._artifacts_summary_text(artifacts)
 
         return AgentResponse(
             final_text=final_text.strip(),
             reasoning=reasoning,
+            reasoning_steps=reasoning_steps,
             artifacts=artifacts,
             route="analysis",
             tool_calls=total_tool_calls,
@@ -2086,6 +2153,47 @@ class AgentRunner:
             tool_db_runtime=tool_db_runtime,
         )
 
+        # ── Pre-call planner_tool outside the iteration budget ───────────────
+        # Invoke planner_tool before _direct_tool_loop so it does NOT consume
+        # an iteration from max_steps. The plan is injected into the system
+        # prompt so the LLM receives it at the start of the execution loop.
+        # tool.invoke() still fires on_tool_start/on_tool_end callbacks, so
+        # the UI planner block appears exactly as before.
+        planner = next((t for t in tools if getattr(t, "name", "") == "planner_tool"), None)
+        tools_for_loop = tools
+        if planner is not None:
+            planner_runtime_config: dict[str, Any] = {"callbacks": callbacks}
+            if tc := state.get("trace_context"):
+                planner_runtime_config["metadata"] = self._build_runtime_metadata(tc)
+
+            history = state.get("history", [])
+            recent_history_snippet = "\n".join(
+                f"{'Пользователь' if h.get('role') == 'user' else 'Ассистент'}: "
+                f"{self._truncate(str(h.get('content', '')), 200)}"
+                for h in history[-4:]
+                if h.get("content", "").strip()
+            )
+
+            try:
+                plan_result = planner.invoke(
+                    {
+                        "name": "planner_tool",
+                        "args": {
+                            "question": state.get("prompt", ""),
+                            "context": recent_history_snippet,
+                        },
+                        "id": "pre_plan_0",
+                        "type": "tool_call",
+                    },
+                    config=planner_runtime_config,
+                )
+                plan_text = str(plan_result).strip()
+                if plan_text:
+                    execution_system_prompt += f"\n\n## Предварительный план анализа\n{plan_text}"
+            except Exception as _plan_exc:
+                logger.warning("Pre-loop planner_tool failed: %s", _plan_exc)
+            tools_for_loop = [t for t in tools if getattr(t, "name", "") != "planner_tool"]
+
         self._emit_phase_event(
             callbacks, phase="act", title="Выполнение анализа",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
@@ -2106,7 +2214,7 @@ class AgentRunner:
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
                 include_reasoning=state.get("include_reasoning", False),
-                tools=tools,
+                tools=tools_for_loop,
                 execution_system_prompt=execution_system_prompt,
                 callbacks=callbacks,
                 max_iterations=max_steps,

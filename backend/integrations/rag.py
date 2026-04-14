@@ -47,7 +47,12 @@ def _ssl_context_for_url(url: str, *, verify_ssl: bool) -> ssl.SSLContext | None
         return None
     if verify_ssl:
         return ssl.create_default_context()
-    return ssl._create_unverified_context()  # noqa: SLF001
+    # Intentionally bypass certificate verification for internal RAG endpoints.
+    # Use RAG_VERIFY_SSL=true in production when a valid cert is available.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 @dataclass(frozen=True)
@@ -405,7 +410,7 @@ class RAGService:
         self,
         *,
         query: str,
-        mode: str | None = None,
+        mode: str =  "naive",
         top_k: int | None = None,
     ) -> RAGQueryResult:
         """Retrieve raw context chunks from LightRAG without LLM generation.
@@ -422,7 +427,7 @@ class RAGService:
 
         request_params: dict[str, Any] = {
             "query": clean_query,
-            "mode": _clean_str(mode) or self.config.query_mode_default,
+            "mode": _clean_str(mode),
             "top_k": _coerce_positive_int(
                 top_k,
                 default=self.config.top_k_default,

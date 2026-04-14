@@ -376,7 +376,7 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
   return (
     <div
       ref={containerRef}
-      className="h-[400px] w-full rounded-2xl border border-border/40"
+      className="h-[400px] w-full min-w-0 overflow-hidden rounded-2xl border border-border/40"
     />
   );
 }
@@ -390,7 +390,7 @@ export function ArtifactSurface({
   const code = typeof artifact.meta?.code === "string" ? artifact.meta.code : "";
 
   return (
-    <article className="rounded-3xl border border-border/50 bg-card p-5 shadow-sm">
+    <article className="overflow-hidden rounded-3xl border border-border/50 bg-card p-5 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h4 className="text-base font-bold tracking-tight">{artifact.text || artifact.type}</h4>

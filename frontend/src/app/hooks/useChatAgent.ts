@@ -7,6 +7,7 @@ import type {
   AssistantBlock,
   ChatMessage,
   ExecutionGraph,
+  PersistedToolCall,
   PhaseEvent,
   QueryResponse,
   SessionState,
@@ -171,6 +172,20 @@ function applyLiveReasoningSnapshot(
   return copy;
 }
 
+function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCall {
+  return {
+    id: `hist-${p.tool_name}-${idx}`,
+    tool_name: p.tool_name,
+    input_summary: p.input_summary ?? p.tool_name,
+    input_preview: p.input_preview,
+    status: p.status === "error" ? "error" : "done",
+    artifact_keys: p.artifact_keys,
+    started_at: p.started_at ? Date.parse(p.started_at) : 0,
+    output_preview: p.error ? `Error: ${p.error}` : undefined,
+    pre_reasoning: p.pre_reasoning || undefined,
+  };
+}
+
 function toChatMessages(
   sessionId: string,
   history: Array<{
@@ -179,7 +194,9 @@ function toChatMessages(
     content: string;
     timestamp: string;
     reasoning?: string | null;
+    reasoning_steps?: import("../lib/backend-types").PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
+    tools?: PersistedToolCall[];
   }>,
 ): ChatMessage[] {
   const messages = history.map((item, index) => ({
@@ -189,7 +206,9 @@ function toChatMessages(
     role: item.role === "user" ? "user" : ("assistant" as const),
     content: item.content,
     reasoning: item.reasoning ?? null,
+    reasoning_steps: item.reasoning_steps ?? null,
     artifacts: item.artifacts ?? [],
+    tools: item.tools?.length ? item.tools.map(persistedToolToStream) : undefined,
   }));
   return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
 }

@@ -4,7 +4,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,9 +13,11 @@ from backend.agent.callbacks import strip_thinking
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.core.config import settings
+from backend.core.llm_provider import get_provider_policy
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import (
+    IDENTIFIER_RE,
     MAX_RESULT_CELLS,
     DBAnalyticsHelper,
     _assert_read_only_sql,
@@ -168,6 +170,10 @@ def _shrink_for_cell_budget(
 
 
 class SQLTableService:
+    # Thinking default for SQL generation LLM calls.
+    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False
+
     def __init__(
         self,
         *,
@@ -176,6 +182,7 @@ class SQLTableService:
         llm_api_key: str | None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
@@ -198,9 +205,14 @@ class SQLTableService:
             "timeout": 120.0,
         }
         if llm_chat_template_kwargs_enabled:
-            llm_kwargs["extra_body"] = {
-                "chat_template_kwargs": {"enable_thinking": llm_enable_thinking}
-            }
+            # effective = global setting AND this service's class default
+            effective_thinking = llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING
+            _eb: dict[str, Any] = dict(llm_kwargs.get("extra_body") or {})
+            _eb.update(
+                get_provider_policy(llm_provider).build_extra_body(enable_thinking=effective_thinking)
+            )
+            if _eb:
+                llm_kwargs["extra_body"] = _eb
         self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
 
     def _db_helper(self) -> DBAnalyticsHelper:
@@ -444,9 +456,34 @@ CANDIDATES:
         except Exception as exc:
             return None, str(exc)
 
+    def _safe_sample_sql(self, candidate: TableCandidate) -> str:
+        """Build a safe LIMIT-5 sample query with properly quoted identifiers.
+
+        Never interpolate ``qualified_name`` directly — it originates from the
+        database catalog and could contain unexpected characters.
+        """
+        if candidate.source_kind == "db":
+            helper = self._db_helper()
+            schema = candidate.schema
+            table = candidate.table_name
+            quoted_table = helper._quote_identifier(table)  # noqa: SLF001
+            if schema:
+                quoted_schema = helper._quote_identifier(schema)  # noqa: SLF001
+                qualified = f"{quoted_schema}.{quoted_table}"
+            else:
+                qualified = quoted_table
+        else:
+            # DuckDB / CSV session — table names come from our own catalog.
+            table = candidate.table_name
+            if not IDENTIFIER_RE.match(table):
+                raise ValueError(f"Unsafe CSV table identifier: {table!r}")
+            qualified = f'"{table}"'
+        return f"SELECT * FROM {qualified} LIMIT 5"
+
     def _table_sample(self, candidate: TableCandidate) -> dict[str, Any]:
         try:
-            sample_sql = f"SELECT * FROM {candidate.qualified_name} LIMIT 5"
+            sample_sql = self._safe_sample_sql(candidate)
+            _assert_read_only_sql(sample_sql)
             if candidate.source_kind == "db":
                 rows = self._db_helper().query_dataframe(sample_sql)
             else:

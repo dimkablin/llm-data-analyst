@@ -95,6 +95,11 @@ extend-immutable-calls = ["Depends", "Security", "Query", "Header", "Cookie", "B
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live: requires a running LLM endpoint or external service (deselect with -m 'not live')",
+    "e2e: end-to-end tests that require a full stack (deselect with -m 'not e2e')",
+]
+addopts = "--tb=short"
 
 [build-system]
 requires = ["poetry-core"]

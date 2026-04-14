@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 class _Input(BaseModel):
     tool_name: str = Field(
         description=(
-            "Key of the tool to fetch instructions for "
-            "(e.g. 'plotly_tool', 'sql_tool', 'pandas_tool')."
+            "ID of the tool or analytical skill to fetch instructions for. "
+            "For tools: 'plotly_tool', 'sql_tool', 'pandas_tool', etc. "
+            "For analytical methods: 'auto_eda', 'cohort_analysis', 'ab_test_analysis', etc."
         )
     )
 
@@ -32,10 +33,11 @@ class GetToolInstructionsTool(BaseTool):
 
     name: str = "get_tool_instructions"
     description: str = (
-        "Get full usage instructions for a tool before using it. "
-        "Returns scope variables, code patterns, rules, and examples. "
-        "Call this before plotly_tool, sql_tool, or pandas_tool "
-        "when you need to know the exact API or code contract."
+        "Get full usage instructions for a tool or analytical method before using it. "
+        "Returns scope variables, code patterns, rules, and step-by-step algorithms. "
+        "MUST be called before using any tool (plotly_tool, sql_tool, pandas_tool, etc.) "
+        "AND before executing any analytical method listed in 'Аналитические методы' section "
+        "(auto_eda, cohort_analysis, ab_test_analysis, statistical_analysis, etc.)."
     )
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"

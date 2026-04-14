@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import plotly.express as px
@@ -152,8 +152,12 @@ class PlotlyTool(BaseExecTool):
     artifact_name: str = "plot"
     human_name: str = "графиков"
     description: str = plotly_tool_prompt
-    allowed_libs: set[str] = {"plotly", "pandas", "numpy"}
+    allowed_libs: set[str] = {
+        "plotly", "pandas", "numpy",
+        "datetime", "math", "statistics", "calendar", "collections", "itertools", "re",
+    }
     allowed_artifact_types: tuple = (go.Figure,)
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False  # deterministic, temp=0
 
     def __init__(
         self,
@@ -167,6 +171,7 @@ class PlotlyTool(BaseExecTool):
         llm_api_key: str | None = None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         code_fix_max_retries: int = 3,
     ) -> None:
         _ = (px, go)  # imports остаются для явной зависимости инструмента
@@ -182,6 +187,7 @@ class PlotlyTool(BaseExecTool):
             llm_api_key=llm_api_key,
             llm_enable_thinking=llm_enable_thinking,
             llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            llm_provider=llm_provider,
             code_fix_max_retries=code_fix_max_retries,
         )
 

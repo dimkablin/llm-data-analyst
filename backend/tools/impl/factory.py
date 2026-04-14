@@ -152,6 +152,7 @@ class SQLToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
             db_runtime_config=ctx.tool_db_runtime,
             csv_loaded=ctx.csv_loaded,
             csv_session_id=ctx.csv_session_id,
@@ -201,6 +202,7 @@ class PlotlyToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
@@ -222,6 +224,7 @@ class PandasToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
@@ -243,6 +246,7 @@ class ValueToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
