@@ -42,7 +42,7 @@ def test_strip_helper_removes_thinking_fields():
     """_strip_thinking_from_history removes reasoning_steps and pre_reasoning from AI messages."""
     from backend.api.routes.sessions import _strip_thinking_from_history
 
-    result = _strip_thinking_from_history(CHAT_HISTORY_WITH_THINK)
+    result = _strip_thinking_from_history(copy.deepcopy(CHAT_HISTORY_WITH_THINK))
 
     ai_message = result[1]
     assert "reasoning_steps" not in ai_message
@@ -66,7 +66,7 @@ def test_strip_helper_leaves_user_messages_untouched():
     """User messages must not be modified."""
     from backend.api.routes.sessions import _strip_thinking_from_history
 
-    result = _strip_thinking_from_history(CHAT_HISTORY_WITH_THINK)
+    result = _strip_thinking_from_history(copy.deepcopy(CHAT_HISTORY_WITH_THINK))
 
     assert result[0]["content"] == "hello"
     assert result[0]["role"] == "user"
