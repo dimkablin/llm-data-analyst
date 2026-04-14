@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { AlertCircle, PlugZap, Sparkles } from "lucide-react";
-import { getUserTools, listSkills, updateUserToolEnabled } from "../../lib/backend-api";
+import { getUserTools, listSkills, updateSkillEnabled, updateUserToolEnabled } from "../../lib/backend-api";
 import type { Skill, ToolAvailability } from "../../lib/backend-types";
 import { summarizeError } from "../../lib/format";
 import { Badge } from "../ui/badge";
@@ -31,6 +31,7 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingKeys, setSavingKeys] = useState<Record<string, boolean>>({});
+  const [savingSkillIds, setSavingSkillIds] = useState<Record<string, boolean>>({});
 
   useImperativeHandle(ref, () => ({ refresh: () => void loadTools(true) }));
 
@@ -71,6 +72,23 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
       setIsLoading(false);
       setIsRefreshing(false);
       onLoadingChange?.(false);
+    }
+  }
+
+  async function handleToggleSkill(skill: Skill, nextEnabled: boolean): Promise<void> {
+    setSavingSkillIds((prev) => ({ ...prev, [skill.skill_id]: true }));
+    try {
+      const updated = await updateSkillEnabled(skill.skill_id, nextEnabled);
+      setSkills((prev) => prev.map((s) => (s.skill_id === updated.skill_id ? updated : s)));
+      setError(null);
+    } catch (toggleError) {
+      setError(summarizeError(toggleError));
+    } finally {
+      setSavingSkillIds((prev) => {
+        const next = { ...prev };
+        delete next[skill.skill_id];
+        return next;
+      });
     }
   }
 
@@ -121,12 +139,24 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
         </div>
       )}
 
-      <SkillsCard skills={skills} isLoading={isLoading} />
+      <SkillsCard skills={skills} isLoading={isLoading} savingSkillIds={savingSkillIds} onToggle={handleToggleSkill} />
     </div>
   );
 });
 
-function SkillsCard({ skills, isLoading }: { skills: Skill[]; isLoading: boolean }) {
+function SkillsCard({
+  skills,
+  isLoading,
+  savingSkillIds,
+  onToggle,
+}: {
+  skills: Skill[];
+  isLoading: boolean;
+  savingSkillIds: Record<string, boolean>;
+  onToggle: (skill: Skill, nextEnabled: boolean) => Promise<void>;
+}) {
+  const enabledCount = skills.filter((s) => s.enabled_for_user).length;
+
   return (
     <div className="space-y-4 rounded-2xl border border-border/50 bg-background/30 p-4">
       <div className="flex items-center justify-between">
@@ -135,7 +165,7 @@ function SkillsCard({ skills, isLoading }: { skills: Skill[]; isLoading: boolean
           <h4 className="text-sm font-bold uppercase tracking-[0.18em] text-muted-foreground">Навыки</h4>
         </div>
         {!isLoading && skills.length > 0 && (
-          <span className="text-xs text-muted-foreground">{skills.length} доступно</span>
+          <span className="text-xs text-muted-foreground">{enabledCount} / {skills.length} включено</span>
         )}
       </div>
 
@@ -150,7 +180,12 @@ function SkillsCard({ skills, isLoading }: { skills: Skill[]; isLoading: boolean
       ) : (
         <div className="space-y-3">
           {skills.map((skill) => (
-            <SkillRow key={skill.skill_id} skill={skill} />
+            <SkillRow
+              key={skill.skill_id}
+              skill={skill}
+              isSaving={Boolean(savingSkillIds[skill.skill_id])}
+              onToggle={onToggle}
+            />
           ))}
         </div>
       )}
@@ -158,34 +193,56 @@ function SkillsCard({ skills, isLoading }: { skills: Skill[]; isLoading: boolean
   );
 }
 
-function SkillRow({ skill }: { skill: Skill }) {
+function SkillRow({
+  skill,
+  isSaving,
+  onToggle,
+}: {
+  skill: Skill;
+  isSaving: boolean;
+  onToggle: (skill: Skill, nextEnabled: boolean) => Promise<void>;
+}) {
   return (
     <div className="rounded-xl border border-border/50 bg-secondary/20 p-4">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <h5 className="text-sm font-semibold text-foreground">{skill.name}</h5>
-          <Badge variant="outline" className="border-primary/30 bg-primary/8 text-primary text-[10px]">
-            аналитика
-          </Badge>
-        </div>
-        <p className="text-sm leading-relaxed text-muted-foreground">{skill.description}</p>
-        {skill.triggers.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-0.5">
-            {skill.triggers.slice(0, 6).map((trigger) => (
-              <span
-                key={trigger}
-                className="inline-flex items-center rounded-full border border-border/50 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
-              >
-                {trigger}
-              </span>
-            ))}
-            {skill.triggers.length > 6 && (
-              <span className="inline-flex items-center rounded-full border border-border/40 bg-background/30 px-2 py-0.5 text-[11px] text-muted-foreground">
-                +{skill.triggers.length - 6}
-              </span>
-            )}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h5 className="text-sm font-semibold text-foreground">{skill.name}</h5>
+            <Badge variant="outline" className="border-primary/30 bg-primary/8 text-primary text-[10px]">
+              аналитика
+            </Badge>
           </div>
-        )}
+          <p className="text-sm leading-relaxed text-muted-foreground">{skill.description}</p>
+          {skill.triggers.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-0.5">
+              {skill.triggers.slice(0, 6).map((trigger) => (
+                <span
+                  key={trigger}
+                  className="inline-flex items-center rounded-full border border-border/50 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+                >
+                  {trigger}
+                </span>
+              ))}
+              {skill.triggers.length > 6 && (
+                <span className="inline-flex items-center rounded-full border border-border/40 bg-background/30 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  +{skill.triggers.length - 6}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col items-end gap-2">
+          <Switch
+            checked={skill.enabled_for_user}
+            disabled={isSaving}
+            aria-label={`Toggle skill ${skill.name}`}
+            onCheckedChange={(checked) => {
+              void onToggle(skill, checked);
+            }}
+          />
+          {isSaving ? <span className="text-xs text-muted-foreground">Сохраняю...</span> : null}
+        </div>
       </div>
     </div>
   );

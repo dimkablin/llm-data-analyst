@@ -418,4 +418,5 @@ export type Skill = {
   name: string;
   description: string;
   triggers: string[];
+  enabled_for_user: boolean;
 };

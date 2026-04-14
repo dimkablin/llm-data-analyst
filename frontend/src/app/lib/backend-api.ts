@@ -156,6 +156,16 @@ export async function listSkills(): Promise<Skill[]> {
   return (await response.json()) as Skill[];
 }
 
+export async function updateSkillEnabled(skillId: string, enabled: boolean): Promise<Skill> {
+  const response = await authFetch(`/skills/${encodeURIComponent(skillId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(response);
+  return (await response.json()) as Skill;
+}
+
 export async function getUserTools(): Promise<ToolAvailability[]> {
   const response = await authFetch("/auth/tools");
   await assertOk(response);

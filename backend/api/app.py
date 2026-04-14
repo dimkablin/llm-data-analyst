@@ -256,7 +256,7 @@ def _configure_routes() -> None:
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,
     )
-    skills.setup(runner=runner)
+    skills.setup(runner=runner, auth_db=auth_db)
     observability_route.setup(
         phoenix_observability_service=phoenix_observability_service,
     )

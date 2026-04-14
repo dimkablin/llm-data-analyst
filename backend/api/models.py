@@ -302,6 +302,7 @@ class SkillResponse(BaseModel):
     description: str
     triggers: list[str] = Field(default_factory=list)
     source_path: str
+    enabled_for_user: bool = True
 
 
 class PhoenixOverviewStats(BaseModel):

@@ -82,7 +82,7 @@ export function Workspace() {
 
   useEffect(() => {
     listSkills()
-      .then(setAvailableSkills)
+      .then((skills) => setAvailableSkills(skills.filter((s) => s.enabled_for_user)))
       .catch(() => {/* skills unavailable — не блокируем UI */});
   }, []);
 

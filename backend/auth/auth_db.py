@@ -196,6 +196,18 @@ class AuthDB:
                 CREATE INDEX IF NOT EXISTS idx_user_tool_settings_user
                     ON user_tool_settings(user_id, tool_key);
 
+                CREATE TABLE IF NOT EXISTS user_skill_settings (
+                    user_id INTEGER NOT NULL,
+                    skill_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, skill_id),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_skill_settings_user
+                    ON user_skill_settings(user_id, skill_id);
+
                 CREATE TABLE IF NOT EXISTS user_db_connections (
                     id TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL,
@@ -906,6 +918,44 @@ class AuthDB:
                 (
                     user_id,
                     clean_tool_key,
+                    1 if enabled else 0,
+                    self._now_iso(),
+                ),
+            )
+
+    def list_user_skill_settings(self, user_id: int) -> dict[str, bool]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT skill_id, enabled
+                FROM user_skill_settings
+                WHERE user_id = ?
+                ORDER BY skill_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return {
+            str(row["skill_id"]): bool(row["enabled"])
+            for row in rows
+            if str(row["skill_id"]).strip()
+        }
+
+    def set_user_skill_enabled(self, user_id: int, skill_id: str, enabled: bool) -> None:
+        clean_skill_id = str(skill_id or "").strip()
+        if not clean_skill_id:
+            raise ValueError("skill_id is required")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_skill_settings(user_id, skill_id, enabled, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, skill_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    clean_skill_id,
                     1 if enabled else 0,
                     self._now_iso(),
                 ),
