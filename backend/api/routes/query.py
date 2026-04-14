@@ -521,11 +521,14 @@ def _build_reasoning_steps(
     raw_steps: list[str],
     tool_names: list[str],
 ) -> list[ReasoningStep]:
-    """Преобразует list[str] в list[ReasoningStep] с авто-детекцией kind.
+    """Возвращает только "orphan" шаги — те, что НЕ предшествовали tool_call.
 
-    tool_names — список инструментов, вызванных в ходе ответа (по порядку).
-    Шаг i предшествовал вызову tool_names[i], если i < len(tool_names).
-    Последний шаг без следующего tool_call = final_synthesis.
+    Шаги с tool_call (i < len(tool_names)) уже сохранены как
+    PersistedToolCall.pre_reasoning и рендерятся inline в ToolCallList.
+    Повторное хранение в reasoning_steps создаёт дубли в UI.
+
+    Возвращаются только шаги без следующего tool_call (final synthesis и
+    intermediate orphans). Для ответов без тулов возвращаются все шаги.
     """
     steps = raw_steps[:MAX_REASONING_STEPS]
     result: list[ReasoningStep] = []
@@ -533,10 +536,13 @@ def _build_reasoning_steps(
         if not content.strip():
             continue
         has_tool = i < len(tool_names)
+        if has_tool:
+            # Этот thinking уже хранится в tools[i].pre_reasoning — пропускаем.
+            continue
         is_last = i == len(steps) - 1
         if i == 0 and len(steps) > 1:
             kind: str = "planning"
-        elif is_last and not has_tool:
+        elif is_last:
             kind = "final_synthesis"
         else:
             kind = "tool_synthesis"
@@ -544,7 +550,7 @@ def _build_reasoning_steps(
             step_index=i,
             kind=kind,  # type: ignore[arg-type]
             content=content,
-            tool_name=tool_names[i] if has_tool else None,
+            tool_name=None,
         ).truncated()
         result.append(step)
     return result

@@ -500,11 +500,15 @@ function MessageBubble({
           <BlockTimeline blocks={message.blocks} />
         ) : (
           <>
-            {/* Reload: per-step thinking blocks rendered above ToolCallList */}
-            {!isUser && message.reasoning_steps?.length
-              ? message.reasoning_steps.map((step) => (
-                  <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
-                ))
+            {/* Reload: orphan reasoning steps (final synthesis, no tool call follows).
+                Tool-associated steps are already shown via pre_reasoning inside ToolCallList.
+                Filter by !tool_name for backward compat with state.json written before this fix. */}
+            {!isUser && message.reasoning_steps?.filter((s) => !s.tool_name).length
+              ? message.reasoning_steps
+                  .filter((s) => !s.tool_name)
+                  .map((step) => (
+                    <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
+                  ))
               : null}
             {/* Tool call list — reasoning omitted when reasoning_steps present (avoids CoT duplication) */}
             {!isUser && message.tools?.length ? (
