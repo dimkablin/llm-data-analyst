@@ -532,9 +532,9 @@ class TestReasoningSteps(unittest.TestCase):
 
     # ── _build_reasoning_steps helper ────────────────────────────────────────
 
-    def _build(self, raw_steps, tool_names=None):
+    def _build(self, raw_steps, tool_call_count=0):
         from backend.api.routes.query import _build_reasoning_steps
-        return _build_reasoning_steps(raw_steps, tool_names or [])
+        return _build_reasoning_steps(raw_steps, tool_call_count)
 
     def test_build_steps_empty_input(self):
         self.assertEqual(self._build([]), [])
@@ -548,8 +548,8 @@ class TestReasoningSteps(unittest.TestCase):
 
     def test_build_steps_kinds_multi(self):
         raw = ["plan thinking", "tool thinking", "final thinking"]
-        steps = self._build(raw, tool_names=["sql_tool", "plotly_tool"])
-        # Steps 0 and 1 have tool_name → already in pre_reasoning → filtered out.
+        steps = self._build(raw, tool_call_count=2)
+        # Steps 0 and 1 (i < 2) → already in pre_reasoning → filtered out.
         # Only step 2 (final_synthesis) is returned.
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0].kind, "final_synthesis")
@@ -558,17 +558,27 @@ class TestReasoningSteps(unittest.TestCase):
     def test_build_steps_tool_associated_steps_excluded(self):
         """Steps preceding a tool call must NOT appear in reasoning_steps (already in pre_reasoning)."""
         raw = ["plan", "tool1 think", "tool2 think"]
-        # 3 raw steps, 3 tool_names → every step has a tool → all excluded
-        steps = self._build(raw, tool_names=["sql_tool", "plotly_tool", "value_tool"])
+        # 3 raw steps, tool_call_count=3 → every step has a tool → all excluded
+        steps = self._build(raw, tool_call_count=3)
         self.assertEqual(steps, [])
 
+    def test_build_steps_dedup_same_tool_called_twice(self):
+        """Duplicate tool calls must not corrupt the step→tool mapping."""
+        # 6 LLM steps, plotly_tool called twice → tool_call_count=4 (not 3 unique names)
+        raw = ["s0", "s1", "s2", "s3", "s4", "s5"]
+        steps = self._build(raw, tool_call_count=4)
+        # Steps 0-3 excluded (before 4 tool calls), steps 4-5 are orphans
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0].step_index, 4)
+        self.assertEqual(steps[1].step_index, 5)
+
     def test_build_steps_orphan_only_returned(self):
-        """Only the final orphan step (no following tool) is returned."""
+        """Only steps after all tool calls are returned."""
         raw = ["plan", "tool1 think", "orphan synthesis"]
-        steps = self._build(raw, tool_names=["sql_tool"])
-        # step 0: has tool sql_tool → excluded
-        # step 1: has no tool (i=1 >= len(["sql_tool"])=1) → included
-        # step 2: no tool → included
+        steps = self._build(raw, tool_call_count=1)
+        # step 0: i < 1 → excluded
+        # step 1: i=1 >= 1 → included
+        # step 2: i=2 >= 1 → included
         self.assertEqual(len(steps), 2)
         self.assertIsNone(steps[0].tool_name)
         self.assertIsNone(steps[1].tool_name)
@@ -576,21 +586,21 @@ class TestReasoningSteps(unittest.TestCase):
     def test_build_steps_max_limit(self):
         from backend.agent.reasoning import MAX_REASONING_STEPS
         raw = [f"step {i}" for i in range(MAX_REASONING_STEPS + 5)]
-        steps = self._build(raw)
+        steps = self._build(raw, tool_call_count=0)
         self.assertLessEqual(len(steps), MAX_REASONING_STEPS)
 
     def test_build_steps_content_truncated(self):
         from backend.agent.reasoning import MAX_STEP_CONTENT_LEN
         long_content = "x" * (MAX_STEP_CONTENT_LEN + 100)
-        steps = self._build([long_content])
+        steps = self._build([long_content], tool_call_count=0)
         self.assertLessEqual(len(steps[0].content), MAX_STEP_CONTENT_LEN + 1)  # +1 for "…"
         self.assertTrue(steps[0].content.endswith("…"))
 
     def test_build_steps_empty_steps_skipped(self):
         raw = ["real step", "   ", "", "another real"]
-        # step 0 ("real step") has tool → excluded; whitespace/empty skipped
-        # step 3 ("another real") has no tool → included
-        steps = self._build(raw, tool_names=["tool"])
+        # step 0 ("real step") i < 1 → excluded; whitespace/empty skipped
+        # step 3 ("another real") i=3 >= 1 → included
+        steps = self._build(raw, tool_call_count=1)
         contents = [s.content for s in steps]
         self.assertNotIn("   ", contents)
         self.assertNotIn("", contents)
@@ -600,8 +610,8 @@ class TestReasoningSteps(unittest.TestCase):
     def test_build_steps_step_index_preserved(self):
         """step_index reflects original position even after filtering."""
         raw = ["step0", "step1", "step2"]
-        # steps 0 and 1 have tools → excluded; step 2 has no tool → kept with index=2
-        steps = self._build(raw, tool_names=["t1", "t2"])
+        # steps 0 and 1 excluded (tool_call_count=2); step 2 kept with index=2
+        steps = self._build(raw, tool_call_count=2)
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0].step_index, 2)
 

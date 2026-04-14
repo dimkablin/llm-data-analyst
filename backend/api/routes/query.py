@@ -519,23 +519,26 @@ def _merge_reasoning_text(*parts: str | None) -> str | None:
 
 def _build_reasoning_steps(
     raw_steps: list[str],
-    tool_names: list[str],
+    tool_call_count: int,
 ) -> list[ReasoningStep]:
     """Возвращает только "orphan" шаги — те, что НЕ предшествовали tool_call.
 
-    Шаги с tool_call (i < len(tool_names)) уже сохранены как
+    Шаги с индексом i < tool_call_count уже сохранены как
     PersistedToolCall.pre_reasoning и рендерятся inline в ToolCallList.
     Повторное хранение в reasoning_steps создаёт дубли в UI.
 
-    Возвращаются только шаги без следующего tool_call (final synthesis и
-    intermediate orphans). Для ответов без тулов возвращаются все шаги.
+    Важно: использовать ОБЩЕЕ число вызовов тулов (с дублями), а не длину
+    дедуплицированного response.tool_names — иначе повторные вызовы одного
+    тула смещают маппинг и "лишние" шаги ошибочно попадают в reasoning_steps.
+
+    Для ответов без тулов (tool_call_count=0) возвращаются все шаги.
     """
     steps = raw_steps[:MAX_REASONING_STEPS]
     result: list[ReasoningStep] = []
     for i, content in enumerate(steps):
         if not content.strip():
             continue
-        has_tool = i < len(tool_names)
+        has_tool = i < tool_call_count
         if has_tool:
             # Этот thinking уже хранится в tools[i].pre_reasoning — пропускаем.
             continue
@@ -1028,7 +1031,9 @@ async def query_stream(
                 streamed_reasoning,
             )
             raw_steps = token_collector.all_reasoning_steps() or response.reasoning_steps
-            reasoning_steps = _build_reasoning_steps(raw_steps, response.tool_names)
+            # Use tool_collector.tool_calls (total count with duplicates) instead of
+            # response.tool_names (deduplicated list) — same tool called twice = 2 LLM steps.
+            reasoning_steps = _build_reasoning_steps(raw_steps, tool_collector.tool_calls)
             try:
                 from backend.artifacts.bridge import execution_to_api_payload
 
