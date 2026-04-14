@@ -38,6 +38,7 @@ def list_skills(current_user: Annotated[AuthUser, Depends(get_current_user)]) ->
             enabled_for_user=user_settings.get(skill.skill_id, True),
         )
         for skill in _runner.skill_registry.list_skills()
+        if skill.kind == "analytical"
     ]
 
 
@@ -47,8 +48,11 @@ def update_skill_enabled(
     payload: SkillEnabledUpdateRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SkillResponse:
-    skill = _runner.skill_registry.get(skill_id)
-    if skill is None:
+    try:
+        skill = _runner.skill_registry.get(skill_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found")
+    if skill.kind != "analytical":
         raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found")
 
     _auth_db.set_user_skill_enabled(current_user.id, skill_id, payload.enabled)

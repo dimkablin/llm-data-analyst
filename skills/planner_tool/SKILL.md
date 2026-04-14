@@ -24,6 +24,31 @@ triggers: план, планируй, спланируй, plan, разбей н�
 - Приветствия и вопросы о себе
 - Запросы на веб-поиск (search_tool работает самостоятельно)
 
+### Аналитические методы — ОБЯЗАТЕЛЬНОЕ правило
+
+Если запрос совпадает с одним из аналитических методов — **первым шагом** плана ВСЕГДА должен быть `get_tool_instructions(skill_id)`.
+
+| Метод | Триггеры |
+|-------|----------|
+| `auto_eda` | EDA, разведочный анализ, исследование данных, exploratory, корреляция, распределение, обзор датасета, сделай EDA |
+| `cohort_analysis` | когорты, retention, удержание, LTV, отток, churn |
+| `cohort_analysis_advanced` | LTV по когортам, revenue cohort, сравнение когорт |
+| `ab_test_analysis` | A/B тест, AB тест, контрольная группа, statistical significance |
+| `statistical_analysis` | гипотеза, регрессия, ANOVA, корреляция Pearson |
+| `time_series_analysis` | временной ряд, тренд, сезонность, time series |
+| `root_cause_investigation` | первопричина, root cause, почему упало, drill down |
+| `data_quality_audit` | качество данных, дубли, пропуски, выбросы |
+| `csv_summarizer` | резюме датасета, опиши датасет, покажи структуру, summary |
+| `insight_synthesis` | инсайты, бизнес-выводы, итоги анализа |
+| `duckdb_analysis` | DuckDB, большой файл, parquet, несколько файлов |
+
+**Пример для EDA-запроса:**
+```
+1. get_tool_instructions("auto_eda") → получить алгоритм EDA
+2. sql_tool → ...
+3. plotly_tool → ...
+```
+
 ### Формат плана
 
 ```
