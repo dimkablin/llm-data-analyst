@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { AlertCircle, PlugZap, Sparkles } from "lucide-react";
-import { getUserTools, updateUserToolEnabled } from "../../lib/backend-api";
-import type { ToolAvailability } from "../../lib/backend-types";
+import { getUserTools, listSkills, updateUserToolEnabled } from "../../lib/backend-api";
+import type { Skill, ToolAvailability } from "../../lib/backend-types";
 import { summarizeError } from "../../lib/format";
 import { Badge } from "../ui/badge";
 import { Switch } from "../ui/switch";
@@ -26,6 +26,7 @@ const GROUP_META: Record<ToolGroup, { title: string; empty: string }> = {
 export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingChange?: (loading: boolean) => void }>(
   function ToolAccessSection({ onLoadingChange }, ref) {
   const [tools, setTools] = useState<ToolAvailability[]>([]);
+  const [skills, setSkills] = useState<Skill[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +62,9 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
     }
     try {
       setError(null);
-      setTools(await getUserTools());
+      const [toolsData, skillsData] = await Promise.all([getUserTools(), listSkills()]);
+      setTools(toolsData);
+      setSkills(skillsData);
     } catch (loadError) {
       setError(summarizeError(loadError));
     } finally {
@@ -118,18 +121,75 @@ export const ToolAccessSection = forwardRef<ToolAccessSectionRef, { onLoadingCha
         </div>
       )}
 
-      <div className="space-y-4 rounded-2xl border border-border/50 bg-background/30 p-4">
+      <SkillsCard skills={skills} isLoading={isLoading} />
+    </div>
+  );
+});
+
+function SkillsCard({ skills, isLoading }: { skills: Skill[]; isLoading: boolean }) {
+  return (
+    <div className="space-y-4 rounded-2xl border border-border/50 bg-background/30 p-4">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-muted-foreground" />
           <h4 className="text-sm font-bold uppercase tracking-[0.18em] text-muted-foreground">Навыки</h4>
         </div>
+        {!isLoading && skills.length > 0 && (
+          <span className="text-xs text-muted-foreground">{skills.length} доступно</span>
+        )}
+      </div>
+
+      {isLoading ? (
         <div className="rounded-xl border border-dashed border-border/50 bg-secondary/20 px-4 py-5 text-sm text-muted-foreground">
-          Навыки пока не добавлены.
+          Загружаю навыки...
         </div>
+      ) : skills.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/50 bg-secondary/20 px-4 py-5 text-sm text-muted-foreground">
+          Навыки не найдены. Добавьте SKILL.md файлы в папку <code className="font-mono text-xs">skills/</code>.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {skills.map((skill) => (
+            <SkillRow key={skill.skill_id} skill={skill} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillRow({ skill }: { skill: Skill }) {
+  return (
+    <div className="rounded-xl border border-border/50 bg-secondary/20 p-4">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h5 className="text-sm font-semibold text-foreground">{skill.name}</h5>
+          <Badge variant="outline" className="border-primary/30 bg-primary/8 text-primary text-[10px]">
+            аналитика
+          </Badge>
+        </div>
+        <p className="text-sm leading-relaxed text-muted-foreground">{skill.description}</p>
+        {skill.triggers.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-0.5">
+            {skill.triggers.slice(0, 6).map((trigger) => (
+              <span
+                key={trigger}
+                className="inline-flex items-center rounded-full border border-border/50 bg-background/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+              >
+                {trigger}
+              </span>
+            ))}
+            {skill.triggers.length > 6 && (
+              <span className="inline-flex items-center rounded-full border border-border/40 bg-background/30 px-2 py-0.5 text-[11px] text-muted-foreground">
+                +{skill.triggers.length - 6}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
-});
+}
 
 function ToolGroupCard({
   group,
