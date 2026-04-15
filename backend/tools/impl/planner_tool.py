@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
 from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.core.llm_provider import get_provider_policy
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class PlannerTool(BaseTool):
     _llm_model: str = PrivateAttr()
     _llm_base_url: str = PrivateAttr()
     _llm_api_key: str | None = PrivateAttr()
+    _llm_provider: str | None = PrivateAttr()
     _tool_descriptions: str = PrivateAttr()
 
     def __init__(
@@ -80,12 +82,14 @@ class PlannerTool(BaseTool):
         llm_model: str,
         llm_base_url: str,
         llm_api_key: str | None = None,
+        llm_provider: str | None = None,
         tool_descriptions: str = "",
     ) -> None:
         super().__init__()
         self._llm_model = llm_model
         self._llm_base_url = llm_base_url
         self._llm_api_key = llm_api_key
+        self._llm_provider = llm_provider
         self._tool_descriptions = tool_descriptions
 
     def set_tool_descriptions(self, descriptions: str) -> None:
@@ -97,6 +101,9 @@ class PlannerTool(BaseTool):
         if self._tool_descriptions:
             system_content += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{self._tool_descriptions}\n"
 
+        extra_body = get_provider_policy(self._llm_provider).build_extra_body(
+            enable_thinking=False
+        )
         llm = ThinkingAwareChatOpenAI(
             model=self._llm_model,
             base_url=self._llm_base_url,
@@ -104,6 +111,7 @@ class PlannerTool(BaseTool):
             temperature=0.3,
             max_tokens=256,
             streaming=False,
+            **({"model_kwargs": {"extra_body": extra_body}} if extra_body else {}),
         )
 
         user_content = question

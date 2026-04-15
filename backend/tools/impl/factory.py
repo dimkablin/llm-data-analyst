@@ -263,6 +263,7 @@ class PlannerToolFactory:
             llm_model=ctx.settings.llm_model,
             llm_base_url=ctx.settings.llm_base_url,
             llm_api_key=ctx.settings.llm_api_key,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
