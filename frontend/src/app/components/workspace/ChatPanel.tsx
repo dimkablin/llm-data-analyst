@@ -239,6 +239,7 @@ export function ChatPanel({
               isStreaming={isStreaming}
               onPinArtifact={onPinArtifact}
               onRegenerate={onRetry}
+              settings={settings}
             />
           ))}
 
@@ -441,12 +442,14 @@ function MessageBubble({
   isStreaming,
   onPinArtifact,
   onRegenerate,
+  settings,
 }: {
   message: ChatMessage;
   isLast: boolean;
   isStreaming: boolean;
   onPinArtifact: (artifact: ArtifactPayload) => void;
   onRegenerate: () => Promise<void>;
+  settings: Pick<UserSettings, "show_thinking" | "show_think_planning" | "show_think_tool" | "show_think_final">;
 }) {
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
