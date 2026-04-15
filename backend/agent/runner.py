@@ -6,12 +6,13 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Any, ClassVar, Literal, TypedDict
 
 import pandas as pd
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -72,6 +73,47 @@ def _build_chat_data_context(df: pd.DataFrame | None, session_source: dict) -> s
     if not parts:
         return ""
     return "[КОНТЕКСТ ДАННЫХ]\n" + "\n".join(parts)
+
+
+def is_chat_query(normalized_prompt: str, *, has_data: bool = False) -> bool:
+    """Return True when the prompt looks like a chat/greeting, not an analysis request.
+
+    Module-level so it can be imported by other layers (e.g. the API route layer for
+    generating contextually appropriate fallback error messages) without duplicating
+    the detection heuristics.  ``normalized_prompt`` must already be lowercased and
+    stripped.
+    """
+    _CHAT_GREETINGS = (
+        "привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро",
+        "hello", "hi", "hey", "хай", "ку", "приветствую",
+        "спасибо", "благодарю", "thank", "пожалуйста",
+        "пока", "до свидания", "bye", "good bye",
+        "как дела", "как ты", "как поживаешь",
+    )
+    _CHAT_ABOUT_SELF = (
+        "кто ты", "что ты умеешь", "расскажи о себе", "ты кто",
+        "что можешь", "что умеешь", "помоги", "help",
+        "что ты такое", "как тебя зовут", "твоё имя",
+    )
+    _DATA_MARKERS = (
+        "загрузил", "загрузила", "загружено", "залил", "залила",
+        "добавил", "добавила", "подключил", "подключила",
+        "uploaded", "attached", "connected",
+        "покажи", "покажи таблицы", "сколько строк", "какие колонки",
+        "анализ", "analyze", "analyse",
+    )
+    prompt = normalized_prompt.strip()
+    if not prompt:
+        return True
+    if any(m in prompt for m in _DATA_MARKERS):
+        return False
+    if any(prompt.startswith(g) or prompt == g for g in _CHAT_GREETINGS):
+        return True
+    if any(m in prompt for m in _CHAT_ABOUT_SELF):
+        return True
+    if len(prompt) < 4 and not has_data:
+        return True
+    return False
 
 
 def _is_llm_transport_failure(exc: BaseException) -> bool:
@@ -299,12 +341,24 @@ class AgentGraphState(TypedDict, total=False):
     capability_context: dict[str, Any]
     llm_unreachable: bool
     sandbox: Any
+    tool_db_runtime: Any  # RuntimeDBConnectionConfig | None — resolved once in dispatch
+
+    # Internal — runner reference injected by run_query so static node methods
+    # can access instance services (LLM clients, tool registry, settings) without
+    # being bound to a specific AgentRunner instance at graph-compile time.
+    _runner: Any
 
     # Output
     response: AgentResponse
 
 
 class AgentRunner:
+    # Shared compiled graph — built once for the class, reused across all instances.
+    # Nodes are @staticmethods that receive the per-request AgentRunner via state["_runner"],
+    # so the same compiled graph is valid for every request regardless of user settings.
+    _compiled_graph: ClassVar[Any] = None
+    _graph_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(
         self,
         settings: Settings,
@@ -346,7 +400,16 @@ class AgentRunner:
         )
         self._query_cache: OrderedDict[str, QueryCacheEntry] = OrderedDict()
         self._depth_profile = self._resolve_depth_profile()
-        self._graph = self._build_query_graph()
+        # Ensure the class-level graph is compiled exactly once (double-checked locking).
+        if AgentRunner._compiled_graph is None:
+            with AgentRunner._graph_lock:
+                if AgentRunner._compiled_graph is None:
+                    AgentRunner._compiled_graph = AgentRunner._build_query_graph()
+        self._review_tool = _ReviewTool(
+            llm_model=self.settings.llm_model,
+            llm_base_url=self.settings.llm_base_url,
+            llm_api_key=self.settings.llm_api_key,
+        )
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
         depth = self.settings.agent_analysis_depth
@@ -1872,8 +1935,7 @@ class AgentRunner:
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
                 final_text = self._content_to_text(getattr(response, "content", ""))
-                # If the model returned empty after a get_tool_instructions call,
-                # it likely spent its output budget on thinking. Nudge it to act.
+                # LLM produced only thinking (no visible text). Nudge it to act/respond.
                 if not final_text and messages and isinstance(messages[-1], ToolMessage):
                     last_tool_call_name = ""
                     for msg in reversed(messages):
@@ -1881,6 +1943,7 @@ class AgentRunner:
                             last_tool_call_name = msg.tool_calls[0].get("name", "")
                             break
                     if last_tool_call_name == "get_tool_instructions":
+                        # Just received skill instructions — must now call the first tool.
                         messages.append(HumanMessage(
                             content=(
                                 "Инструкции скила получены. "
@@ -1888,6 +1951,17 @@ class AgentRunner:
                                 "из полученных инструкций (pandas_tool, sql_tool, plotly_tool и т.п.). "
                                 "НЕ вызывай get_tool_instructions снова. "
                                 "Только вызов tool, без текста."
+                            )
+                        ))
+                        continue
+                    elif last_tool_call_name and _iteration < max(1, max_iterations) - 1:
+                        # Analysis tools finished but LLM spent output budget on thinking.
+                        # Nudge it to produce the final visible answer (allowed once).
+                        messages.append(HumanMessage(
+                            content=(
+                                "Анализ завершён. Напиши финальный ответ пользователю: "
+                                "кратко и конкретно, опираясь только на полученные результаты. "
+                                "Без tool-вызовов, без пересказа плана — только выводы."
                             )
                         ))
                         continue
@@ -1953,19 +2027,23 @@ class AgentRunner:
 
     # ── Graph ─────────────────────────────────────────────────────────────────
 
-    def _build_query_graph(self):
+    @staticmethod
+    def _build_query_graph():
         """Compile the agent graph: dispatch → agent → finalize.
 
         dispatch: keyword pre-check for lightweight bypasses (chat/summary),
                   or builds tools/sandbox/capability context for analysis.
         agent: single direct tool-calling loop with skills and sandbox.
         finalize: synthesizes answer, rewrites if needed, runs quality review.
+
+        Nodes are @staticmethods — they receive the per-request AgentRunner via
+        state["_runner"] so this compiled graph is shared across all instances.
         """
         graph = StateGraph(AgentGraphState)
 
-        graph.add_node("dispatch", self._dispatch_node)
-        graph.add_node("agent", self._agent_node)
-        graph.add_node("finalize", self._finalize_node)
+        graph.add_node("dispatch", AgentRunner._dispatch_node)
+        graph.add_node("agent", AgentRunner._agent_node)
+        graph.add_node("finalize", AgentRunner._finalize_node)
 
         graph.add_edge(START, "dispatch")
         graph.add_conditional_edges(
@@ -2001,52 +2079,28 @@ class AgentRunner:
 
     @staticmethod
     def _is_chat_message(normalized_prompt: str, *, has_data: bool = False) -> bool:
-        """Detect greetings and simple chat messages that don't need tools."""
-        _CHAT_GREETINGS = (
-            "привет", "здравствуй", "добрый день", "добрый вечер", "доброе утро",
-            "hello", "hi", "hey", "хай", "ку", "приветствую",
-            "спасибо", "благодарю", "thank", "пожалуйста",
-            "пока", "до свидания", "bye", "good bye",
-            "как дела", "как ты", "как поживаешь",
-        )
-        _CHAT_ABOUT_SELF = (
-            "кто ты", "что ты умеешь", "расскажи о себе", "ты кто",
-            "что можешь", "что умеешь", "помоги", "help",
-            "что ты такое", "как тебя зовут", "твоё имя",
-        )
-        _DATA_MARKERS = (
-            "загрузил", "загрузила", "загружено", "залил", "залила",
-            "добавил", "добавила", "подключил", "подключила",
-            "uploaded", "attached", "connected",
-            "покажи", "покажи таблицы", "сколько строк", "какие колонки",
-            "анализ", "analyze", "analyse",
-        )
-        prompt = normalized_prompt.strip()
-        if not prompt:
-            return True
-        if any(m in prompt for m in _DATA_MARKERS):
-            return False
-        if any(prompt.startswith(g) or prompt == g for g in _CHAT_GREETINGS):
-            return True
-        if any(m in prompt for m in _CHAT_ABOUT_SELF):
-            return True
-        if len(prompt) < 4 and not has_data:
-            return True
-        return False
+        """Detect greetings and simple chat messages that don't need tools.
+
+        Delegates to the module-level ``is_chat_query`` so the same heuristics
+        are used by the routing logic here and by the API error-message layer.
+        """
+        return is_chat_query(normalized_prompt, has_data=has_data)
 
     # ── Graph nodes ───────────────────────────────────────────────────────────
 
-    def _dispatch_node(self, state: AgentGraphState) -> dict[str, Any]:
+    @staticmethod
+    def _dispatch_node(state: AgentGraphState) -> dict[str, Any]:
         """Dispatch node: keyword pre-check, then either bypass or build analysis context.
 
-        Three lightweight keyword bypasses (no LLM call):
+        Two lightweight keyword bypasses (no LLM call):
           chat    → plain chat response (greetings, self-description queries)
-          rag     → external knowledge-base retrieval via rag_service
           summary → management note synthesized from conversation history
 
         All other requests fall through to context assembly: tools, sandbox,
         capability_context are built here and passed to _agent_node.
+        Note: RagTool is a regular tool in the agent loop, not a bypass route.
         """
+        runner: AgentRunner = state["_runner"]
         df = state.get("df")
         prompt = state.get("prompt", "")
         callbacks = state.get("callbacks", [])
@@ -2056,21 +2110,21 @@ class AgentRunner:
         trace_context = state.get("trace_context") or {}
         session_source = state.get("session_source") or {}
 
-        tool_db_runtime = self._resolve_tool_db_runtime_config(session_source, trace_context)
-        csv_loaded, csv_session_id = self._resolve_csv_runtime_state(session_source, trace_context)
+        tool_db_runtime = runner._resolve_tool_db_runtime_config(session_source, trace_context)  # noqa: SLF001
+        csv_loaded, csv_session_id = AgentRunner._resolve_csv_runtime_state(session_source, trace_context)
         has_data = bool(
             df is not None
             or tool_db_runtime is not None
             or (csv_loaded and str(csv_session_id or "").strip())
         )
 
-        quick = self._quick_route(prompt, has_data=has_data)
+        quick = AgentRunner._quick_route(prompt, has_data=has_data)
 
         # ── Chat bypass ──────────────────────────────────────────────────────
         if quick == "chat":
             data_suffix = _build_chat_data_context(df, session_source)
             try:
-                response = self.chat(
+                response = runner.chat(
                     prompt=prompt,
                     history=history,
                     use_history=use_history,
@@ -2081,7 +2135,7 @@ class AgentRunner:
                 )
             except Exception:
                 response = AgentResponse(
-                    final_text=self._fallback_text(prompt, df),
+                    final_text=runner._fallback_text(prompt, df),  # noqa: SLF001
                     reasoning=None,
                     artifacts=[],
                     route="chat",
@@ -2090,23 +2144,23 @@ class AgentRunner:
 
         # ── Summary bypass ───────────────────────────────────────────────────
         if quick == "summary":
-            self._emit_phase_event(
+            runner._emit_phase_event(  # noqa: SLF001
                 callbacks, phase="act", title="Формирование управленческой записки",
                 content="", step_index=0, max_steps=1, status="streaming",
             )
-            self._emit_progress_event(
+            runner._emit_progress_event(  # noqa: SLF001
                 callbacks, phase="act", title="Собираю управленческую записку",
                 details="Анализирую релевантную историю переписки и артефакты.",
                 step_index=0, max_steps=1,
             )
-            response = self._build_management_note(
+            response = runner._build_management_note(  # noqa: SLF001
                 prompt=prompt,
                 history=history,
                 include_reasoning=include_reasoning,
                 callbacks=callbacks,
                 trace_context=trace_context,
             )
-            self._emit_phase_event(
+            runner._emit_phase_event(  # noqa: SLF001
                 callbacks, phase="act", title="Формирование управленческой записки",
                 content="Управленческая записка сформирована.",
                 step_index=0, max_steps=1, status="done",
@@ -2119,22 +2173,22 @@ class AgentRunner:
 
         session_id = trace_context.get("session_id", "default")
         sandbox = SandboxManager.get_instance().get_or_create(session_id)
-        sandbox.ensure_storage_dir(Path(self.settings.storage_dir) / session_id)
+        sandbox.ensure_storage_dir(Path(runner.settings.storage_dir) / session_id)
         if df is not None:
             source_label = str(trace_context.get("dataset_name", "") or "")
             sandbox.bind_dataframe(df, source_label=source_label, db_runtime_config=tool_db_runtime)
 
         _ctx = ToolBuildContext(
-            settings=self.settings,
-            allowed_tool_keys=self.allowed_tool_keys,
+            settings=runner.settings,
+            allowed_tool_keys=runner.allowed_tool_keys,
             df=tool_df,
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
             sandbox=sandbox,
         )
-        tools = self._tool_registry.build_tools(_ctx)
-        tool_descriptions = self._tool_registry.describe_available_tools(_ctx)
+        tools = runner._tool_registry.build_tools(_ctx)  # noqa: SLF001
+        tool_descriptions = runner._tool_registry.describe_available_tools(_ctx)  # noqa: SLF001
 
         # Inject tool descriptions into planner_tool, excluding itself to avoid
         # the planner recommending a recursive planner_tool call.
@@ -2146,11 +2200,11 @@ class AgentRunner:
             if hasattr(_tool, "set_tool_descriptions"):
                 _tool.set_tool_descriptions(_planner_descriptions)
 
-        depth_inner_limit = self._depth_profile.get("inner_recursion_limit")
+        depth_inner_limit = runner._depth_profile.get("inner_recursion_limit")  # noqa: SLF001
         max_steps = max(
             1,
             depth_inner_limit if isinstance(depth_inner_limit, int)
-            else self.settings.agent_inner_recursion_limit,
+            else runner.settings.agent_inner_recursion_limit,
         )
 
         # Infrastructure tools run outside the agent loop (planner is pre-executed,
@@ -2186,24 +2240,24 @@ class AgentRunner:
             "sandbox": sandbox,
             "capability_context": capability_context,
             "llm_unreachable": False,
+            "tool_db_runtime": tool_db_runtime,
         }
 
-    def _agent_node(self, state: AgentGraphState) -> dict[str, Any]:
+    @staticmethod
+    def _agent_node(state: AgentGraphState) -> dict[str, Any]:
         """Agent node: single direct tool-calling loop with skills and sandbox."""
+        runner: AgentRunner = state["_runner"]
         df = state.get("df")
         tools = state.get("tools", [])
         callbacks = state.get("callbacks", [])
 
         step_index = 1
-        max_steps = int(state.get("max_steps", self.settings.agent_inner_recursion_limit))
+        max_steps = int(state.get("max_steps", runner.settings.agent_inner_recursion_limit))
 
-        tool_db_runtime = self._resolve_tool_db_runtime_config(
-            state.get("session_source"),
-            state.get("trace_context"),
-        )
+        tool_db_runtime = state.get("tool_db_runtime")
         sandbox = state.get("sandbox")
 
-        execution_system_prompt = self._build_execution_system_prompt(
+        execution_system_prompt = runner._build_execution_system_prompt(  # noqa: SLF001
             capability_context=state.get("capability_context"),
             sandbox=sandbox,
             selected_skill_ids=state.get("selected_skill_ids") or [],
@@ -2224,19 +2278,19 @@ class AgentRunner:
         if planner is not None:
             planner_runtime_config: dict[str, Any] = {"callbacks": callbacks}
             if tc := state.get("trace_context"):
-                planner_runtime_config["metadata"] = self._build_runtime_metadata(tc)
+                planner_runtime_config["metadata"] = runner._build_runtime_metadata(tc)  # noqa: SLF001
 
             history = state.get("history", [])
             recent_history_snippet = "\n".join(
                 f"{'Пользователь' if h.get('role') == 'user' else 'Ассистент'}: "
-                f"{self._truncate(str(h.get('content', '')), 200)}"
+                f"{AgentRunner._truncate(str(h.get('content', '')), 200)}"
                 for h in history[-4:]
                 if h.get("content", "").strip()
             )
 
             # Hint planner about analytical skills whose triggers match the
             # prompt so the generated plan includes their prescribed steps.
-            matched_skills_hint = self._matched_analytical_skills_hint(state.get("prompt"))
+            matched_skills_hint = runner._matched_analytical_skills_hint(state.get("prompt"))  # noqa: SLF001
             planner_context = recent_history_snippet
             if matched_skills_hint:
                 planner_context = (
@@ -2265,11 +2319,11 @@ class AgentRunner:
                 logger.warning("Pre-loop planner_tool failed: %s", _plan_exc)
             tools_for_loop = [t for t in tools if getattr(t, "name", "") != "planner_tool"]
 
-        self._emit_phase_event(
+        runner._emit_phase_event(  # noqa: SLF001
             callbacks, phase="act", title="Выполнение анализа",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
         )
-        self._emit_progress_event(
+        runner._emit_progress_event(  # noqa: SLF001
             callbacks, phase="act", title="Выполняю анализ",
             details="Подбираю инструмент и формирую вызов tool.",
             step_index=step_index, max_steps=max_steps,
@@ -2280,7 +2334,7 @@ class AgentRunner:
 
         started_at = time.perf_counter()
         try:
-            response = self._direct_tool_loop(
+            response = runner._direct_tool_loop(  # noqa: SLF001
                 prompt=state.get("prompt", ""),
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
@@ -2292,9 +2346,9 @@ class AgentRunner:
                 trace_context=state.get("trace_context"),
             )
         except Exception as exc:
-            artifacts, tool_calls, tool_names = self._collect_tool_stats(callbacks)
+            artifacts, tool_calls, tool_names = runner._collect_tool_stats(callbacks)  # noqa: SLF001
             response = AgentResponse(
-                final_text=self._artifacts_recovery_text(artifacts),
+                final_text=runner._artifacts_recovery_text(artifacts),  # noqa: SLF001
                 reasoning=f"Agent step failed: {exc}",
                 artifacts=artifacts,
                 route="analysis",
@@ -2303,7 +2357,7 @@ class AgentRunner:
             )
 
         elapsed_sec = time.perf_counter() - started_at
-        if elapsed_sec > max(1, self.settings.agent_step_timeout_sec):
+        if elapsed_sec > max(1, runner.settings.agent_step_timeout_sec):
             response.reasoning = (
                 (response.reasoning or "")
                 + f"\n\nStep timeout guard triggered ({int(elapsed_sec * 1000)} ms)."
@@ -2326,7 +2380,7 @@ class AgentRunner:
             types = [artifact_type_label(getattr(a, "artifact_type", "")) for a in response.artifacts]
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
-        self._emit_phase_event(
+        runner._emit_phase_event(  # noqa: SLF001
             callbacks, phase="act", title="Анализ завершён",
             content="\n".join(tool_summary_lines) if tool_summary_lines else "Шаг выполнен.",
             step_index=step_index, max_steps=max_steps, status="done",
@@ -2334,17 +2388,19 @@ class AgentRunner:
 
         return {"response": response, "step_index": step_index}
 
-    def _finalize_node(self, state: AgentGraphState) -> dict[str, AgentResponse]:
+    @staticmethod
+    def _finalize_node(state: AgentGraphState) -> dict[str, AgentResponse]:
         """Finalize node: rewrite generic text, run quality review, return response."""
+        runner: AgentRunner = state["_runner"]
         callbacks = state.get("callbacks", [])
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", 1))
 
-        self._emit_phase_event(
+        runner._emit_phase_event(  # noqa: SLF001
             callbacks, phase="finalize", title="Финализация",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
         )
-        self._emit_progress_event(
+        runner._emit_progress_event(  # noqa: SLF001
             callbacks, phase="finalize", title="Формирую финальный ответ",
             details="Собираю выводы только по подтвержденным артефактам.",
             step_index=step_index, max_steps=max_steps,
@@ -2357,12 +2413,12 @@ class AgentRunner:
 
         # LLM unreachable before any response was produced.
         if state.get("llm_unreachable") and response is None:
-            self._emit_phase_event(
+            runner._emit_phase_event(  # noqa: SLF001
                 callbacks, phase="finalize", title="Финализация",
                 content=_LLM_UNAVAILABLE_USER_TEXT,
                 step_index=step_index, max_steps=max_steps, status="done",
             )
-            self._emit_progress_event(
+            runner._emit_progress_event(  # noqa: SLF001
                 callbacks, phase="finalize", title="LLM недоступна",
                 details=_LLM_UNAVAILABLE_USER_TEXT, step_index=step_index, max_steps=max_steps,
             )
@@ -2381,25 +2437,25 @@ class AgentRunner:
         # LLM became unreachable mid-execution — return partial response as-is.
         if response is not None and getattr(response, "llm_unreachable", False):
             text = (response.final_text or "").strip() or _LLM_UNAVAILABLE_USER_TEXT
-            self._emit_phase_event(
+            runner._emit_phase_event(  # noqa: SLF001
                 callbacks, phase="finalize", title="Финализация",
                 content=text, step_index=step_index, max_steps=max_steps, status="done",
             )
-            self._emit_progress_event(
+            runner._emit_progress_event(  # noqa: SLF001
                 callbacks, phase="finalize", title="LLM недоступна",
                 details=text, step_index=step_index, max_steps=max_steps,
             )
             return {"response": response}
 
         if response is None:
-            self._emit_phase_event(
+            runner._emit_phase_event(  # noqa: SLF001
                 callbacks, phase="finalize", title="Финализация",
                 content="Нет ответа от агента, формирую fallback.",
                 step_index=step_index, max_steps=max_steps, status="done",
             )
             return {
                 "response": AgentResponse(
-                    final_text=self._fallback_text(prompt, df, stop_reason=stop_reason),
+                    final_text=runner._fallback_text(prompt, df, stop_reason=stop_reason),  # noqa: SLF001
                     reasoning="No response produced by graph.",
                     artifacts=[],
                     route="analysis",
@@ -2420,13 +2476,13 @@ class AgentRunner:
                 not response.final_text.strip()
                 or response.final_text.strip().startswith(RECOVERY_TEXT_PREFIX)
                 or response.final_text.strip().startswith(GENERIC_ARTIFACT_SUMMARY_PREFIX)
-                or self._response_too_generic(prompt, response.final_text)
+                or AgentRunner._response_too_generic(prompt, response.final_text)
                 or prompt.strip().endswith("?")
                 or _looks_like_plan
                 or _used_search
             )
             if should_rewrite:
-                grounded_summary = self._artifact_grounded_summary(
+                grounded_summary = runner._artifact_grounded_summary(  # noqa: SLF001
                     prompt, response.artifacts, base_text=response.final_text,
                 )
                 if grounded_summary:
@@ -2440,12 +2496,7 @@ class AgentRunner:
         _used_analytical = any(t in _analytical_tools for t in (response.tool_names or []))
         if _used_analytical or response.artifacts:
             try:
-                review = _ReviewTool(
-                    llm_model=self.settings.llm_model,
-                    llm_base_url=self.settings.llm_base_url,
-                    llm_api_key=self.settings.llm_api_key,
-                )
-                review_raw = review._run(  # noqa: SLF001
+                review_raw = runner._review_tool._run(  # noqa: SLF001
                     question=prompt,
                     answer=response.final_text,
                     tool_calls_count=response.tool_calls,
@@ -2462,9 +2513,9 @@ class AgentRunner:
                 pass
 
         if not response.final_text.strip():
-            response.final_text = self._fallback_text(prompt, df, stop_reason=stop_reason)
+            response.final_text = runner._fallback_text(prompt, df, stop_reason=stop_reason)  # noqa: SLF001
 
-        self._emit_phase_event(
+        runner._emit_phase_event(  # noqa: SLF001
             callbacks, phase="finalize", title="Финализация",
             content="Ответ сформирован.",
             step_index=step_index, max_steps=max_steps, status="done",
@@ -2549,7 +2600,10 @@ class AgentRunner:
             skill.skill_id for skill in self.skill_registry.resolve_selection(selected_skill_ids)
         ]
         request_kind = str((trace_context or {}).get("request_kind", "")).strip().lower()
-        cache_allowed = self.settings.agent_cache_enabled and request_kind != "stream"
+        # Cache only for persistent queries (/query endpoint).
+        # /evaluate (persist=False) and /stream both bypass the cache:
+        # evaluate is designed for preview without side-effects, and stream is real-time.
+        cache_allowed = self.settings.agent_cache_enabled and request_kind == "query"
 
         cache_key = self._query_cache_key(
             df=df,
@@ -2574,8 +2628,9 @@ class AgentRunner:
 
         # Graph: prepare → agent → finalize (3 supersteps max).
         try:
-            result = self._graph.invoke(
+            result = AgentRunner._compiled_graph.invoke(
                 {
+                    "_runner": self,
                     "df": df,
                     "prompt": prompt,
                     "history": history,

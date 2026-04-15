@@ -274,6 +274,7 @@ class QueryResponse(BaseModel):
     artifacts: list[ArtifactPayload]
     values: dict[str, Any] | None = None
     metrics: QueryMetrics
+    persistence_failed: bool = False  # True when post-processing (store/artifact persistence) failed
 
 
 class SessionSourceResponse(BaseModel):

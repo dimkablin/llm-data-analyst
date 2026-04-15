@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from dataclasses import replace
 from typing import Annotated, Any
@@ -15,6 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.agent.reasoning import MAX_REASONING_STEPS, ReasoningStep
+from backend.agent.runner import is_chat_query
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
@@ -29,11 +29,6 @@ from backend.sessions.session_store import SessionState, SessionStore
 from backend.skills import SkillSelectionError
 
 router = APIRouter(tags=["Запросы и агент"])
-
-CHAT_FALLBACK_RE = re.compile(
-    r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
-    re.IGNORECASE,
-)
 
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore
@@ -295,7 +290,7 @@ def _build_stream_callbacks(
         queue,
         loop,
         show_think=settings.llm_show_think,
-        enable_thinking=settings.llm_enable_thinking,
+        enable_thinking=settings.llm_enable_thinking and include_reasoning,
     )
     tool_collector.token_callback = token_collector
     callbacks: list[Any] = [
@@ -363,7 +358,7 @@ def _build_response(
 
 def _fallback_text(query: str, reason: str) -> str:  # pylint: disable=redefined-outer-name
     normalized = query.strip().lower()
-    if CHAT_FALLBACK_RE.search(normalized):
+    if is_chat_query(normalized):
         if "как дела" in normalized:
             return (
                 "Все в порядке. Сейчас сервис ограничен, но я на связи и готов помочь."
@@ -670,7 +665,6 @@ async def _execute_query(
     )
 
     try:
-        runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
         with _query_trace_context_fn(
             session_id=session_id,
             user_id=current_user.id,
@@ -851,6 +845,7 @@ async def query_stream(
             loop=loop,
             session_source=session_source,
             exec_store=exec_store,
+            include_reasoning=payload.include_reasoning,
         )
     )
     started_at = time.perf_counter()
@@ -897,7 +892,6 @@ async def query_stream(
 
     async def run_agent() -> None:
         try:
-            runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
             with _query_trace_context_fn(
                 session_id=session_id,
                 user_id=current_user.id,
@@ -997,6 +991,9 @@ async def query_stream(
                 )
                 artifacts = []
                 effective_reasoning = merged_reasoning or response.reasoning
+                _persistence_failed = True
+            else:
+                _persistence_failed = False
 
             final_payload = _build_response(
                 session_id,
@@ -1008,13 +1005,15 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 force_reasoning=True,
             ).model_dump()
+            if _persistence_failed:
+                final_payload["persistence_failed"] = True
             # Attach execution graph to final payload.
             gt = phase_collector.graph_tracker
             if gt is not None and gt:
                 final_payload["execution_graph"] = gt.snapshot()
             await queue.put(("final", final_payload))
         except SkillSelectionError as exc:
-            await queue.put(_sse_event("error", {"detail": str(exc)}))
+            await queue.put(("error", {"detail": str(exc)}))
             return
         except TimeoutError:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1084,7 +1083,7 @@ async def query_stream(
 
             if agent_finished.is_set():
                 if emitted_phase_events >= len(phase_collector.events):
-                    logger.warning("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
+                    logger.debug("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
                     break
 
             if not emitted_any:

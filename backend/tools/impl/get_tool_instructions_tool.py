@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 class _Input(BaseModel):
     tool_name: str = Field(
         description=(
-            "ID of the tool or analytical skill to fetch instructions for. "
-            "For tools: 'plotly_tool', 'sql_tool', 'pandas_tool', etc. "
-            "For analytical methods: 'auto_eda', 'cohort_analysis', 'ab_test_analysis', etc."
+            "ID инструмента или аналитического скила для загрузки инструкций. "
+            "Инструменты: 'plotly_tool', 'sql_tool', 'pandas_tool' и др. "
+            "Аналитические методы: 'auto_eda', 'cohort_analysis', 'ab_test_analysis' и др."
         )
     )
 
@@ -33,11 +33,11 @@ class GetToolInstructionsTool(BaseTool):
 
     name: str = "get_tool_instructions"
     description: str = (
-        "Get full usage instructions for a tool or analytical method. "
-        "Returns scope variables, code patterns, rules, and step-by-step algorithms. "
-        "Call this for complex tools (plotly_tool, sql_tool, forecast_tool, etc.) "
-        "and for analytical methods (auto_eda, cohort_analysis, ab_test_analysis, etc.) "
-        "when you need the full contract before executing."
+        "Загрузи полные инструкции по использованию инструмента или аналитического метода. "
+        "Возвращает переменные scope, паттерны кода, правила и пошаговые алгоритмы. "
+        "Вызывай для сложных инструментов (plotly_tool, sql_tool, forecast_tool и др.) "
+        "и аналитических методов (auto_eda, cohort_analysis, ab_test_analysis и др.), "
+        "когда нужен полный контракт перед выполнением."
     )
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"
@@ -61,11 +61,11 @@ class GetToolInstructionsTool(BaseTool):
         analytical_ids = sorted(s.skill_id for s in all_skills if s.kind == "analytical")
         parts = []
         if tool_ids:
-            parts.append(f"tools: {', '.join(tool_ids)}")
+            parts.append(f"инструменты: {', '.join(tool_ids)}")
         if analytical_ids:
-            parts.append(f"analytical methods: {', '.join(analytical_ids)}")
-        available_str = "; ".join(parts) or "none"
+            parts.append(f"аналитические методы: {', '.join(analytical_ids)}")
+        available_str = "; ".join(parts) or "нет"
         return (
-            f"Unknown skill '{tool_name}'. "
-            f"Available: {available_str}."
+            f"Скил '{tool_name}' не найден. "
+            f"Доступные: {available_str}."
         )

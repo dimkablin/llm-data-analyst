@@ -856,6 +856,30 @@ export function useChatAgent({
         setStreamBlocks([]);
       }
 
+      // Assign kind to thinking blocks to match backend's _build_reasoning_steps logic.
+      // During streaming, onThinkingEnd pushes thinking blocks without kind. After streaming
+      // ends, filterBlocks() defaults kind=undefined to "tool_synthesis", which may differ
+      // from the kind the backend assigns (e.g. first block → "planning"). This causes
+      // thinking blocks to disappear until page reload restores them via reasoning_steps.
+      // Fix: replicate backend's position-based kind assignment before saving the message.
+      {
+        const thinkingIndices: number[] = [];
+        for (let i = 0; i < collectedBlocks.length; i++) {
+          const b = collectedBlocks[i]!;
+          if (b.type === "thinking" && !b.kind) thinkingIndices.push(i);
+        }
+        const n = thinkingIndices.length;
+        if (n === 1) {
+          (collectedBlocks[thinkingIndices[0]!] as import("../lib/backend-types").ThinkingBlock).kind = "final_synthesis";
+        } else if (n > 1) {
+          for (let pos = 0; pos < n; pos++) {
+            const kind: import("../lib/backend-types").ThinkingBlock["kind"] =
+              pos === 0 ? "planning" : pos === n - 1 ? "final_synthesis" : "tool_synthesis";
+            (collectedBlocks[thinkingIndices[pos]!] as import("../lib/backend-types").ThinkingBlock).kind = kind;
+          }
+        }
+      }
+
       if (aborted) {
         const partialReasoning = buildStreamingReasoning(collectedReasoning);
         if (streamState.streamedText.trim() || partialReasoning) {
