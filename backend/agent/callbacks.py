@@ -18,6 +18,15 @@ from backend.artifacts.execution import (
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
 
+# Infrastructure tools whose pre_reasoning is not stored — they produce generic
+# boilerplate thinking ("let me check what tool to use") that adds UI noise.
+_INFRA_TOOL_NAMES: frozenset[str] = frozenset({
+    "planner_tool",
+    "get_tool_instructions",
+    "memory_tool",
+    "session_note_tool",
+})
+
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _THINK_OPEN_LEN = len(_THINK_OPEN)
@@ -337,11 +346,16 @@ class ToolCollector(BaseCallbackHandler):
             self.tool_names.append(tool_name)
         input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
         input_code = self._extract_input_code(input_str[:2000])
-        pre_reasoning = (
+        # Always consume pending thinking to keep the buffer clean,
+        # but only attach it to data/analysis tools — infrastructure tools
+        # (planner, skill loader, memory) produce generic boilerplate thinking
+        # that adds noise without analytical value.
+        raw_pre_reasoning = (
             self.token_callback.take_pending_thinking()
             if self.token_callback is not None
             else ""
         )
+        pre_reasoning = raw_pre_reasoning if tool_name not in _INFRA_TOOL_NAMES else ""
         event: dict[str, Any] = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
