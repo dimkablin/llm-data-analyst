@@ -300,7 +300,7 @@ function toChatMessages(
       ? filteredPersistedTools.map(persistedToolToStream)
       : undefined;
     const blocks =
-      item.role === "assistant"
+      item.role === "assistant" || item.role === "ai"
         ? buildBlocksFromHistory(tools, item.reasoning_steps ?? null)
         : undefined;
     return {
