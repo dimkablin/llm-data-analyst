@@ -221,6 +221,20 @@ function buildBlocksFromHistory(
   // Collect trimmed pre_reasoning content for deduplication of orphan steps.
   const preReasoningSet = new Set<string>();
 
+  // Index infra-tool reasoning steps by tool_name for inline fallback rendering.
+  // These steps have tool_name set because pre_reasoning was discarded for infra tools
+  // but the backend still persists them in reasoning_steps so reload can show them.
+  const infraStepsByToolName = new Map<string, import("../lib/backend-types").PersistedReasoningStep[]>();
+  if (reasoningSteps) {
+    for (const step of reasoningSteps) {
+      if (step.tool_name) {
+        const arr = infraStepsByToolName.get(step.tool_name) ?? [];
+        arr.push(step);
+        infraStepsByToolName.set(step.tool_name, arr);
+      }
+    }
+  }
+
   if (tools && tools.length > 0) {
     for (const tool of tools) {
       const trimmedPre = tool.pre_reasoning?.trim();
@@ -232,6 +246,22 @@ function buildBlocksFromHistory(
           content: tool.pre_reasoning!,
           kind: "tool_synthesis",
         });
+      } else {
+        // Infra tool fallback: pre_reasoning was discarded on backend; use the
+        // reasoning_step that was saved with this tool_name instead.
+        const stepsForTool = infraStepsByToolName.get(tool.tool_name) ?? [];
+        for (const step of stepsForTool) {
+          const content = step.content?.trim();
+          if (content && !preReasoningSet.has(content)) {
+            preReasoningSet.add(content);
+            blocks.push({
+              type: "thinking",
+              id: nextId(`rs-${step.step_index}`),
+              content: step.content,
+              kind: step.kind ?? "tool_synthesis",
+            });
+          }
+        }
       }
       const toolUseId = nextId("tool");
       blocks.push({
@@ -260,13 +290,13 @@ function buildBlocksFromHistory(
   }
 
   // Orphan reasoning steps (final_synthesis etc.) appear AFTER tool calls.
-  // Skip any step whose content is already present as a tool's pre_reasoning —
-  // those were placed inline above and would otherwise render as duplicates here.
+  // Skip any step already placed inline (either via pre_reasoning or infra fallback).
   if (reasoningSteps && reasoningSteps.length > 0) {
     for (const step of reasoningSteps) {
       const content = step.content?.trim();
-      if (!content || step.tool_name) continue;
+      if (!content) continue;
       if (preReasoningSet.has(content)) continue; // already shown inline
+      if (step.tool_name) continue; // infra step — already placed inline above
       blocks.push({
         type: "thinking",
         id: nextId(`rs-${step.step_index}`),

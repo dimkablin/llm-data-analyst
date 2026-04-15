@@ -33,13 +33,17 @@ import { SpinnerDisplay } from "../SpinnerDisplay";
 import { BlockTimeline, ThinkingBlock } from "./blocks";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
-function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+function Tip({ label, children, side = "top" }: { label: string; children: React.ReactNode; side?: "top" | "bottom" }) {
+  const isTop = side === "top";
   return (
     <div className="group/tip relative inline-flex">
       {children}
-      <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50">
+      <div className={`pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50 ${isTop ? "bottom-full mb-2" : "top-full mt-2"}`}>
         {label}
-        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+        {isTop
+          ? <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+          : <div className="absolute left-1/2 bottom-full -translate-x-1/2 border-4 border-transparent border-b-popover" />
+        }
       </div>
     </div>
   );
@@ -192,7 +196,7 @@ export function ChatPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tip label="Экспорт чата">
+          <Tip label="Экспорт чата" side="bottom">
             <button
               type="button"
               onClick={onExportChat}
@@ -202,7 +206,7 @@ export function ChatPanel({
               <Download className="h-5 w-5" />
             </button>
           </Tip>
-          <Tip label="Настройки">
+          <Tip label="Настройки" side="bottom">
             <button
               type="button"
               onClick={onSettingsClick}

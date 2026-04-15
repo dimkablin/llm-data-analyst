@@ -520,12 +520,15 @@ def _merge_reasoning_text(*parts: str | None) -> str | None:
 def _build_reasoning_steps(
     raw_steps: list[str],
     tool_call_count: int,
+    ordered_tool_names: list[str] | None = None,
 ) -> list[ReasoningStep]:
-    """Возвращает только "orphan" шаги — те, что НЕ предшествовали tool_call.
+    """Возвращает "orphan" шаги И шаги инфраструктурных тулов.
 
-    Шаги с индексом i < tool_call_count уже сохранены как
+    Шаги с индексом i < tool_call_count обычно уже сохранены как
     PersistedToolCall.pre_reasoning и рендерятся inline в ToolCallList.
-    Повторное хранение в reasoning_steps создаёт дубли в UI.
+    Исключение — инфраструктурные тулы (planner_tool, get_tool_instructions и др.):
+    их pre_reasoning намеренно не сохраняется, поэтому мы помещаем такие шаги
+    в reasoning_steps с tool_name, чтобы фронтенд мог восстановить их при рефреше.
 
     Важно: использовать ОБЩЕЕ число вызовов тулов (с дублями), а не длину
     дедуплицированного response.tool_names — иначе повторные вызовы одного
@@ -533,15 +536,24 @@ def _build_reasoning_steps(
 
     Для ответов без тулов (tool_call_count=0) возвращаются все шаги.
     """
+    from backend.agent.callbacks import _INFRA_TOOL_NAMES
+
     steps = raw_steps[:MAX_REASONING_STEPS]
     result: list[ReasoningStep] = []
     for i, content in enumerate(steps):
         if not content.strip():
             continue
         has_tool = i < tool_call_count
+        tool_name_for_step: str | None = None
         if has_tool:
-            # Этот thinking уже хранится в tools[i].pre_reasoning — пропускаем.
-            continue
+            tool_name_for_step = (
+                ordered_tool_names[i] if ordered_tool_names and i < len(ordered_tool_names) else None
+            )
+            is_infra = tool_name_for_step in _INFRA_TOOL_NAMES if tool_name_for_step else False
+            if not is_infra:
+                # Уже хранится в tools[i].pre_reasoning — пропускаем.
+                continue
+            # Для infra-тулов pre_reasoning пуст — сохраняем шаг с tool_name.
         is_last = i == len(steps) - 1
         if i == 0 and len(steps) > 1:
             kind: str = "planning"
@@ -553,7 +565,7 @@ def _build_reasoning_steps(
             step_index=i,
             kind=kind,  # type: ignore[arg-type]
             content=content,
-            tool_name=None,
+            tool_name=tool_name_for_step,
         ).truncated()
         result.append(step)
     return result
@@ -940,7 +952,14 @@ async def query_stream(
             raw_steps = token_collector.all_reasoning_steps() or response.reasoning_steps
             # Use tool_collector.tool_calls (total count with duplicates) instead of
             # response.tool_names (deduplicated list) — same tool called twice = 2 LLM steps.
-            reasoning_steps = _build_reasoning_steps(raw_steps, tool_collector.tool_calls)
+            # ordered_start_names gives us the tool name at each reasoning step index so
+            # _build_reasoning_steps can detect infra tools whose pre_reasoning was discarded.
+            ordered_start_names = [
+                e["tool_name"] for e in tool_collector.events if e.get("phase") == "start"
+            ]
+            reasoning_steps = _build_reasoning_steps(
+                raw_steps, tool_collector.tool_calls, ordered_start_names
+            )
             try:
                 from backend.artifacts.bridge import execution_to_api_payload
 
