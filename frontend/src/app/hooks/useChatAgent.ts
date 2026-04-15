@@ -200,7 +200,13 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
  *
  * Order rule (mirrors backend `_build_reasoning_steps` + live stream order):
  *   pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
- *   followed by any orphan reasoning_steps (final synthesis after last tool).
+ *   followed by unique orphan reasoning_steps not already captured as pre_reasoning.
+ *
+ * Deduplication: the backend `_build_reasoning_steps` uses index-based mapping
+ * between raw thinking blocks and tool calls. When internal LLM calls (e.g. inside
+ * planner_tool) produce extra thinking blocks, the index mapping drifts and some
+ * reasoning_steps end up containing content identical to a tool's pre_reasoning.
+ * We deduplicate by content so thinking blocks do not appear twice.
  *
  * Returns undefined if there are no blocks to render (no tools & no orphan steps).
  */
@@ -212,13 +218,18 @@ function buildBlocksFromHistory(
   let counter = 0;
   const nextId = (prefix: string): string => `hist-blk-${prefix}-${counter++}`;
 
+  // Collect trimmed pre_reasoning content for deduplication of orphan steps.
+  const preReasoningSet = new Set<string>();
+
   if (tools && tools.length > 0) {
     for (const tool of tools) {
-      if (tool.pre_reasoning && tool.pre_reasoning.trim()) {
+      const trimmedPre = tool.pre_reasoning?.trim();
+      if (trimmedPre) {
+        preReasoningSet.add(trimmedPre);
         blocks.push({
           type: "thinking",
           id: nextId("think"),
-          content: tool.pre_reasoning,
+          content: tool.pre_reasoning!,
         });
       }
       const toolUseId = nextId("tool");
@@ -247,11 +258,14 @@ function buildBlocksFromHistory(
     }
   }
 
-  // Orphan reasoning steps (final_synthesis etc.) always appear AFTER tool calls.
-  // Backend persists only steps without an associated tool in `reasoning_steps`.
+  // Orphan reasoning steps (final_synthesis etc.) appear AFTER tool calls.
+  // Skip any step whose content is already present as a tool's pre_reasoning —
+  // those were placed inline above and would otherwise render as duplicates here.
   if (reasoningSteps && reasoningSteps.length > 0) {
-    const orphan = reasoningSteps.filter((s) => !s.tool_name && s.content?.trim());
-    for (const step of orphan) {
+    for (const step of reasoningSteps) {
+      const content = step.content?.trim();
+      if (!content || step.tool_name) continue;
+      if (preReasoningSet.has(content)) continue; // already shown inline
       blocks.push({
         type: "thinking",
         id: nextId(`rs-${step.step_index}`),

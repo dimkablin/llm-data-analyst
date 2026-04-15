@@ -473,9 +473,12 @@ function MessageBubble({
       </div>
 
       <div className={`flex min-w-0 max-w-[88%] flex-col gap-1.5 ${isUser ? "items-end" : ""}`}>
-        {/* Live streaming: BlockTimeline (thinking interleaved with tool calls) */}
-        {!isUser && message.blocks?.length ? (
-          <BlockTimeline blocks={message.blocks} />
+        {/* History: BlockTimeline (thinking interleaved with tool calls).
+            Filter out thinking blocks when show_thinking is off to match live streaming behaviour. */}
+        {!isUser && message.blocks && message.blocks.length > 0 ? (
+          <BlockTimeline
+            blocks={settings.show_thinking ? message.blocks : message.blocks.filter((b) => b.type !== "thinking")}
+          />
         ) : (
           <>
             {/* Reload: orphan reasoning steps (final synthesis, no tool call follows).
