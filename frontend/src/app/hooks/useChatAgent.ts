@@ -14,10 +14,18 @@ import type {
   StreamToolCall,
 } from "../lib/backend-types";
 
-const META_TOOLS = new Set(["get_tool_instructions"]);
+const META_TOOLS = new Set<string>();
 
 function parseInputSummary(toolName: string, raw: string): string {
   if (META_TOOLS.has(toolName)) return "";
+  if (toolName === "get_tool_instructions") {
+    try {
+      const parsed = JSON.parse(raw.trim()) as Record<string, unknown>;
+      return typeof parsed.tool_name === "string" ? parsed.tool_name : raw.trim().slice(0, 40);
+    } catch {
+      return raw.trim().slice(0, 40);
+    }
+  }
   const trimmed = raw.trim();
   if (!trimmed) return "";
   try {
@@ -186,6 +194,75 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
   };
 }
 
+/**
+ * Reconstruct an ordered AssistantBlock[] from persisted history so reload
+ * renders thinking interleaved with tool calls exactly as it did live.
+ *
+ * Order rule (mirrors backend `_build_reasoning_steps` + live stream order):
+ *   pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
+ *   followed by any orphan reasoning_steps (final synthesis after last tool).
+ *
+ * Returns undefined if there are no blocks to render (no tools & no orphan steps).
+ */
+function buildBlocksFromHistory(
+  tools: StreamToolCall[] | undefined,
+  reasoningSteps: import("../lib/backend-types").PersistedReasoningStep[] | null | undefined,
+): AssistantBlock[] | undefined {
+  const blocks: AssistantBlock[] = [];
+  let counter = 0;
+  const nextId = (prefix: string): string => `hist-blk-${prefix}-${counter++}`;
+
+  if (tools && tools.length > 0) {
+    for (const tool of tools) {
+      if (tool.pre_reasoning && tool.pre_reasoning.trim()) {
+        blocks.push({
+          type: "thinking",
+          id: nextId("think"),
+          content: tool.pre_reasoning,
+        });
+      }
+      const toolUseId = nextId("tool");
+      blocks.push({
+        type: "tool_use",
+        id: toolUseId,
+        tool_name: tool.tool_name,
+        input_summary: tool.input_summary,
+        input_preview: tool.input_preview,
+        status: tool.status,
+        started_at: tool.started_at,
+        result_summary: undefined,
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+      blocks.push({
+        type: "tool_result",
+        id: nextId("res"),
+        tool_use_id: toolUseId,
+        tool_name: tool.tool_name,
+        status: tool.status === "error" ? "error" : "ok",
+        result_summary: "",
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+    }
+  }
+
+  // Orphan reasoning steps (final_synthesis etc.) always appear AFTER tool calls.
+  // Backend persists only steps without an associated tool in `reasoning_steps`.
+  if (reasoningSteps && reasoningSteps.length > 0) {
+    const orphan = reasoningSteps.filter((s) => !s.tool_name && s.content?.trim());
+    for (const step of orphan) {
+      blocks.push({
+        type: "thinking",
+        id: nextId(`rs-${step.step_index}`),
+        content: step.content,
+      });
+    }
+  }
+
+  return blocks.length > 0 ? blocks : undefined;
+}
+
 function toChatMessages(
   sessionId: string,
   history: Array<{
@@ -199,17 +276,32 @@ function toChatMessages(
     tools?: PersistedToolCall[];
   }>,
 ): ChatMessage[] {
-  const messages = history.map((item, index) => ({
-    id: item.id ?? `${item.timestamp}-${index}`,
-    backendId: item.id,
-    timestamp: item.timestamp,
-    role: item.role === "user" ? "user" : ("assistant" as const),
-    content: item.content,
-    reasoning: item.reasoning ?? null,
-    reasoning_steps: item.reasoning_steps ?? null,
-    artifacts: item.artifacts ?? [],
-    tools: item.tools?.length ? item.tools.map(persistedToolToStream) : undefined,
-  }));
+  const messages = history.map((item, index) => {
+    // Filter META_TOOLS (e.g. get_tool_instructions) to match live streaming behavior.
+    // Backend persists all tool calls; frontend hides meta tools from the UI.
+    const filteredPersistedTools = item.tools?.filter(
+      (t) => !META_TOOLS.has(t.tool_name),
+    );
+    const tools = filteredPersistedTools?.length
+      ? filteredPersistedTools.map(persistedToolToStream)
+      : undefined;
+    const blocks =
+      item.role === "assistant"
+        ? buildBlocksFromHistory(tools, item.reasoning_steps ?? null)
+        : undefined;
+    return {
+      id: item.id ?? `${item.timestamp}-${index}`,
+      backendId: item.id,
+      timestamp: item.timestamp,
+      role: item.role === "user" ? "user" : ("assistant" as const),
+      content: item.content,
+      reasoning: item.reasoning ?? null,
+      reasoning_steps: item.reasoning_steps ?? null,
+      artifacts: item.artifacts ?? [],
+      tools,
+      blocks,
+    };
+  });
   return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
 }
 
@@ -530,6 +622,8 @@ export function useChatAgent({
               if (!includeReasoning || !reasoningChunk) return;
               if (mode === "token") {
                 setStreamReasoning((prev) => prev + reasoningChunk);
+              } else if (mode === "chunk") {
+                setStreamReasoning(reasoningChunk);
               }
             },
             onThinkingStart: () => {
@@ -597,7 +691,6 @@ export function useChatAgent({
               if (META_TOOLS.has(event.tool_name)) return;
               const callId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
               const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
-              const preReasoning = pendingThinkingBlock;
               pendingThinkingBlock = "";
 
               const intentText = pendingIntentText.trim();
@@ -618,7 +711,6 @@ export function useChatAgent({
                 input_preview: event.input_preview || undefined,
                 status: "running",
                 started_at: Date.now(),
-                pre_reasoning: preReasoning || undefined,
               };
               collectedTools.push(entry);
               collectedBlocks.push({

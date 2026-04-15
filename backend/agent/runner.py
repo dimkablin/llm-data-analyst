@@ -317,8 +317,12 @@ class AgentRunner:
         user_memory: UserMemory | None = None,
         session_memory: SessionMemory | None = None,
         skill_registry: SkillRegistry | None = None,
+        enabled_analytical_skill_ids: set[str] | None = None,
     ) -> None:
         self.settings = settings
+        self.enabled_analytical_skill_ids = (
+            set(enabled_analytical_skill_ids) if enabled_analytical_skill_ids is not None else None
+        )
         self.db_runtime_service = db_runtime_service
         self.search_service = search_service
         self.forecast_service = forecast_service
@@ -398,7 +402,6 @@ class AgentRunner:
         enable_thinking = (
             self.settings.llm_enable_thinking
             and include_reasoning
-            and self.settings.llm_show_think
         )
 
         if enable_thinking:
@@ -1202,6 +1205,28 @@ class AgentRunner:
             lines += ["Описание доступных tools:", tool_descriptions]
         return lines
 
+    def _matched_analytical_skills_hint(self, user_prompt: str | None) -> str:
+        """Return a short bullet list of analytical skills whose triggers match the prompt.
+
+        Honors the per-user enabled-skill filter. Used to steer planner_tool so
+        the generated plan reflects the prescribed analytical algorithm.
+        """
+        if not user_prompt:
+            return ""
+        prompt_lower = str(user_prompt).lower()
+        allow = self.enabled_analytical_skill_ids
+        lines: list[str] = []
+        for skill in self.skill_registry.list_skills():
+            if skill.kind != "analytical":
+                continue
+            if allow is not None and skill.skill_id not in allow:
+                continue
+            for trigger in skill.triggers:
+                if trigger and trigger in prompt_lower:
+                    lines.append(f"- `{skill.skill_id}`: {skill.description}")
+                    break
+        return "\n".join(lines)
+
     def _build_execution_system_prompt(
         self,
         *,
@@ -1211,6 +1236,7 @@ class AgentRunner:
         df: pd.DataFrame | None = None,
         session_source: dict[str, Any] | None = None,
         tool_db_runtime: Any | None = None,
+        user_prompt: str | None = None,
     ) -> str:
         """Build the complete system prompt for the agent tool-calling loop.
 
@@ -1240,8 +1266,12 @@ class AgentRunner:
         if tool_skills_block:
             sections.append(tool_skills_block)
 
-        # Analytical skills: listed so LLM knows they exist; fetched on demand.
-        analytical_skills_block = self.skill_registry.build_analytical_skills_brief_block()
+        # Analytical skills: filtered by user-enabled set; matching skills get full
+        # instructions auto-expanded inline so the agent actually follows them.
+        analytical_skills_block = self.skill_registry.build_analytical_skills_brief_block(
+            enabled_skill_ids=self.enabled_analytical_skill_ids,
+            user_prompt=user_prompt,
+        )
         if analytical_skills_block:
             sections.append(analytical_skills_block)
 
@@ -1842,6 +1872,23 @@ class AgentRunner:
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
                 final_text = self._content_to_text(getattr(response, "content", ""))
+                # If the model returned empty after a get_tool_instructions call,
+                # it likely spent its output budget on thinking. Nudge it to act.
+                if not final_text and messages and isinstance(messages[-1], ToolMessage):
+                    last_tool_call_name = ""
+                    for msg in reversed(messages):
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            last_tool_call_name = msg.tool_calls[0].get("name", "")
+                            break
+                    if last_tool_call_name == "get_tool_instructions":
+                        messages.append(HumanMessage(
+                            content=(
+                                "Ты получил инструкции выше. "
+                                "Немедленно вызывай первый tool из Шага 1. "
+                                "Никакого текста — только вызов tool."
+                            )
+                        ))
+                        continue
                 break
 
             messages.append(response)
@@ -2151,6 +2198,7 @@ class AgentRunner:
             df=df,
             session_source=state.get("session_source"),
             tool_db_runtime=tool_db_runtime,
+            user_prompt=state.get("prompt"),
         )
 
         # ── Pre-call planner_tool outside the iteration budget ───────────────
@@ -2174,13 +2222,24 @@ class AgentRunner:
                 if h.get("content", "").strip()
             )
 
+            # Hint planner about analytical skills whose triggers match the
+            # prompt so the generated plan includes their prescribed steps.
+            matched_skills_hint = self._matched_analytical_skills_hint(state.get("prompt"))
+            planner_context = recent_history_snippet
+            if matched_skills_hint:
+                planner_context = (
+                    f"{planner_context}\n\n[Аналитические скилы, подходящие по триггерам — "
+                    f"первым шагом плана ОБЯЗАТЕЛЬНО поставь get_tool_instructions(\"<skill_id>\") "
+                    f"для каждого из них, затем опиши дальнейшие шаги]\n{matched_skills_hint}"
+                ).strip()
+
             try:
                 plan_result = planner.invoke(
                     {
                         "name": "planner_tool",
                         "args": {
                             "question": state.get("prompt", ""),
-                            "context": recent_history_snippet,
+                            "context": planner_context,
                         },
                         "id": "pre_plan_0",
                         "type": "tool_call",

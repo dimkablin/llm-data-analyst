@@ -738,6 +738,13 @@ async def _execute_query(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    user_skill_settings = _auth_db.list_user_skill_settings(current_user.id)
+    enabled_analytical_skill_ids = {
+        skill.skill_id
+        for skill in _runner.skill_registry.list_skills()
+        if skill.kind == "analytical"
+        and user_skill_settings.get(skill.skill_id, True)
+    }
     user_memory = _user_memory_service.load(current_user.id)
     from backend.sessions.session_memory import SessionMemory as _SessionMemory
     session_memory = _SessionMemory(notes=state.session_memory or "")
@@ -756,6 +763,7 @@ async def _execute_query(
         user_memory=user_memory,
         session_memory=session_memory,
         skill_registry=_runner.skill_registry,
+        enabled_analytical_skill_ids=enabled_analytical_skill_ids,
     )
 
     try:
@@ -959,6 +967,13 @@ async def query_stream(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    user_skill_settings = _auth_db.list_user_skill_settings(current_user.id)
+    enabled_analytical_skill_ids = {
+        skill.skill_id
+        for skill in _runner.skill_registry.list_skills()
+        if skill.kind == "analytical"
+        and user_skill_settings.get(skill.skill_id, True)
+    }
     user_memory = _user_memory_service.load(current_user.id)
     from backend.sessions.session_memory import SessionMemory as _SessionMemory
     session_memory = _SessionMemory(notes=state.session_memory or "")
@@ -974,6 +989,7 @@ async def query_stream(
         user_memory=user_memory,
         session_memory=session_memory,
         skill_registry=_runner.skill_registry,
+        enabled_analytical_skill_ids=enabled_analytical_skill_ids,
     )
 
     async def run_agent() -> None:

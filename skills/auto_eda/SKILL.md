@@ -8,7 +8,9 @@ triggers: eda, разведочный анализ, исследование д�
 
 Используй для глубокого первичного анализа датасета. Охватывает распределения, корреляции, выбросы и типовые проблемы данных.
 
-### Шаг 1 — числовые распределения через pandas_tool
+### Шаг 1 — числовые статистики → **pandas_tool** (НЕ plotly_tool)
+> Этот шаг возвращает TableArtifact. Используй **только pandas_tool**.
+
 ```python
 num_cols = df.select_dtypes(include="number").columns.tolist()
 
@@ -80,7 +82,9 @@ tool_result = chart.result(fig, artifact_name="distributions")
 tool_result
 ```
 
-### Шаг 4 — анализ категориальных колонок через pandas_tool
+### Шаг 4 — категориальные колонки → **pandas_tool** (НЕ plotly_tool)
+> Этот шаг возвращает TableArtifact. Используй **только pandas_tool**.
+
 ```python
 cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 

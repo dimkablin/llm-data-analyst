@@ -186,24 +186,40 @@ class SkillRegistry:
             lines.append("")
         return "\n".join(lines).strip()
 
-    def build_analytical_skills_brief_block(self) -> str:
-        """One-liner per analytical skill + hint to call get_tool_instructions.
+    def build_analytical_skills_brief_block(
+        self,
+        *,
+        enabled_skill_ids: set[str] | frozenset[str] | None = None,
+        user_prompt: str | None = None,
+    ) -> str:
+        """Analytical skills prompt section — brief list only.
 
-        Lists all analytical skills so the LLM knows they exist and when to use them.
-        Full instructions are fetched on demand via get_tool_instructions(skill_id).
+        Skills are never auto-expanded inline. The agent must always call
+        ``get_tool_instructions(skill_id)`` to receive the full step-by-step
+        algorithm as a tool result. This prevents the agent from reading code
+        examples in the system prompt and hallucinating results instead of
+        actually executing the tools.
+
+        - If *enabled_skill_ids* is provided, only those analytical skills are listed.
+        - *user_prompt* is accepted for API compatibility but no longer triggers inline expansion.
         """
         self.load()
         analytical_skills = [
             skill for skill in self._skills_by_id.values() if skill.kind == "analytical"
         ]
+        if enabled_skill_ids is not None:
+            allow = {str(sid).strip() for sid in enabled_skill_ids if str(sid).strip()}
+            analytical_skills = [s for s in analytical_skills if s.skill_id in allow]
         if not analytical_skills:
             return ""
+
         lines = [
             "## Аналитические скилы",
             "",
             "ОБЯЗАТЕЛЬНО: если запрос совпадает с триггерами одного из методов ниже — "
-            "СНАЧАЛА вызови `get_tool_instructions(skill_id)` чтобы получить полный пошаговый алгоритм. "
-            "Не начинай анализ без получения инструкций.",
+            "сначала вызови `get_tool_instructions(skill_id)` и получи пошаговый алгоритм. "
+            "Затем выполняй каждый шаг алгоритма вызовами tools. "
+            "Не начинай анализ без инструкций. Не синтезируй результаты без tool output.",
             "",
         ]
         for skill in analytical_skills:
@@ -212,6 +228,7 @@ class SkillRegistry:
                 sample = ", ".join(skill.triggers[:6])
                 triggers_hint = f" | триггеры: {sample}"
             lines.append(f"- `{skill.skill_id}`: {skill.description}{triggers_hint}")
+
         return "\n".join(lines).strip()
 
     def build_tool_skills_brief_block(

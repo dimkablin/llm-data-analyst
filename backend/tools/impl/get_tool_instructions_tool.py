@@ -48,10 +48,14 @@ class GetToolInstructionsTool(BaseTool):
         super().__init__()
         self._skill_registry = skill_registry
 
+    _EXECUTION_PREAMBLE = (
+        "ВЫПОЛНИ ВСЕ ШАГИ НИЖЕ ЧЕРЕЗ TOOL CALLS. Не пиши текст — только вызовы tools.\n\n"
+    )
+
     def _run(self, tool_name: str) -> str:
         try:
             skill = self._skill_registry.get(str(tool_name).strip())
-            return skill.instructions_markdown
+            return self._EXECUTION_PREAMBLE + skill.instructions_markdown
         except SkillError:
             pass
         except Exception:

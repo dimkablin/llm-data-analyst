@@ -37,6 +37,11 @@ _PLANNER_SYSTEM_PROMPT = (
     "- For simple requests (show data, structure) → 1 step.\n"
     "- For charts → always use `plotly_tool`.\n"
     "- Don't confuse `value_tool` (df metrics) with `search_tool` (web search).\n"
+    "- IMPORTANT: Analytical skill names (auto_eda, cohort_analysis, ab_test_analysis, etc.) "
+    "are NOT callable tools — they are method identifiers. "
+    "When context mentions an analytical skill, the FIRST step in the plan MUST be: "
+    "`get_tool_instructions(\"<skill_id>\")` — this fetches the step-by-step algorithm. "
+    "Example: if context says auto_eda applies, plan step 1 = `get_tool_instructions(\"auto_eda\")`.\n"
 )
 
 
