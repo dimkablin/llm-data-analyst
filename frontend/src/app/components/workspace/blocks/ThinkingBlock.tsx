@@ -4,6 +4,8 @@ import { ChevronRight } from "lucide-react";
 type Props = {
   content: string;
   defaultCollapsed?: boolean;
+  /** Name of the tool this thinking precedes, or undefined for orphan/final blocks. */
+  sourceLabel?: string;
 };
 
 function firstMeaningfulLine(text: string): string {
@@ -18,7 +20,7 @@ function firstMeaningfulLine(text: string): string {
   return line.replace(/^[∴•\-*>]+\s*/, "").trim();
 }
 
-export function ThinkingBlock({ content, defaultCollapsed = true }: Props) {
+export function ThinkingBlock({ content, defaultCollapsed = true, sourceLabel }: Props) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const summary = firstMeaningfulLine(content);
 
@@ -39,6 +41,11 @@ export function ThinkingBlock({ content, defaultCollapsed = true }: Props) {
         <span className="text-[12px] font-medium text-muted-foreground/50 select-none">
           Thinking
         </span>
+        {sourceLabel ? (
+          <span className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/40 bg-muted/30 select-none">
+            {sourceLabel}
+          </span>
+        ) : null}
         {collapsed && summary ? (
           <span className="truncate text-[12px] text-muted-foreground/40 italic">
             {summary}

@@ -35,16 +35,21 @@ export function BlockTimeline({ blocks, liveThinking, isLive }: Props) {
 
   return (
     <div className="flex flex-col gap-0.5 py-0.5">
-      {blocks.map((block) => {
+      {blocks.map((block, idx) => {
         switch (block.type) {
-          case "thinking":
+          case "thinking": {
+            // Label this block with the name of the tool it precedes (if any).
+            const next = blocks[idx + 1];
+            const sourceLabel = next?.type === "tool_use" ? next.tool_name : undefined;
             return (
               <ThinkingBlock
                 key={block.id}
                 content={block.content}
                 defaultCollapsed
+                sourceLabel={sourceLabel}
               />
             );
+          }
           case "text":
             return (
               <IntentTextBlock key={block.id} content={block.content} />
