@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Eye, Info, Loader2, Radio, RefreshCw, Settings, Sliders, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
 import {
@@ -153,6 +153,60 @@ return (
                 className="h-4 w-4 accent-primary ml-3 shrink-0"
               />
             </label>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Стриминг и thinking" icon={<Eye className="h-3.5 w-3.5" />}>
+          <div className="grid gap-3">
+            {/* Streaming toggle */}
+            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Radio className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Стримить ответ в реальном времени</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={draft.llm_streaming}
+                onChange={(e) => setDraft((prev) => ({ ...prev, llm_streaming: e.target.checked }))}
+                className="h-4 w-4 accent-primary ml-3 shrink-0"
+              />
+            </label>
+
+            {/* Master thinking toggle */}
+            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <span className="text-sm">Показывать thinking блоки</span>
+              <input
+                type="checkbox"
+                checked={draft.show_thinking}
+                onChange={(e) => setDraft((prev) => ({ ...prev, show_thinking: e.target.checked }))}
+                className="h-4 w-4 accent-primary ml-3 shrink-0"
+              />
+            </label>
+
+            {/* Per-kind sub-checkboxes — disabled when master is off */}
+            <div className={`ml-4 grid gap-2 transition-opacity ${draft.show_thinking ? "opacity-100" : "opacity-40"}`}>
+              {(
+                [
+                  { key: "show_think_planning" as const,  label: "Планирование" },
+                  { key: "show_think_tool" as const,      label: "Синтез инструментов" },
+                  { key: "show_think_final" as const,     label: "Финальный вывод" },
+                ]
+              ).map(({ key, label }) => (
+                <label
+                  key={key}
+                  className={`inline-flex items-center justify-between rounded-xl border border-border/30 bg-background/15 px-4 py-2.5 ${!draft.show_thinking ? "pointer-events-none" : ""}`}
+                >
+                  <span className="text-[13px] text-muted-foreground">{label}</span>
+                  <input
+                    type="checkbox"
+                    checked={draft[key]}
+                    disabled={!draft.show_thinking}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, [key]: e.target.checked }))}
+                    className="h-4 w-4 accent-primary ml-3 shrink-0"
+                  />
+                </label>
+              ))}
+            </div>
           </div>
         </SectionCard>
 
