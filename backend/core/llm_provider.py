@@ -32,8 +32,9 @@ class LLMProviderPolicy:
             # vLLM: передаёт параметры Jinja-шаблона через chat_template_kwargs.
             return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
         if self.thinking_control_mode == "ollama_think":
-            # Ollama: top-level поле "think" в теле запроса (OpenAI-compatible API).
-            return {"think": enable_thinking}
+            # Ollama: top-level "think" field AND nested under "options" —
+            # different Ollama versions accept it in different positions.
+            return {"think": enable_thinking, "options": {"think": enable_thinking}}
         return {}
 
     def get_thinking_message_prefix(self, *, enable_thinking: bool) -> str:
