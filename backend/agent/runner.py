@@ -1883,9 +1883,11 @@ class AgentRunner:
                     if last_tool_call_name == "get_tool_instructions":
                         messages.append(HumanMessage(
                             content=(
-                                "Ты получил инструкции выше. "
-                                "Немедленно вызывай первый tool из Шага 1. "
-                                "Никакого текста — только вызов tool."
+                                "Инструкции скила получены. "
+                                "Следуй им: немедленно вызови первый аналитический инструмент "
+                                "из полученных инструкций (pandas_tool, sql_tool, plotly_tool и т.п.). "
+                                "НЕ вызывай get_tool_instructions снова. "
+                                "Только вызов tool, без текста."
                             )
                         ))
                         continue
