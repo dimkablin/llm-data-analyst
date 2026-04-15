@@ -36,6 +36,18 @@ class LLMProviderPolicy:
             return {"think": enable_thinking}
         return {}
 
+    def get_thinking_message_prefix(self, *, enable_thinking: bool) -> str:
+        """Возвращает префикс, который нужно вставить в первое human-сообщение.
+
+        Для Qwen3 через Ollama параметр ``think`` в extra_body иногда игнорируется
+        (зависит от версии Ollama и Modelfile).  Префикс ``/no_think`` / ``/think``
+        — надёжный fallback, который модель обрабатывает на уровне токенизатора.
+        Для vLLM и других провайдеров — пустая строка (управление идёт через кварги).
+        """
+        if self.thinking_control_mode == "ollama_think":
+            return "/think\n" if enable_thinking else "/no_think\n"
+        return ""
+
 
 _POLICIES: dict[str, LLMProviderPolicy] = {
     "ollama": LLMProviderPolicy(

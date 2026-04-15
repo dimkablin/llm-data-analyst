@@ -872,6 +872,7 @@ class AgentRunner:
         history: list[dict[str, Any]],
         use_history: bool,
         system_prompt: str | None = None,
+        enable_thinking: bool = True,
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
         system_parts: list[str] = []
@@ -936,7 +937,11 @@ class AgentRunner:
             else:
                 messages.append(AIMessage(content=content))
 
-        messages.append(HumanMessage(content=prompt))
+        thinking_prefix = get_provider_policy(self.settings.llm_provider).get_thinking_message_prefix(
+            enable_thinking=self.settings.llm_enable_thinking and enable_thinking,
+        )
+        final_prompt = f"{thinking_prefix}{prompt}" if thinking_prefix else prompt
+        messages.append(HumanMessage(content=final_prompt))
         return messages
 
     # ── Utility: cache ────────────────────────────────────────────────────────
@@ -1882,6 +1887,7 @@ class AgentRunner:
 
         messages: list[BaseMessage] = self._build_messages(
             prompt, history, use_history, system_prompt=execution_system_prompt,
+            enable_thinking=include_reasoning,
         )
 
         tool_map = {
@@ -2541,7 +2547,8 @@ class AgentRunner:
             else chat_system_prompt
         )
         prompt_messages = self._build_messages(
-            prompt, history, use_history, system_prompt=full_system_prompt
+            prompt, history, use_history, system_prompt=full_system_prompt,
+            enable_thinking=include_reasoning,
         )
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
