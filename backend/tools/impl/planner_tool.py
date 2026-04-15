@@ -111,7 +111,7 @@ class PlannerTool(BaseTool):
             temperature=0.3,
             max_tokens=256,
             streaming=False,
-            **({"model_kwargs": {"extra_body": extra_body}} if extra_body else {}),
+            **({"extra_body": extra_body} if extra_body else {}),
         )
 
         user_content = question
