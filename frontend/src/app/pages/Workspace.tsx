@@ -319,6 +319,7 @@ return (
                 }}
                 onExportChat={handleExportChat}
                 onPinArtifact={handlePinArtifact}
+                settings={settings}
               />
 
               <AnimatePresence>

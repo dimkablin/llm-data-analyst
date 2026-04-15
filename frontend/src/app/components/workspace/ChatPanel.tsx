@@ -25,7 +25,9 @@ import type {
   PhaseEvent,
   SessionSourceState,
   StreamToolCall,
+  UserSettings,
 } from "../../lib/backend-types";
+import { filterReasoningSteps } from "../../lib/think-filter";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
 import { SpinnerDisplay } from "../SpinnerDisplay";
 import { BlockTimeline, ThinkingBlock } from "./blocks";
@@ -74,6 +76,7 @@ type Props = {
   onUploadClick: () => void;
   onExportChat: () => void;
   onPinArtifact: (artifact: ArtifactPayload) => void;
+  settings: Pick<UserSettings, "show_thinking" | "show_think_planning" | "show_think_tool" | "show_think_final">;
 };
 
 export function ChatPanel({
@@ -101,6 +104,7 @@ export function ChatPanel({
   onUploadClick,
   onExportChat,
   onPinArtifact,
+  settings,
 }: Props) {
   const [input, setInput] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -253,11 +257,11 @@ export function ChatPanel({
                 {streamBlocks.length > 0 ? (
                   <BlockTimeline
                     blocks={streamBlocks}
-                    liveThinking={streamReasoning}
+                    liveThinking={settings.show_thinking ? streamReasoning : ""}
                     isLive
                   />
-                ) : streamTools.length > 0 || streamReasoning ? (
-                  <ToolCallList tools={streamTools} reasoning={streamReasoning} isLive />
+                ) : streamTools.length > 0 || (settings.show_thinking && streamReasoning) ? (
+                  <ToolCallList tools={streamTools} reasoning={settings.show_thinking ? streamReasoning : undefined} isLive />
                 ) : null}
 
                 {/* Streaming answer text */}
@@ -474,13 +478,17 @@ function MessageBubble({
             {/* Reload: orphan reasoning steps (final synthesis, no tool call follows).
                 Tool-associated steps are already shown via pre_reasoning inside ToolCallList.
                 Filter by !tool_name for backward compat with state.json written before this fix. */}
-            {!isUser && message.reasoning_steps?.filter((s) => !s.tool_name).length
-              ? message.reasoning_steps
-                  .filter((s) => !s.tool_name)
-                  .map((step) => (
+            {!isUser && (() => {
+              const filtered = filterReasoningSteps(
+                message.reasoning_steps?.filter((s) => !s.tool_name),
+                settings,
+              );
+              return filtered.length > 0
+                ? filtered.map((step) => (
                     <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
                   ))
-              : null}
+                : null;
+            })()}
             {/* Tool call list — reasoning omitted when reasoning_steps present (avoids CoT duplication) */}
             {!isUser && message.tools?.length ? (
               <ToolCallList
