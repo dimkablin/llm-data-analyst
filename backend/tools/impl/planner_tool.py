@@ -109,7 +109,7 @@ class PlannerTool(BaseTool):
             base_url=self._llm_base_url,
             api_key=self._llm_api_key,
             temperature=0.3,
-            max_tokens=256,
+            max_tokens=1024,
             streaming=False,
             **({"extra_body": extra_body} if extra_body else {}),
         )

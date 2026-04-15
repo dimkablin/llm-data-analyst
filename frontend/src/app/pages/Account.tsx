@@ -98,6 +98,7 @@ export function Account() {
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [confirmDeleteSessions, setConfirmDeleteSessions] = useState(false);
   const [deleteSessionsMessage, setDeleteSessionsMessage] = useState<string | null>(null);
+  const [deletedSessionsFlash, setDeletedSessionsFlash] = useState(false);
 
   const selectedAccent = useMemo(
     () => ACCENTS.find((option) => option.id === accent) ?? ACCENTS[0],
@@ -197,7 +198,8 @@ export function Account() {
     setDeleteSessionsMessage(null);
     try {
       await deleteAllSessions();
-      setDeleteSessionsMessage("Все сессии удалены. При следующем открытии workspace будет создана новая.");
+      setDeletedSessionsFlash(true);
+      setTimeout(() => setDeletedSessionsFlash(false), 2500);
     } catch (error) {
       setDeleteSessionsMessage(summarizeError(error));
     } finally {
@@ -616,11 +618,24 @@ export function Account() {
                         <button
                           type="button"
                           onClick={() => void handleDeleteAllSessions()}
-                          disabled={isDeletingAllSessions}
-                          className="flex shrink-0 items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-400 transition-all hover:bg-rose-500/20 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={isDeletingAllSessions || deletedSessionsFlash}
+                          className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                            deletedSessionsFlash
+                              ? "border border-green-500/30 bg-green-600 text-white shadow-lg shadow-green-500/20"
+                              : "border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300"
+                          }`}
                         >
-                          <Trash2 className="h-4 w-4" />
-                          Удалить
+                          {deletedSessionsFlash ? (
+                            <>
+                              <Check className="h-4 w-4" />
+                              Удалено!
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="h-4 w-4" />
+                              Удалить
+                            </>
+                          )}
                         </button>
                       )}
                     </div>

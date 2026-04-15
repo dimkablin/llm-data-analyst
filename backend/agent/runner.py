@@ -2153,10 +2153,15 @@ class AgentRunner:
             else self.settings.agent_inner_recursion_limit,
         )
 
+        # Infrastructure tools run outside the agent loop (planner is pre-executed,
+        # review is called in _finalize_node). Exclude them from capability_context so
+        # the agent does not see them as callable tools in the system prompt or tool schema.
+        _HIDDEN_FROM_AGENT: frozenset[str] = frozenset({"planner_tool", "review_tool"})
         tool_keys = [
             str(getattr(tool, "name", "")).strip()
             for tool in tools
             if str(getattr(tool, "name", "")).strip()
+            and str(getattr(tool, "name", "")).strip() not in _HIDDEN_FROM_AGENT
         ]
         csv_table_names = list((state.get("session_source") or {}).get("csv_table_names") or [])
         capability_context = build_runtime_capability_context(
@@ -2165,7 +2170,12 @@ class AgentRunner:
             has_db_source=(tool_db_runtime is not None) or csv_duckdb_mode,
             csv_table_names=csv_table_names or None,
         )
-        capability_context["tool_descriptions"] = tool_descriptions
+        # Filter descriptions to match the agent-visible tool list (no planner/review)
+        _desc_lines = [
+            line for line in tool_descriptions.splitlines()
+            if not any(("`" + k + "`") in line for k in _HIDDEN_FROM_AGENT)
+        ]
+        capability_context["tool_descriptions"] = "\n".join(_desc_lines).strip()
 
         return {
             "max_steps": max_steps,
@@ -2441,7 +2451,8 @@ class AgentRunner:
                     tool_calls_count=response.tool_calls,
                     artifact_count=len(response.artifacts),
                 )
-                review_result = json.loads(review_raw)
+                _json_match = re.search(r'\{.*?\}', review_raw, re.DOTALL)
+                review_result = json.loads(_json_match.group() if _json_match else review_raw)
                 if not review_result.get("pass", True):
                     reason = review_result.get("reason") or str(review_result.get("issues", ""))
                     response.reasoning = (

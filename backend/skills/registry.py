@@ -168,24 +168,6 @@ class SkillRegistry:
             if skill.kind == "tool" and skill.tool_key in available_tool_keys
         )
 
-    def build_tool_skills_prompt_block(
-        self,
-        available_tool_keys: set[str] | frozenset[str],
-    ) -> str:
-        """Build a prompt block with detailed instructions for available tools."""
-        tool_skills = self.resolve_tool_skills(available_tool_keys)
-        if not tool_skills:
-            return ""
-        lines = [
-            "## Инструкции к инструментам",
-            "",
-        ]
-        for skill in tool_skills:
-            lines.append(f"### {skill.name}")
-            lines.append(skill.instructions_markdown.strip())
-            lines.append("")
-        return "\n".join(lines).strip()
-
     def build_analytical_skills_brief_block(
         self,
         *,
@@ -246,13 +228,8 @@ class SkillRegistry:
         lines = [
             "## Инструменты (краткое описание)",
             "",
-            "CRITICAL: ПЕРЕД первым вызовом любого инструмента ОБЯЗАТЕЛЬНО вызови "
-            "`get_tool_instructions(tool_name)` чтобы получить полные инструкции, "
-            "примеры кода и обязательные правила. БЕЗ этого вызова ты не знаешь "
-            "контракт результата и допустишь ошибки.",
-            "",
-            "Пример: get_tool_instructions('plotly_tool') → получишь scope, "
-            "правила chart.result(), примеры кода.",
+            "Для незнакомых или сложных инструментов вызывай `get_tool_instructions(tool_name)` "
+            "чтобы получить полные инструкции и примеры кода.",
             "",
         ]
         for skill in tool_skills:

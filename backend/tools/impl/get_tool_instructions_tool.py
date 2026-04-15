@@ -33,11 +33,11 @@ class GetToolInstructionsTool(BaseTool):
 
     name: str = "get_tool_instructions"
     description: str = (
-        "Get full usage instructions for a tool or analytical method before using it. "
+        "Get full usage instructions for a tool or analytical method. "
         "Returns scope variables, code patterns, rules, and step-by-step algorithms. "
-        "MUST be called before using any tool (plotly_tool, sql_tool, pandas_tool, etc.) "
-        "AND before executing any analytical method listed in 'Аналитические методы' section "
-        "(auto_eda, cohort_analysis, ab_test_analysis, statistical_analysis, etc.)."
+        "Call this for complex tools (plotly_tool, sql_tool, forecast_tool, etc.) "
+        "and for analytical methods (auto_eda, cohort_analysis, ab_test_analysis, etc.) "
+        "when you need the full contract before executing."
     )
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"
@@ -48,14 +48,10 @@ class GetToolInstructionsTool(BaseTool):
         super().__init__()
         self._skill_registry = skill_registry
 
-    _EXECUTION_PREAMBLE = (
-        "ВЫПОЛНИ ВСЕ ШАГИ НИЖЕ ЧЕРЕЗ TOOL CALLS. Не пиши текст — только вызовы tools.\n\n"
-    )
-
     def _run(self, tool_name: str) -> str:
         try:
             skill = self._skill_registry.get(str(tool_name).strip())
-            return self._EXECUTION_PREAMBLE + skill.instructions_markdown
+            return skill.instructions_markdown
         except SkillError:
             pass
         except Exception:
