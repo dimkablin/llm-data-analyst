@@ -12,9 +12,10 @@ class LLMProviderPolicy:
     прямых проверок вида ``if provider == "vllm"``.
     """
 
-    # "chat_template_kwargs" — провайдер принимает поле в extra_body.
-    # "none"               — thinking toggle не поддерживается / не нужен.
-    thinking_control_mode: Literal["chat_template_kwargs", "none"]
+    # "chat_template_kwargs" — vLLM-specific: поле chat_template_kwargs в extra_body.
+    # "ollama_think"         — Ollama-specific: top-level поле "think" в extra_body.
+    # "none"                 — thinking toggle не поддерживается / не нужен.
+    thinking_control_mode: Literal["chat_template_kwargs", "ollama_think", "none"]
 
     # Diagnostic-only: vllm стриппит <think> server-side → orphaned </think>.
     # ThinkingOutputParser уже обрабатывает это генерически (коммит 34b408d).
@@ -28,13 +29,17 @@ class LLMProviderPolicy:
         Caller: ``extra_body.update(policy.build_extra_body(enable_thinking=...))``.
         """
         if self.thinking_control_mode == "chat_template_kwargs":
+            # vLLM: передаёт параметры Jinja-шаблона через chat_template_kwargs.
             return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        if self.thinking_control_mode == "ollama_think":
+            # Ollama: top-level поле "think" в теле запроса (OpenAI-compatible API).
+            return {"think": enable_thinking}
         return {}
 
 
 _POLICIES: dict[str, LLMProviderPolicy] = {
     "ollama": LLMProviderPolicy(
-        thinking_control_mode="chat_template_kwargs",
+        thinking_control_mode="ollama_think",
         may_emit_orphaned_think_close_tags=False,
     ),
     "vllm": LLMProviderPolicy(
