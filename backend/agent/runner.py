@@ -23,7 +23,7 @@ from backend.agent.callbacks import (
     PhaseCollector,
     ToolCollector,
 )
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import ReasoningChatOpenAI
 from backend.agent.prompts import (
     chat_system_prompt,
     execution_agent_prompt,
@@ -398,7 +398,7 @@ class AgentRunner:
         include_reasoning: bool,
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
-    ) -> ThinkingAwareChatOpenAI:
+    ) -> ReasoningChatOpenAI:
         enable_thinking = (
             self.settings.llm_enable_thinking
             and include_reasoning
@@ -446,7 +446,7 @@ class AgentRunner:
         if extra_body:
             kwargs["extra_body"] = extra_body
 
-        return ThinkingAwareChatOpenAI(**kwargs)
+        return ReasoningChatOpenAI(**kwargs)
 
     @staticmethod
     def _content_to_text(content: Any) -> str:

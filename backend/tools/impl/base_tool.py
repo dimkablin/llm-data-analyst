@@ -12,7 +12,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import ReasoningChatOpenAI
 from backend.artifacts.artifact_meta import extract_artifact_hints
 from backend.core.config import settings
 from backend.core.llm_provider import get_provider_policy
@@ -471,7 +471,7 @@ class BaseExecTool(BaseTool):
             )
             if _eb:
                 llm_kwargs["extra_body"] = _eb
-        llm = ThinkingAwareChatOpenAI(**llm_kwargs)
+        llm = ReasoningChatOpenAI(**llm_kwargs)
 
         # Extract the first ~400 chars of the tool description to give the LLM scope context.
         scope_hint = (self.description or "")[:400].strip()

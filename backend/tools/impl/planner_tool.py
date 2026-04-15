@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import ReasoningChatOpenAI
 from backend.core.llm_provider import get_provider_policy
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class PlannerTool(BaseTool):
         extra_body = get_provider_policy(self._llm_provider).build_extra_body(
             enable_thinking=False
         )
-        llm = ThinkingAwareChatOpenAI(
+        llm = ReasoningChatOpenAI(
             model=self._llm_model,
             base_url=self._llm_base_url,
             api_key=self._llm_api_key,

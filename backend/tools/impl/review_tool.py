@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import ReasoningChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class ReviewTool(BaseTool):
         )
         if is_analytical:
             try:
-                llm = ThinkingAwareChatOpenAI(
+                llm = ReasoningChatOpenAI(
                     model=self._llm_model,
                     base_url=self._llm_base_url,
                     api_key=self._llm_api_key,

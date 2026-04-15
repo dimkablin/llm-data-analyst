@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI
 from backend.agent.callbacks import ThinkingOutputParser
 
 
-class ThinkingAwareChatOpenAI(ChatOpenAI):
+class ReasoningChatOpenAI(ChatOpenAI):
     """ChatOpenAI wrapper that strips ``<think>`` blocks from all response paths.
 
     Sanitization is applied at the provider boundary so that downstream

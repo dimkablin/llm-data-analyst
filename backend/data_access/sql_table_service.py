@@ -10,7 +10,7 @@ import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import ReasoningChatOpenAI
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.core.config import settings
 from backend.core.llm_provider import get_provider_policy
@@ -213,7 +213,7 @@ class SQLTableService:
             )
             if _eb:
                 llm_kwargs["extra_body"] = _eb
-        self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
+        self.llm = ReasoningChatOpenAI(**llm_kwargs)
 
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
