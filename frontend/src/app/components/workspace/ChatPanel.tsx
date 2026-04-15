@@ -27,7 +27,7 @@ import type {
   StreamToolCall,
   UserSettings,
 } from "../../lib/backend-types";
-import { filterReasoningSteps } from "../../lib/think-filter";
+import { filterBlocks, filterReasoningSteps } from "../../lib/think-filter";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
 import { SpinnerDisplay } from "../SpinnerDisplay";
 import { BlockTimeline, ThinkingBlock } from "./blocks";
@@ -477,7 +477,7 @@ function MessageBubble({
             Filter out thinking blocks when show_thinking is off to match live streaming behaviour. */}
         {!isUser && message.blocks && message.blocks.length > 0 ? (
           <BlockTimeline
-            blocks={settings.show_thinking ? message.blocks : message.blocks.filter((b) => b.type !== "thinking")}
+            blocks={filterBlocks(message.blocks, settings)}
           />
         ) : (
           <>

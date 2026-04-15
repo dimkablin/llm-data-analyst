@@ -1,4 +1,4 @@
-import type { PersistedReasoningStep, UserSettings } from "./backend-types";
+import type { AssistantBlock, PersistedReasoningStep, UserSettings } from "./backend-types";
 
 type ThinkVisibility = Pick<
   UserSettings,
@@ -28,6 +28,34 @@ export function filterReasoningSteps(
         return settings.show_think_final;
       default:
         return settings.show_think_tool; // "unknown" → tool fallback
+    }
+  });
+}
+
+/**
+ * Filter an AssistantBlock[] by thinking visibility settings.
+ * Non-thinking blocks pass through unchanged.
+ * Thinking blocks without a kind default to "tool_synthesis".
+ */
+export function filterBlocks(
+  blocks: AssistantBlock[],
+  settings: ThinkVisibility,
+): AssistantBlock[] {
+  if (!settings.show_thinking) {
+    return blocks.filter((b) => b.type !== "thinking");
+  }
+  return blocks.filter((b) => {
+    if (b.type !== "thinking") return true;
+    const kind = b.kind ?? "tool_synthesis";
+    switch (kind) {
+      case "planning":
+        return settings.show_think_planning;
+      case "tool_synthesis":
+        return settings.show_think_tool;
+      case "final_synthesis":
+        return settings.show_think_final;
+      default:
+        return settings.show_think_tool;
     }
   });
 }

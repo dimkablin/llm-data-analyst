@@ -282,6 +282,8 @@ export type ThinkingBlock = {
   type: "thinking";
   id: string;
   content: string;
+  /** Mirrors PersistedReasoningStep.kind — used for per-kind visibility filtering. */
+  kind?: "planning" | "tool_synthesis" | "final_synthesis" | "unknown";
 };
 
 export type TextBlock = {

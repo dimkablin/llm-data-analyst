@@ -230,6 +230,7 @@ function buildBlocksFromHistory(
           type: "thinking",
           id: nextId("think"),
           content: tool.pre_reasoning!,
+          kind: "tool_synthesis",
         });
       }
       const toolUseId = nextId("tool");
@@ -270,6 +271,7 @@ function buildBlocksFromHistory(
         type: "thinking",
         id: nextId(`rs-${step.step_index}`),
         content: step.content,
+        kind: step.kind ?? "unknown",
       });
     }
   }
