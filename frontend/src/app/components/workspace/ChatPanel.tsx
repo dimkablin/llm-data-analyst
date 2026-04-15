@@ -491,7 +491,12 @@ function MessageBubble({
               );
               return filtered.length > 0
                 ? filtered.map((step) => (
-                    <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
+                    <ThinkingBlock
+                      key={`rs-${step.step_index}`}
+                      content={step.content}
+                      defaultCollapsed
+                      sourceLabel={step.kind === "planning" ? "planner" : "agent"}
+                    />
                   ))
                 : null;
             })()}
@@ -509,7 +514,7 @@ function MessageBubble({
               message.reasoning &&
               !message.reasoning_steps?.length &&
               !message.tools?.length ? (
-              <ThinkingBlock content={message.reasoning} defaultCollapsed />
+              <ThinkingBlock content={message.reasoning} defaultCollapsed sourceLabel="agent" />
             ) : null}
           </>
         )}

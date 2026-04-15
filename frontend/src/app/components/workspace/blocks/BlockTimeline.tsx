@@ -38,9 +38,24 @@ export function BlockTimeline({ blocks, liveThinking, isLive }: Props) {
       {blocks.map((block, idx) => {
         switch (block.type) {
           case "thinking": {
-            // Label this block with the name of the tool it precedes (if any).
+            // If this thinking precedes a tool call — use the tool name as label.
+            // Otherwise derive the label from the block's semantic kind.
             const next = blocks[idx + 1];
-            const sourceLabel = next?.type === "tool_use" ? next.tool_name : undefined;
+            let sourceLabel: string | undefined;
+            if (next?.type === "tool_use") {
+              sourceLabel = next.tool_name;
+            } else {
+              switch (block.kind) {
+                case "planning":
+                  sourceLabel = "planner";
+                  break;
+                case "final_synthesis":
+                  sourceLabel = "agent";
+                  break;
+                default:
+                  sourceLabel = "agent";
+              }
+            }
             return (
               <ThinkingBlock
                 key={block.id}
