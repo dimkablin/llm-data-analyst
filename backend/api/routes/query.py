@@ -269,6 +269,7 @@ def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | 
         agent_step_timeout_sec=user_runtime.agent_step_timeout_sec,
         agent_inner_recursion_limit=user_runtime.agent_inner_recursion_limit,
         agent_analysis_depth=depth,
+        llm_streaming=user_runtime.llm_streaming,
     )
 
 
