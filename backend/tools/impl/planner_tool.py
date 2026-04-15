@@ -114,9 +114,14 @@ class PlannerTool(BaseTool):
             **({"extra_body": extra_body} if extra_body else {}),
         )
 
+        no_think_prefix = get_provider_policy(self._llm_provider).get_thinking_message_prefix(
+            enable_thinking=False
+        )
         user_content = question
         if context:
             user_content = f"[Контекст предыдущих сообщений]\n{context}\n\n[Текущий запрос]\n{question}"
+        if no_think_prefix:
+            user_content = f"{no_think_prefix}{user_content}"
 
         try:
             response = llm.invoke([

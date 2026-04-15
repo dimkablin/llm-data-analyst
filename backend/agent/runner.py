@@ -409,6 +409,7 @@ class AgentRunner:
             llm_model=self.settings.llm_model,
             llm_base_url=self.settings.llm_base_url,
             llm_api_key=self.settings.llm_api_key,
+            llm_provider=self.settings.llm_provider,
         )
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
@@ -416,6 +417,18 @@ class AgentRunner:
         return DEPTH_PROFILES.get(depth, DEPTH_PROFILES["light"])
 
     # ── Utility: LLM / data context ──────────────────────────────────────────
+
+    def _thinking_prefix(self, enable_thinking: bool) -> str:
+        """Return the /no_think or /think prefix for the current provider.
+
+        The prefix is prepended to the final human message so Qwen3 (and other
+        reasoning models) reliably honour the thinking toggle even when the
+        extra_body ``think`` parameter is ignored by older Ollama versions.
+        Returns an empty string for providers that don't need this (e.g. vLLM).
+        """
+        return get_provider_policy(self.settings.llm_provider).get_thinking_message_prefix(
+            enable_thinking=self.settings.llm_enable_thinking and enable_thinking,
+        )
 
     @staticmethod
     def _db_session_prompt_block(
@@ -571,6 +584,7 @@ class AgentRunner:
         dataset_part = str(dataset_name or "").strip() or "не указан"
         query_lines = "\n".join(f"{idx}. {item}" for idx, item in enumerate(truncated_queries, start=1))
 
+        _no_think = self._thinking_prefix(False)
         prompt_messages = [
             SystemMessage(
                 content=(
@@ -584,6 +598,7 @@ class AgentRunner:
             ),
             HumanMessage(
                 content=(
+                    f"{_no_think}"
                     f"Датасет: {dataset_part}\n"
                     "Запросы пользователя:\n"
                     f"{query_lines}\n\n"
@@ -800,7 +815,9 @@ class AgentRunner:
             "- Не пиши markdown-таблицы, JSON, код и служебные комментарии.\n"
         )
 
+        _prefix = self._thinking_prefix(include_reasoning)
         user_prompt = (
+            f"{_prefix}"
             f"Текущий запрос пользователя:\n{prompt.strip()}\n\n"
             f"{chat_summary or 'Краткой сводки чата нет.'}\n\n"
             f"Последние сообщения:\n{recent_chat_block or 'Нет доступных последних сообщений.'}\n\n"
@@ -937,11 +954,8 @@ class AgentRunner:
             else:
                 messages.append(AIMessage(content=content))
 
-        thinking_prefix = get_provider_policy(self.settings.llm_provider).get_thinking_message_prefix(
-            enable_thinking=self.settings.llm_enable_thinking and enable_thinking,
-        )
-        final_prompt = f"{thinking_prefix}{prompt}" if thinking_prefix else prompt
-        messages.append(HumanMessage(content=final_prompt))
+        prefix = self._thinking_prefix(enable_thinking)
+        messages.append(HumanMessage(content=f"{prefix}{prompt}" if prefix else prompt))
         return messages
 
     # ── Utility: cache ────────────────────────────────────────────────────────
@@ -1948,10 +1962,12 @@ class AgentRunner:
                         if hasattr(msg, "tool_calls") and msg.tool_calls:
                             last_tool_call_name = msg.tool_calls[0].get("name", "")
                             break
+                    _nudge_prefix = self._thinking_prefix(include_reasoning)
                     if last_tool_call_name == "get_tool_instructions":
                         # Just received skill instructions — must now call the first tool.
                         messages.append(HumanMessage(
                             content=(
+                                f"{_nudge_prefix}"
                                 "Инструкции скила получены. "
                                 "Следуй им: немедленно вызови первый аналитический инструмент "
                                 "из полученных инструкций (pandas_tool, sql_tool, plotly_tool и т.п.). "
@@ -1965,6 +1981,7 @@ class AgentRunner:
                         # Nudge it to produce the final visible answer (allowed once).
                         messages.append(HumanMessage(
                             content=(
+                                f"{_nudge_prefix}"
                                 "Анализ завершён. Напиши финальный ответ пользователю: "
                                 "кратко и конкретно, опираясь только на полученные результаты. "
                                 "Без tool-вызовов, без пересказа плана — только выводы."
