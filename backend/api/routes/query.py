@@ -272,10 +272,21 @@ def _build_stream_callbacks(
     session_source: dict[str, Any],
     exec_store: Any = None,
     include_reasoning: bool = True,
+    show_thinking: bool = True,
 ) -> tuple[list[Any], Any, Any, Any, Any, Any]:
     """Build the full callback stack for a streaming request.
 
     Returns: (callbacks, token_collector, tool_collector, phase_collector, graph_tracker)
+
+    ``include_reasoning`` controls whether the model itself uses thinking (passed to LLM
+    via vLLM/Ollama kwargs through _build_llm → enable_thinking).  The same flag also
+    gates the callback so that any stray thinking blocks emitted by a non-compliant model
+    are silently discarded when the user has disabled thinking.
+
+    ``show_thinking`` is the per-user "Показывать блоки thinking в чате" preference.
+    When False the callback captures reasoning internally (for persistence / reasoning_steps)
+    but does NOT forward thinking_start / reasoning_token / thinking_end events to the SSE
+    queue, so the frontend never receives thinking blocks in the stream.
     """
     text_collector = _LLMTextCollector()
     tool_collector = _ToolCollector(
@@ -289,7 +300,7 @@ def _build_stream_callbacks(
     token_collector = _TokenStreamCallbackHandler(
         queue,
         loop,
-        show_think=settings.llm_show_think,
+        show_think=settings.llm_show_think and show_thinking,
         enable_thinking=settings.llm_enable_thinking and include_reasoning,
     )
     tool_collector.token_callback = token_collector
@@ -839,6 +850,7 @@ async def query_stream(
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
+    _user_stream_settings = _auth_db.get_user_settings(current_user.id)
     callbacks, token_collector, tool_collector, phase_collector, _graph_tracker = (
         _build_stream_callbacks(
             queue=queue,
@@ -846,6 +858,7 @@ async def query_stream(
             session_source=session_source,
             exec_store=exec_store,
             include_reasoning=payload.include_reasoning,
+            show_thinking=_user_stream_settings.show_thinking,
         )
     )
     started_at = time.perf_counter()
