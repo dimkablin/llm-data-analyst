@@ -53,7 +53,6 @@ _csv_runtime: CSVSessionRuntime = None  # type: ignore
 # Callback classes set during startup
 _LLMTextCollector = None  # type: ignore
 _ToolCollector = None  # type: ignore
-_AgentProgressCollector = None  # type: ignore
 _PhaseCollector = None  # type: ignore
 _TokenStreamCallbackHandler = None  # type: ignore
 _AgentRunner = None  # type: ignore
@@ -80,7 +79,6 @@ def setup(
     app_settings,
     LLMTextCollector,
     ToolCollector,
-    AgentProgressCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
     AgentRunner,
@@ -94,7 +92,7 @@ def setup(
     global _anomaly_planfact_integration_service, _rag_service
     global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
-    global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
+    global _LLMTextCollector, _ToolCollector
     global _PhaseCollector, _TokenStreamCallbackHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
@@ -113,7 +111,6 @@ def setup(
     _settings = app_settings
     _LLMTextCollector = LLMTextCollector
     _ToolCollector = ToolCollector
-    _AgentProgressCollector = AgentProgressCollector
     _PhaseCollector = PhaseCollector
     _TokenStreamCallbackHandler = TokenStreamCallbackHandler
     _AgentRunner = AgentRunner
@@ -283,14 +280,12 @@ def _build_stream_callbacks(
 ) -> tuple[list[Any], Any, Any, Any, Any, Any]:
     """Build the full callback stack for a streaming request.
 
-    Returns: (callbacks, token_collector, tool_collector, progress_collector,
-               phase_collector, graph_tracker)
+    Returns: (callbacks, token_collector, tool_collector, phase_collector, graph_tracker)
     """
     text_collector = _LLMTextCollector()
     tool_collector = _ToolCollector(
         source_context=session_source, queue=queue, loop=loop, execution_store=exec_store
     )
-    progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
     graph_tracker = ExecutionGraphTracker()
     phase_collector.graph_tracker = graph_tracker
@@ -307,10 +302,9 @@ def _build_stream_callbacks(
         token_collector,
         text_collector,
         tool_collector,
-        progress_collector,
         phase_collector,
     ]
-    return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
+    return callbacks, token_collector, tool_collector, phase_collector, graph_tracker
 
 
 def _sse_event(event: str, data: Any) -> str:
@@ -589,115 +583,6 @@ def _trim_preview(text: str, limit: int = 1200) -> str:
     return f"{clean[:limit]}..."
 
 
-def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None:
-    phase = str(event.get("phase", "")).strip().lower()
-    tool_name = str(event.get("tool_name", "unknown")).strip() or "unknown"
-
-    # Special rendering for skill loader — compact inline message, no code block.
-    if tool_name == "get_tool_instructions":
-        skill_id = ""
-        raw_preview = str(event.get("input_preview", "")).strip()
-        try:
-            parsed = json.loads(raw_preview)
-            skill_id = str(parsed.get("tool_name", "")).strip()
-        except Exception:
-            skill_id = raw_preview.strip("'\"")
-        label = f"`{skill_id}`" if skill_id else "скил"
-        if phase == "start":
-            return f"📚 Загружаю инструкцию: {label}"
-        if phase == "end":
-            status = str(event.get("status", "ok")).strip()
-            icon = "✅" if status == "ok" else "❌"
-            return f"{icon} Инструкция {label} загружена"
-        return None
-
-    if tool_name == "planner_tool":
-        if phase == "start":
-            question = ""
-            try:
-                question = json.loads(str(event.get("input_preview", ""))).get("question", "")
-            except Exception:
-                pass
-            hint = f": {_trim_preview(question, 120)}" if question else ""
-            return f"🗂 `planner_tool` составляет план{hint}"
-        if phase == "end":
-            status = str(event.get("status", "")).strip()
-            if status == "error":
-                error_text = str(event.get("error", "")).strip()
-                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
-                return f"❌ `planner_tool` завершен с ошибкой{hint}"
-            plan = _trim_preview(str(event.get("output_preview", "")), 600)
-            if plan:
-                return f"✅ `planner_tool` план готов:\n{plan}"
-            return "✅ `planner_tool` план готов"
-        return None
-
-    if tool_name == "review_tool":
-        if phase == "start":
-            return "🔍 `review_tool` проверяет ответ"
-        if phase == "end":
-            status = str(event.get("status", "")).strip()
-            if status == "error":
-                error_text = str(event.get("error", "")).strip()
-                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
-                return f"❌ `review_tool` завершен с ошибкой{hint}"
-            result = _trim_preview(str(event.get("output_preview", "")), 300)
-            if result:
-                return f"✅ `review_tool` проверка пройдена: {result}"
-            return "✅ `review_tool` проверка пройдена"
-        return None
-
-    if phase == "start":
-        raw_input = _extract_tool_code_preview(str(event.get("input_preview", "")))
-        if not raw_input:
-            return f"### Live Tool #{index}\n`{tool_name}` запущен."
-        return (
-            f"### Live Tool #{index}\n"
-            f"`{tool_name}` запущен.\n\n"
-            "```python\n"
-            f"{_trim_preview(raw_input, 900)}\n"
-            "```"
-        )
-
-    if phase == "end":
-        status = str(event.get("status", "ok")).strip() or "ok"
-        artifact_keys = event.get("artifact_keys")
-        artifacts = "none"
-        if isinstance(artifact_keys, list) and artifact_keys:
-            artifacts = ", ".join(str(item) for item in artifact_keys[:6])
-
-        lines = [
-            f"### Live Tool #{index}",
-            f"`{tool_name}` завершен: status=`{status}`, artifacts=`{artifacts}`.",
-        ]
-        error_text = str(event.get("error", "")).strip()
-        if error_text:
-            lines.append(f"- error: `{_trim_preview(error_text.splitlines()[-1], 220)}`")
-        code_preview = str(event.get("code_preview", "")).strip()
-        if code_preview:
-            lines.append("")
-            lines.append("```python")
-            lines.append(_trim_preview(code_preview, 900))
-            lines.append("```")
-        return "\n".join(lines)
-
-    return None
-
-
-def _build_live_agent_progress_event(event: dict[str, Any], index: int) -> str | None:
-    title = str(event.get("title", "")).strip() or f"Ход анализа #{index}"
-    details = _trim_preview(str(event.get("details", "")).strip(), 1400)
-    step_index = event.get("step_index")
-    max_steps = event.get("max_steps")
-
-    lines = [f"### {title}"]
-    if isinstance(step_index, int) and isinstance(max_steps, int) and max_steps > 0:
-        lines.append(f"Шаг: `{step_index}/{max_steps}`")
-    if details:
-        lines.append(details)
-    return "\n".join(lines)
-
-
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 async def _execute_query(
@@ -948,7 +833,7 @@ async def query_stream(
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
-    callbacks, token_collector, tool_collector, progress_collector, phase_collector, _graph_tracker = (
+    callbacks, token_collector, tool_collector, phase_collector, _graph_tracker = (
         _build_stream_callbacks(
             queue=queue,
             loop=loop,
@@ -1155,11 +1040,7 @@ async def query_stream(
             agent_finished.set()
             await queue.put(("done", None))
 
-    emit_progress = payload.include_reasoning
-
     async def emit_live_reasoning() -> None:
-        emitted_progress_events = 0
-        emitted_tool_events = 0
         emitted_phase_events = 0
         emitted_graph_version = 0
         _loop_count = 0
@@ -1182,31 +1063,8 @@ async def query_stream(
                     await queue.put(("execution_graph", gt.snapshot()))
                     emitted_any = True
 
-            if emit_progress:
-                while emitted_progress_events < len(progress_collector.events):
-                    current = progress_collector.events[emitted_progress_events]
-                    emitted_progress_events += 1
-                    text = _build_live_agent_progress_event(current, emitted_progress_events)
-                    if text:
-                        await queue.put(("reasoning", text))
-                        emitted_any = True
-
-                while emitted_tool_events < len(tool_collector.events):
-                    current = tool_collector.events[emitted_tool_events]
-                    emitted_tool_events += 1
-                    text = _build_live_reasoning_event(current, emitted_tool_events)
-                    if text:
-                        await queue.put(("reasoning", text))
-                        emitted_any = True
-
             if agent_finished.is_set():
-                all_drained = emitted_phase_events >= len(phase_collector.events)
-                if emit_progress:
-                    all_drained = all_drained and (
-                        emitted_tool_events >= len(tool_collector.events)
-                        and emitted_progress_events >= len(progress_collector.events)
-                    )
-                if all_drained:
+                if emitted_phase_events >= len(phase_collector.events):
                     logger.warning("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
                     break
 
