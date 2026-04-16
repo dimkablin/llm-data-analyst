@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import type { AssistantBlock, ToolResultBlock as ToolResultBlockType } from "../../../lib/backend-types";
 import { ThinkingBlock, LiveThinkingBlock } from "./ThinkingBlock";
 import { ToolUseBlock } from "./ToolUseBlock";
-import { IntentTextBlock } from "./TextBlock";
+
 
 type Props = {
   blocks: AssistantBlock[];
@@ -66,9 +66,7 @@ export function BlockTimeline({ blocks, liveThinking, isLive }: Props) {
             );
           }
           case "text":
-            return (
-              <IntentTextBlock key={block.id} content={block.content} />
-            );
+            return null;
           case "tool_use": {
             // Merge result data into the tool use block for unified display
             const result = resultByToolUseId.get(block.id);

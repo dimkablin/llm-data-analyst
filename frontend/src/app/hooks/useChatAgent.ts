@@ -1023,9 +1023,25 @@ export function useChatAgent({
     if (!query) {
       return;
     }
-    if (lastUserMsg?.backendId) {
+    let backendMsgId = lastUserMsg?.backendId;
+    if (!backendMsgId) {
+      // Message was added during the current stream and never hydrated, so its
+      // backend ID is unknown. Fetch the session to find the last user message.
       try {
-        await deleteLastMessages(sessionId, lastUserMsg.backendId);
+        const session = await getSession(sessionId);
+        for (let i = session.chat_history.length - 1; i >= 0; i -= 1) {
+          if (session.chat_history[i]!.role === "user") {
+            backendMsgId = session.chat_history[i]!.id;
+            break;
+          }
+        }
+      } catch {
+        // Best-effort.
+      }
+    }
+    if (backendMsgId) {
+      try {
+        await deleteLastMessages(sessionId, backendMsgId);
       } catch {
         // Best-effort: continue even if the message wasn't persisted yet.
       }
