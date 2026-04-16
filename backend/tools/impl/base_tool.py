@@ -34,6 +34,10 @@ class ToolResultEnvelope(BaseModel):
     items: dict[str, object]
 
 
+class _CodeInput(BaseModel):
+    code: str = Field(description="Валидный Python-код для выполнения в sandbox-окружении.")
+
+
 class BaseExecTool(BaseTool):
     """
     Базовый инструмент для анализа данных.
@@ -41,6 +45,7 @@ class BaseExecTool(BaseTool):
     """
 
     name: str = "base_tool"
+    args_schema: type[BaseModel] = _CodeInput
     artifact_name: str = "base"
     human_name: str = "артефактов"
     description: str = ""

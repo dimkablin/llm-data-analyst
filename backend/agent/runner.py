@@ -35,7 +35,6 @@ from backend.agent.prompts import (
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
 from backend.core.config import DEPTH_PROFILES, Settings
-from backend.core.llm_provider import get_provider_policy
 from backend.data_access.db_runtime_service import DBRuntimeService, RuntimeDBConnectionConfig
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
@@ -533,17 +532,6 @@ class AgentRunner:
 
     # ── Utility: LLM / data context ──────────────────────────────────────────
 
-    def _thinking_prefix(self, enable_thinking: bool) -> str:
-        """Return the /no_think or /think prefix for the current provider.
-
-        The prefix is prepended to the final human message so Qwen3 (and other
-        reasoning models) reliably honour the thinking toggle even when the
-        extra_body ``think`` parameter is ignored by older Ollama versions.
-        Returns an empty string for providers that don't need this (e.g. vLLM).
-        """
-        return get_provider_policy(self.settings.llm_provider).get_thinking_message_prefix(
-            enable_thinking=self.settings.llm_enable_thinking and enable_thinking,
-        )
 
     @staticmethod
     def _db_session_prompt_block(
@@ -684,7 +672,6 @@ class AgentRunner:
         dataset_part = str(dataset_name or "").strip() or "не указан"
         query_lines = "\n".join(f"{idx}. {item}" for idx, item in enumerate(truncated_queries, start=1))
 
-        _no_think = self._thinking_prefix(False)
         prompt_messages = [
             SystemMessage(
                 content=(
@@ -698,7 +685,6 @@ class AgentRunner:
             ),
             HumanMessage(
                 content=(
-                    f"{_no_think}"
                     f"Датасет: {dataset_part}\n"
                     "Запросы пользователя:\n"
                     f"{query_lines}\n\n"
@@ -915,9 +901,7 @@ class AgentRunner:
             "- Не пиши markdown-таблицы, JSON, код и служебные комментарии.\n"
         )
 
-        _prefix = self._thinking_prefix(include_reasoning)
         user_prompt = (
-            f"{_prefix}"
             f"Текущий запрос пользователя:\n{prompt.strip()}\n\n"
             f"{chat_summary or 'Краткой сводки чата нет.'}\n\n"
             f"Последние сообщения:\n{recent_chat_block or 'Нет доступных последних сообщений.'}\n\n"
@@ -1054,8 +1038,7 @@ class AgentRunner:
             else:
                 messages.append(AIMessage(content=content))
 
-        prefix = self._thinking_prefix(enable_thinking)
-        messages.append(HumanMessage(content=f"{prefix}{prompt}" if prefix else prompt))
+        messages.append(HumanMessage(content=prompt))
         return messages
 
     # ── Utility: cache ────────────────────────────────────────────────────────
@@ -2373,6 +2356,11 @@ class AgentRunner:
             line for line in tool_descriptions.splitlines()
             if "planner_tool" not in line
         ).strip()
+        # Append analytical skills so the planner knows which skill IDs exist
+        # and can route "инсайты", "EDA", "когорты" etc. to get_tool_instructions.
+        _analytical_block = runner.skill_registry.build_analytical_skills_brief_block()  # noqa: SLF001
+        if _analytical_block:
+            _planner_descriptions = _planner_descriptions + "\n\n" + _analytical_block
         for _tool in tools:
             if hasattr(_tool, "set_tool_descriptions"):
                 _tool.set_tool_descriptions(_planner_descriptions)

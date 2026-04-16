@@ -14,6 +14,7 @@ from typing import Any
 
 import anyio
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 
 from backend.integrations.rag import RAGService
 
@@ -28,10 +29,16 @@ information from documentation rather than computation over data.
 Input: a clear search query in natural language.
 Output: an answer from the knowledge base, optionally with source links.
 
+Parameter: query — search string in natural language.
+
 Examples:
-  rag_tool("How does the monthly billing reconciliation work?")
-  rag_tool("What are the SLA requirements for priority incidents?")
+  rag_tool(query="How does the monthly billing reconciliation work?")
+  rag_tool(query="What are the SLA requirements for priority incidents?")
 """
+
+
+class _RagInput(BaseModel):
+    query: str = Field(description="Поисковый запрос на естественном языке для поиска в базе знаний.")
 
 
 class RagTool(BaseTool):
@@ -39,6 +46,7 @@ class RagTool(BaseTool):
 
     name: str = "rag_tool"
     description: str = _DESCRIPTION
+    args_schema: type[BaseModel] = _RagInput
 
     model_config = {"arbitrary_types_allowed": True}
 
