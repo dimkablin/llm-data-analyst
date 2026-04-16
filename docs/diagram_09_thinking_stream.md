@@ -30,9 +30,11 @@ flowchart TD
             L1 --> L2{Tool calls\nin response?}
             L2 -->|yes| L3[Execute tools sequentially\n⚠️ NOT parallel]
             L3 --> L4{get_tool_\ninstructions?}
-            L4 -->|yes, costs 1 iteration| L5[Load skill .md from disk\nno LLM call]
+            L4 -->|"yes, details=False\ncore SKILL.md"| L5["Load skill SKILL.md from disk\nno LLM call\nhint: details=True available"]
+            L4 -->|"yes, details=True\nDETAILS.md"| L5D["Load skill DETAILS.md from disk\nno LLM call (code examples)"]
             L4 -->|no| L6[pandas / sql / plotly etc.]
             L5 --> L1
+            L5D --> L1
             L6 --> L1
             L2 -->|no tool calls| DONE[Break loop]
         end

@@ -424,7 +424,45 @@ LLM → tool_call: {answer: "...", question: "..."}
 
 ---
 
-## 9. `memory` / `session_note`
+## 9. `get_tool_instructions`
+
+**Тип:** `BaseTool`
+**Артефакт:** нет (pure text)
+**response_format:** `"content"`
+
+```
+LLM → tool_call: {skill_id: "plotly_tool", details: false}
+          │
+          ▼
+  GetToolInstructionsTool._run(skill_id, details=False)
+  │
+  ├── skill_registry.get(skill_id)
+  │   → SkillSelectionError если не найден
+  │
+  ├── details=False (по умолчанию):
+  │   └── Returns: skill.core_markdown          ← SKILL.md (≤ 8 KB)
+  │               + "[Extended available: call ...details=True...]"
+  │                  если skill.has_details == True
+  │
+  └── details=True:
+      ├── skill.has_details == False:
+      │   └── Returns: "Extended instructions not available..."
+      └── skill.has_details == True:
+          └── Returns: skill.details_markdown    ← DETAILS.md (≤ 64 KB)
+
+  ─────────────────────────────────────────────────
+  LangChain → ToolMessage(content=text, artifact=None)
+  on_tool_end → {"text": text} → нет артефактов ✓
+
+  ПОЛИТИКА ЗАГРУЗКИ (из описания тула):
+  1. Перед первым незнакомым / нетривиальным тулом → details=False
+  2. Перед сложными сценариями / после сбоя        → details=True
+  3. Никогда не вызывать один и тот же skill_id+details дважды
+```
+
+---
+
+## 10. `memory` / `session_note`
 
 **Тип:** `BaseTool`
 **Артефакт:** нет
@@ -466,6 +504,7 @@ LLM → tool_call: {text: "User is a data analyst..."}
 | `value_tool` | `{text, code, value: {name: scalar}}` | да | + scalar type + string length | ✓ |
 | `database_tool` | `{schema_version, artifact_type, table: {name: df}}` | нет | нет | ✓ работает, нестандартный формат |
 | `search_tool` | `{text, code, json: {name: dict}}` | да | + dict type + raw-fallback | ✓ |
+| `get_tool_instructions` | plain text (core или details) | нет | нет | ✓ нет артефактов; двухуровневый |
 | `planner_tool` | plain text | нет | нет | ✓ нет артефактов |
 | `review_tool` | plain text | нет | нет | ✓ нет артефактов |
 | `memory` | plain text | нет | нет | ✓ нет артефактов |
