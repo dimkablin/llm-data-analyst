@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+# NOTE: Ollama ≤ 0.20.7 limitation — the OpenAI-compat /v1/chat/completions endpoint
+# ignores think:true/false in ALL payload forms tested (top-level field, options.think,
+# /no_think prefix, chat_template_kwargs). Thinking control for Ollama is now handled
+# exclusively via make_reasoning_llm(provider="ollama", enable_thinking=...) which routes
+# to ReasoningChatOllama using the native /api/chat endpoint (langchain-ollama ChatOllama).
+# The methods below (build_extra_body, get_thinking_message_prefix) remain valid for
+# vLLM and other OpenAI-compat providers; the Ollama path no longer calls them.
+
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -40,13 +48,16 @@ class LLMProviderPolicy:
     def get_thinking_message_prefix(self, *, enable_thinking: bool) -> str:
         """Возвращает префикс, который нужно вставить в первое human-сообщение.
 
-        Для Qwen3 через Ollama параметр ``think`` в extra_body иногда игнорируется
-        (зависит от версии Ollama и Modelfile).  Префикс ``/no_think`` / ``/think``
-        — надёжный fallback, который модель обрабатывает на уровне токенизатора.
+        NOTE (Ollama): For the Ollama provider, thinking is now controlled via
+        make_reasoning_llm(provider="ollama", enable_thinking=...) which uses the
+        native /api/chat endpoint (ReasoningChatOllama). This method is no longer
+        called for Ollama from the factory. It remains valid for vLLM fallback
+        or other future OpenAI-compat providers that support the prefix approach.
+
         Для vLLM и других провайдеров — пустая строка (управление идёт через кварги).
         """
         if self.thinking_control_mode == "ollama_think":
-            return "/think\n" if enable_thinking else "/no_think\n"
+            return "" if enable_thinking else "/no_think\n"
         return ""
 
 

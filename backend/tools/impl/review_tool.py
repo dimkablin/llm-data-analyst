@@ -12,8 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
-from backend.agent.llm_client import ReasoningChatOpenAI
-from backend.core.llm_provider import get_provider_policy
+from backend.agent.llm_client import make_reasoning_llm
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ class ReviewTool(BaseTool):
     _llm_base_url: str = PrivateAttr()
     _llm_api_key: str | None = PrivateAttr()
     _llm_provider: str | None = PrivateAttr()
+    _llm_chat_template_kwargs_enabled: bool = PrivateAttr()
 
     def __init__(
         self,
@@ -65,12 +65,14 @@ class ReviewTool(BaseTool):
         llm_base_url: str,
         llm_api_key: str | None = None,
         llm_provider: str | None = None,
+        llm_chat_template_kwargs_enabled: bool = False,
     ) -> None:
         super().__init__()
         self._llm_model = llm_model
         self._llm_base_url = llm_base_url
         self._llm_api_key = llm_api_key
         self._llm_provider = llm_provider
+        self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
 
     def _run(
         self,
@@ -107,19 +109,18 @@ class ReviewTool(BaseTool):
         )
         if is_analytical:
             try:
-                llm = ReasoningChatOpenAI(
+                llm = make_reasoning_llm(
+                    provider=self._llm_provider,
                     model=self._llm_model,
                     base_url=self._llm_base_url,
                     api_key=self._llm_api_key,
+                    enable_thinking=False,
                     temperature=0.1,
                     max_tokens=300,
                     streaming=False,
-                )
-                no_think_prefix = get_provider_policy(self._llm_provider).get_thinking_message_prefix(
-                    enable_thinking=False
+                    chat_template_kwargs_enabled=self._llm_chat_template_kwargs_enabled,
                 )
                 eval_prompt = (
-                    f"{no_think_prefix}"
                     f"Вопрос пользователя: {question}\n"
                     f"Ответ агента: {answer[:1000]}\n"
                     f"Артефактов: {artifact_count}\n"

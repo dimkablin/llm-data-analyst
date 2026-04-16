@@ -11,8 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
-from backend.agent.llm_client import ReasoningChatOpenAI
-from backend.core.llm_provider import get_provider_policy
+from backend.agent.llm_client import make_reasoning_llm
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +73,7 @@ class PlannerTool(BaseTool):
     _llm_base_url: str = PrivateAttr()
     _llm_api_key: str | None = PrivateAttr()
     _llm_provider: str | None = PrivateAttr()
+    _llm_chat_template_kwargs_enabled: bool = PrivateAttr()
     _tool_descriptions: str = PrivateAttr()
 
     def __init__(
@@ -83,6 +83,7 @@ class PlannerTool(BaseTool):
         llm_base_url: str,
         llm_api_key: str | None = None,
         llm_provider: str | None = None,
+        llm_chat_template_kwargs_enabled: bool = False,
         tool_descriptions: str = "",
     ) -> None:
         super().__init__()
@@ -90,6 +91,7 @@ class PlannerTool(BaseTool):
         self._llm_base_url = llm_base_url
         self._llm_api_key = llm_api_key
         self._llm_provider = llm_provider
+        self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
         self._tool_descriptions = tool_descriptions
 
     def set_tool_descriptions(self, descriptions: str) -> None:
@@ -101,27 +103,22 @@ class PlannerTool(BaseTool):
         if self._tool_descriptions:
             system_content += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{self._tool_descriptions}\n"
 
-        extra_body = get_provider_policy(self._llm_provider).build_extra_body(
-            enable_thinking=False
-        )
-        llm = ReasoningChatOpenAI(
+        llm = make_reasoning_llm(
+            provider=self._llm_provider,
             model=self._llm_model,
             base_url=self._llm_base_url,
             api_key=self._llm_api_key,
+            enable_thinking=False,
             temperature=0.3,
             max_tokens=1024,
             streaming=False,
-            **({"extra_body": extra_body} if extra_body else {}),
+            chat_template_kwargs_enabled=self._llm_chat_template_kwargs_enabled,
         )
 
-        no_think_prefix = get_provider_policy(self._llm_provider).get_thinking_message_prefix(
-            enable_thinking=False
-        )
         user_content = question
         if context:
             user_content = f"[Контекст предыдущих сообщений]\n{context}\n\n[Текущий запрос]\n{question}"
-        if no_think_prefix:
-            user_content = f"{no_think_prefix}{user_content}"
+        # no_think_prefix no longer needed — factory sets enable_thinking=False
 
         try:
             response = llm.invoke([

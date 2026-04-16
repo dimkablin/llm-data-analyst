@@ -24,7 +24,7 @@ from backend.agent.callbacks import (
     PhaseCollector,
     ToolCollector,
 )
-from backend.agent.llm_client import ReasoningChatOpenAI
+from backend.agent.llm_client import AnyReasoningLLM, make_reasoning_llm
 from backend.agent.prompts import (
     chat_system_prompt,
     execution_agent_prompt,
@@ -410,6 +410,7 @@ class AgentRunner:
             llm_base_url=self.settings.llm_base_url,
             llm_api_key=self.settings.llm_api_key,
             llm_provider=self.settings.llm_provider,
+            llm_chat_template_kwargs_enabled=self.settings.llm_chat_template_kwargs_enabled,
         )
 
     def _resolve_depth_profile(self) -> dict[str, Any]:
@@ -474,11 +475,8 @@ class AgentRunner:
         include_reasoning: bool,
         timeout_sec: int | None = None,
         max_tokens_override: int | None = None,
-    ) -> ReasoningChatOpenAI:
-        enable_thinking = (
-            self.settings.llm_enable_thinking
-            and include_reasoning
-        )
+    ) -> AnyReasoningLLM:
+        enable_thinking = self.settings.llm_enable_thinking and include_reasoning
 
         if enable_thinking:
             temperature = 1.0
@@ -491,38 +489,26 @@ class AgentRunner:
             )
             top_p = 0.8
 
-        presence_penalty = self.settings.llm_presence_penalty
-
         max_tokens = max_tokens_override or self.settings.llm_max_tokens_default
         if max_tokens_override is None and include_reasoning:
             max_tokens = self.settings.llm_max_tokens_reasoning
 
-        extra_body: dict[str, Any] = {}
-        if self.settings.llm_chat_template_kwargs_enabled:
-            extra_body.update(
-                get_provider_policy(self.settings.llm_provider)
-                .build_extra_body(enable_thinking=enable_thinking)
-            )
-        if self.settings.llm_top_k > 0:
-            extra_body["top_k"] = self.settings.llm_top_k
-        if self.settings.llm_num_ctx > 0:
-            extra_body["num_ctx"] = self.settings.llm_num_ctx
-
-        kwargs: dict[str, Any] = {
-            "model": self.settings.llm_model,
-            "base_url": self.settings.llm_base_url,
-            "api_key": self.settings.llm_api_key,
-            "streaming": self.settings.llm_streaming_force or self.settings.llm_streaming,
-            "temperature": temperature,
-            "top_p": top_p,
-            "presence_penalty": presence_penalty,
-            "max_tokens": max_tokens,
-            "timeout": timeout_sec or self.settings.backend_query_timeout_sec,
-        }
-        if extra_body:
-            kwargs["extra_body"] = extra_body
-
-        return ReasoningChatOpenAI(**kwargs)
+        return make_reasoning_llm(
+            provider=self.settings.llm_provider,
+            model=self.settings.llm_model,
+            base_url=self.settings.llm_base_url,
+            api_key=self.settings.llm_api_key,
+            enable_thinking=enable_thinking,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            streaming=self.settings.llm_streaming_force or self.settings.llm_streaming,
+            timeout=float(timeout_sec or self.settings.backend_query_timeout_sec),
+            top_p=top_p,
+            top_k=self.settings.llm_top_k,
+            num_ctx=self.settings.llm_num_ctx,
+            presence_penalty=self.settings.llm_presence_penalty,
+            chat_template_kwargs_enabled=self.settings.llm_chat_template_kwargs_enabled,
+        )
 
     @staticmethod
     def _content_to_text(content: Any) -> str:

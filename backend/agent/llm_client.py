@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Any, Union
 
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
+from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 
 from backend.agent.callbacks import ThinkingOutputParser
@@ -220,3 +221,138 @@ def _emit_final_chunk(chunk: BaseMessage, parser: ThinkingOutputParser) -> BaseM
         "content": new_visible,
         "additional_kwargs": additional_kwargs,
     })
+
+
+def _remap_ollama_reasoning(msg: BaseMessage) -> BaseMessage:
+    """Remap additional_kwargs['reasoning_content'] → ['reasoning'].
+
+    ChatOllama stores thinking in 'reasoning_content'; our TokenStreamCallbackHandler
+    and downstream consumers expect 'reasoning'.
+    No-op if reasoning_content absent or reasoning already present.
+    """
+    ak = getattr(msg, "additional_kwargs", {}) or {}
+    reasoning_content = ak.get("reasoning_content")
+    if reasoning_content is not None and "reasoning" not in ak:
+        return msg.model_copy(update={"additional_kwargs": {**ak, "reasoning": reasoning_content}})
+    return msg
+
+
+class ReasoningChatOllama(ChatOllama):
+    """ChatOllama wrapper with unified interface matching ReasoningChatOpenAI.
+
+    Uses native Ollama /api/chat endpoint so that reasoning=True/False is
+    reliably honoured (Ollama ≤ 0.20.7 ignores think:false on the OpenAI-compat
+    /v1/chat/completions endpoint in all payload variants tested).
+
+    Behaviour:
+      reasoning=True  → sends think:true, content is clean, thinking in
+                        additional_kwargs["reasoning_content"] → remapped to ["reasoning"]
+      reasoning=False → sends think:false, model does not think at all
+      reasoning=None  → model default; <think> tags may appear in content
+
+    All four LangChain response paths (invoke/ainvoke/stream/astream) remap
+    reasoning_content → reasoning so TokenStreamCallbackHandler works unchanged.
+    """
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> BaseMessage:
+        return _remap_ollama_reasoning(super().invoke(input, config=config, **kwargs))
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> BaseMessage:
+        return _remap_ollama_reasoning(await super().ainvoke(input, config=config, **kwargs))
+
+    def stream(
+        self, input: Any, config: Any = None, **kwargs: Any
+    ) -> Iterator[BaseMessage]:
+        for chunk in super().stream(input, config=config, **kwargs):
+            yield _remap_ollama_reasoning(chunk)
+
+    async def astream(
+        self, input: Any, config: Any = None, **kwargs: Any
+    ) -> AsyncIterator[BaseMessage]:
+        async for chunk in super().astream(input, config=config, **kwargs):
+            yield _remap_ollama_reasoning(chunk)
+
+
+# Union type for type annotations across the codebase
+AnyReasoningLLM = Union[ReasoningChatOpenAI, ReasoningChatOllama]
+
+
+def make_reasoning_llm(
+    *,
+    provider: str | None,
+    model: str,
+    base_url: str,
+    api_key: str | None = None,
+    enable_thinking: bool = False,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    streaming: bool = True,
+    timeout: float = 120.0,
+    top_p: float = 1.0,
+    top_k: int = 0,
+    num_ctx: int = 0,
+    presence_penalty: float = 0.0,
+    chat_template_kwargs_enabled: bool = False,
+) -> AnyReasoningLLM:
+    """Return a reasoning-capable LLM for the given provider.
+
+    Routing:
+      provider == "ollama"  → ReasoningChatOllama  (native /api/chat, reasoning= param)
+      anything else         → ReasoningChatOpenAI  (OpenAI-compat /v1/chat/completions)
+
+    Observed limitation (documented):
+      Ollama ≤ 0.20.7 /v1/chat/completions ignores think:true/false in every
+      payload form tested (top-level field, options.think, /no_think prefix,
+      chat_template_kwargs). Native /api/chat via ChatOllama is the only reliable
+      thinking-control path for Ollama.
+    """
+    provider_norm = (provider or "").strip().lower()
+
+    if provider_norm == "ollama":
+        ollama_kwargs: dict[str, Any] = {
+            "model": model,
+            "base_url": base_url,
+            "reasoning": enable_thinking,   # True → think:true, False → think:false
+            "temperature": temperature,
+            "num_predict": max_tokens,
+            "top_p": top_p,
+            "streaming": streaming,
+            # httpx timeout for native Ollama client
+            "client_kwargs": {"timeout": timeout},
+            "async_client_kwargs": {"timeout": timeout},
+        }
+        if top_k > 0:
+            ollama_kwargs["top_k"] = top_k
+        if num_ctx > 0:
+            ollama_kwargs["num_ctx"] = num_ctx
+        # presence_penalty not supported by Ollama native API — silently dropped
+        return ReasoningChatOllama(**ollama_kwargs)
+
+    # ── OpenAI-compat path (vLLM, LiteLLM, OpenAI, …) ──────────────────
+    from backend.core.llm_provider import get_provider_policy  # avoid circular at module level
+
+    extra_body: dict[str, Any] = {}
+    if chat_template_kwargs_enabled:
+        extra_body.update(
+            get_provider_policy(provider).build_extra_body(enable_thinking=enable_thinking)
+        )
+    if top_k > 0:
+        extra_body["top_k"] = top_k
+    if num_ctx > 0:
+        extra_body["num_ctx"] = num_ctx
+
+    openai_kwargs: dict[str, Any] = {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": top_p,
+        "presence_penalty": presence_penalty,
+        "streaming": streaming,
+        "timeout": timeout,
+    }
+    if extra_body:
+        openai_kwargs["extra_body"] = extra_body
+
+    return ReasoningChatOpenAI(**openai_kwargs)

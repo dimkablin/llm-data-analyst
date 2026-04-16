@@ -12,10 +12,9 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ReasoningChatOpenAI
+from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import extract_artifact_hints
 from backend.core.config import settings
-from backend.core.llm_provider import get_provider_policy
 from backend.core.redaction import sanitize_error_text
 
 if TYPE_CHECKING:
@@ -456,22 +455,17 @@ class BaseExecTool(BaseTool):
         if not self._llm_base_url or not self._llm_model:
             return None
 
-        llm_kwargs: dict[str, Any] = {
-            "model": self._llm_model,
-            "base_url": self._llm_base_url,
-            "api_key": self._llm_api_key or "no-key",
-            "streaming": False,
-            "temperature": 0.0,
-            "timeout": 60.0,
-        }
-        if self._llm_chat_template_kwargs_enabled:
-            _eb: dict[str, Any] = dict(llm_kwargs.get("extra_body") or {})
-            _eb.update(
-                get_provider_policy(self._llm_provider).build_extra_body(enable_thinking=False)
-            )
-            if _eb:
-                llm_kwargs["extra_body"] = _eb
-        llm = ReasoningChatOpenAI(**llm_kwargs)
+        llm = make_reasoning_llm(
+            provider=self._llm_provider,
+            model=self._llm_model,
+            base_url=self._llm_base_url,
+            api_key=self._llm_api_key or "no-key",
+            enable_thinking=False,
+            temperature=0.0,
+            max_tokens=2048,
+            streaming=False,
+            chat_template_kwargs_enabled=self._llm_chat_template_kwargs_enabled,
+        )
 
         # Extract the first ~400 chars of the tool description to give the LLM scope context.
         scope_hint = (self.description or "")[:400].strip()
@@ -491,7 +485,7 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
 
         try:
             resp = llm.invoke([
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),  # noqa: E501
+                SystemMessage(content="Fix code. Return Python only."),
                 HumanMessage(content=prompt),
             ])
             fixed = strip_thinking(str(resp.content or "")).strip()
