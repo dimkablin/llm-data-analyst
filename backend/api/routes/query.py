@@ -655,8 +655,7 @@ async def _execute_query(
         and user_skill_settings.get(skill.skill_id, True)
     }
     user_memory = _user_memory_service.load(current_user.id)
-    from backend.sessions.session_memory import SessionMemory as _SessionMemory
-    session_memory = _SessionMemory(notes=state.session_memory or "")
+    session_memory = _store.get_structured_memory(session_id)
     # TODO(perf): A new AgentRunner (and a new compiled LangGraph) is built on every
     # request because node functions are bound methods that capture `self`.  Fix:
     # move all per-request data into AgentGraphState so nodes can be static and the
@@ -755,6 +754,12 @@ async def _execute_query(
         if runtime_runner._session_memory_buffer:  # noqa: SLF001
             for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                 _store.append_session_memory(session_id, note)
+    except Exception:
+        pass
+
+    # Persist structured session memory (artifact index + key findings)
+    try:
+        _store.set_structured_memory(session_id, runtime_runner.session_memory)
     except Exception:
         pass
 
@@ -886,8 +891,7 @@ async def query_stream(
         and user_skill_settings.get(skill.skill_id, True)
     }
     user_memory = _user_memory_service.load(current_user.id)
-    from backend.sessions.session_memory import SessionMemory as _SessionMemory
-    session_memory = _SessionMemory(notes=state.session_memory or "")
+    session_memory = _store.get_structured_memory(session_id)
     # TODO(perf): See same comment in query endpoint — graph recompilation per request.
     runtime_runner = _AgentRunner(
         runtime_settings,
@@ -947,6 +951,12 @@ async def query_stream(
                 if runtime_runner._session_memory_buffer:  # noqa: SLF001
                     for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                         _store.append_session_memory(session_id, note)
+            except Exception:
+                pass
+
+            # Persist structured session memory (artifact index + key findings)
+            try:
+                _store.set_structured_memory(session_id, runtime_runner.session_memory)
             except Exception:
                 pass
 

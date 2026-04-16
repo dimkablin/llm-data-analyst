@@ -42,7 +42,7 @@ from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
 from backend.observability.phoenix import record_llm_usage_on_active_span
-from backend.sessions.session_memory import SessionMemory
+from backend.sessions.session_memory import SessionArtifactRef, SessionMemory, StructuredSessionMemory
 from backend.skills import SkillRegistry
 from backend.tools.capabilities import build_runtime_capability_context
 from backend.tools.context import ToolBuildContext
@@ -401,6 +401,24 @@ class AgentGraphState(TypedDict, total=False):
 
     # Output
     response: AgentResponse
+
+
+def _extract_findings_from_actions(
+    actions: list[str],
+    turn_index: int,
+) -> list[str]:
+    """
+    Deterministic filter: retain completed actions that look like meaningful analytical steps.
+    No LLM call. Simple heuristics — skip pure infrastructure calls.
+    """
+    SKIP_TOOLS = {"database_tool", "get_tool_instructions", "planner_tool"}
+    findings: list[str] = []
+    for action in actions:
+        tool = action.split("→")[0].strip()
+        if any(skip in tool for skip in SKIP_TOOLS):
+            continue
+        findings.append(f"[turn {turn_index}] {action}")
+    return findings
 
 
 class AgentRunner:
@@ -2749,6 +2767,29 @@ class AgentRunner:
             return fallback
 
         response = result.get("response")
+
+        # Flush working_memory → StructuredSessionMemory (Task 4)
+        working_memory = result.get("working_memory")
+        if working_memory is not None and isinstance(self.session_memory, StructuredSessionMemory):
+            structured = self.session_memory
+            for handle in working_memory.artifact_handles:
+                ref = SessionArtifactRef(
+                    id=handle.id,
+                    name=handle.name,
+                    type=handle.type,
+                    turn_index=structured.turn_count,
+                    schema=handle.schema,
+                    row_count=handle.row_count,
+                    summary=handle.summary,
+                )
+                structured.artifact_index.append(ref)
+            new_findings = _extract_findings_from_actions(
+                working_memory.completed_actions,
+                turn_index=structured.turn_count,
+            )
+            structured.key_findings = (structured.key_findings + new_findings)[-30:]
+            structured.turn_count += 1
+
         if not isinstance(response, AgentResponse):
             response = AgentResponse(
                 final_text=self._fallback_text(prompt, df),
