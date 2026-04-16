@@ -24,6 +24,7 @@ from backend.agent.callbacks import (
     PhaseCollector,
     ToolCollector,
 )
+from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.agent.llm_client import AnyReasoningLLM, make_reasoning_llm
 from backend.agent.prompts import (
     chat_system_prompt,
@@ -193,7 +194,9 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
     else:
         logger.exception("%s failed", where)
 
-def _build_tool_message_text(result: object) -> str:
+def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None]:
+    import uuid as _uuid
+
     def _short(obj: object, limit: int = 1600) -> str:
         try:
             text = json.dumps(obj, ensure_ascii=False, default=str, indent=2)
@@ -287,7 +290,48 @@ def _build_tool_message_text(result: object) -> str:
         else:
             parts.append("ARTIFACT_RESULT:\n" + _short(artifact))
 
-    return "\n\n".join(p for p in parts if p).strip()
+    text = "\n\n".join(p for p in parts if p).strip()
+
+    # Build ArtifactHandle from artifact metadata
+    handle: ArtifactHandle | None = None
+    if isinstance(artifact, dict):
+        artifact_type = artifact.get("artifact_type")
+        items = artifact.get("items")
+        if artifact_type in ("table", "value", "plot", "json") and isinstance(items, dict):
+            artifact_name = next(iter(items), "")
+            payload = items.get(artifact_name)
+
+            schema: dict[str, str] | None = None
+            row_count: int | None = None
+            summary: str | None = None
+
+            if artifact_type == "table" and payload is not None:
+                try:
+                    import pandas as pd
+                    if isinstance(payload, pd.DataFrame):
+                        schema = {col: str(dtype) for col, dtype in payload.dtypes.items()}
+                        row_count = len(payload)
+                        summary = f"{artifact_name}, {row_count}×{len(schema)}"
+                except Exception:
+                    pass
+            elif artifact_type == "value":
+                summary = str(payload)[:80] if payload is not None else None
+            elif artifact_type == "plot":
+                summary = artifact_name
+
+            if artifact_name:
+                handle = ArtifactHandle(
+                    id=str(_uuid.uuid4()),
+                    name=artifact_name,
+                    type=artifact_type,
+                    tool_name="",  # filled in by caller
+                    step_index=0,  # filled in by caller
+                    schema=schema,
+                    row_count=row_count,
+                    summary=summary,
+                )
+
+    return text, handle
 
 
 RECOVERY_TEXT_PREFIX = "Шаг анализа завершился с ограничением итераций модели"
@@ -347,6 +391,8 @@ class AgentGraphState(TypedDict, total=False):
     # can access instance services (LLM clients, tool registry, settings) without
     # being bound to a specific AgentRunner instance at graph-compile time.
     _runner: Any
+
+    working_memory: AnalysisWorkingMemory | None   # per-query ephemeral state
 
     # Output
     response: AgentResponse
@@ -1868,6 +1914,7 @@ class AgentRunner:
         callbacks: list,
         max_iterations: int,
         trace_context: dict[str, Any] | None = None,
+        working_memory: AnalysisWorkingMemory | None = None,
     ) -> AgentResponse:
         """The one and only tool-calling loop.
 
@@ -1989,6 +2036,10 @@ class AgentRunner:
                 tool = tool_map.get(tool_name)
                 if tool is None:
                     tool_message_text = f"Unknown tool: {tool_name}"
+                    if working_memory is not None:
+                        working_memory.completed_actions.append(f"{tool_name} → [unknown tool]")
+                        working_memory.step_index += 1
+                        working_memory.tool_call_count += 1
                 else:
                     try:
                         tool_call_input = {
@@ -1998,9 +2049,28 @@ class AgentRunner:
                             "type": "tool_call",
                         }
                         result = tool.invoke(tool_call_input, config=runtime_config)
-                        tool_message_text = _build_tool_message_text(result)
+                        tool_message_text, _handle = _build_tool_message_text(result)
+
+                        # Working memory accumulation
+                        if working_memory is not None:
+                            if _handle is not None:
+                                _handle.tool_name = tool_name
+                                _handle.step_index = working_memory.step_index
+                                working_memory.artifact_handles.append(_handle)
+                                working_memory.last_tool_result_summary = _handle.summary or _handle.masked_ref
+                                action_line = f"{tool_name} → {_handle.name}"
+                            else:
+                                working_memory.last_tool_result_summary = tool_message_text[:120]
+                                action_line = f"{tool_name} → {tool_message_text[:60]}"
+                            working_memory.completed_actions.append(action_line)
+                            working_memory.step_index += 1
+                            working_memory.tool_call_count += 1
                     except Exception as tool_exc:
                         tool_message_text = f"Tool error: {tool_exc}"
+                        if working_memory is not None:
+                            working_memory.completed_actions.append(f"{tool_name} → [error: {str(tool_exc)[:60]}]")
+                            working_memory.step_index += 1
+                            working_memory.tool_call_count += 1
 
                 messages.append(ToolMessage(content=tool_message_text, tool_call_id=tool_call_id))
         else:
@@ -2250,6 +2320,7 @@ class AgentRunner:
             "capability_context": capability_context,
             "llm_unreachable": False,
             "tool_db_runtime": tool_db_runtime,
+            "working_memory": AnalysisWorkingMemory(goal=prompt),
         }
 
     @staticmethod
@@ -2265,6 +2336,7 @@ class AgentRunner:
 
         tool_db_runtime = state.get("tool_db_runtime")
         sandbox = state.get("sandbox")
+        working_memory: AnalysisWorkingMemory | None = state.get("working_memory")
 
         execution_system_prompt = runner._build_execution_system_prompt(  # noqa: SLF001
             capability_context=state.get("capability_context"),
@@ -2324,6 +2396,11 @@ class AgentRunner:
                 plan_text = str(plan_result).strip()
                 if plan_text:
                     execution_system_prompt += f"\n\n## Предварительный план анализа\n{plan_text}"
+                    # Capture plan into working memory
+                    if working_memory is not None:
+                        working_memory.current_plan = [
+                            line.strip() for line in plan_text.splitlines() if line.strip()
+                        ]
             except Exception as _plan_exc:
                 logger.warning("Pre-loop planner_tool failed: %s", _plan_exc)
             tools_for_loop = [t for t in tools if getattr(t, "name", "") != "planner_tool"]
@@ -2353,6 +2430,7 @@ class AgentRunner:
                 callbacks=callbacks,
                 max_iterations=max_steps,
                 trace_context=state.get("trace_context"),
+                working_memory=working_memory,
             )
         except Exception as exc:
             artifacts, tool_calls, tool_names = runner._collect_tool_stats(callbacks)  # noqa: SLF001
@@ -2395,7 +2473,7 @@ class AgentRunner:
             step_index=step_index, max_steps=max_steps, status="done",
         )
 
-        return {"response": response, "step_index": step_index}
+        return {"response": response, "step_index": step_index, "working_memory": working_memory}
 
     @staticmethod
     def _finalize_node(state: AgentGraphState) -> dict[str, AgentResponse]:
