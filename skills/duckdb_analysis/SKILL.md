@@ -1,27 +1,65 @@
 ---
-name: DuckDB анализ больших файлов
-description: SQL-анализ больших CSV и Parquet файлов через DuckDB — без загрузки в память, с поддержкой JOIN по нескольким файлам.
-triggers: duckdb, большой файл, large csv, parquet, sql по файлу, несколько файлов, join файлов, out of memory, большой датасет, gb файл
+name: DuckDB Large File Analysis
+description: SQL analysis of large CSV and Parquet files via DuckDB — no in-memory loading, supports JOINs across multiple files.
+triggers: duckdb, large file, large csv, parquet, sql on file, multiple files, join files, out of memory, large dataset, gb file, большой файл, несколько файлов, большой датасет
 ---
 
-## DuckDB анализ больших файлов
+## DuckDB Large File Analysis
 
-Используй, когда pandas не справляется с размером файла или нужно выполнить SQL-запросы по CSV/Parquet без загрузки в память.
+Use when pandas can't handle the file size, or when you need SQL queries on CSV/Parquet without loading into memory.
 
-В этом проекте `sql_tool` использует DuckDB под капотом — он умеет читать CSV и Parquet напрямую.
+In this project `sql_tool` uses DuckDB under the hood — it can read CSV and Parquet files directly.
 
-### Исследование схемы файла через sql_tool
+### Finding the file path → sql_tool
+
+If the user just uploaded a file and didn't specify the path — ask explicitly. If the path is partially known — use glob:
 
 ```sql
--- Посмотреть структуру и первые строки
+-- Search by pattern in the uploads directory
+SELECT * FROM read_csv_auto('/uploads/*.csv') LIMIT 5;
+
+-- Check if a specific file is accessible
+SELECT COUNT(*) FROM read_csv_auto('/path/to/file.csv');
+```
+
+### Exploring file schema → sql_tool
+
+```sql
+-- View structure and first rows
 DESCRIBE SELECT * FROM read_csv_auto('/path/to/file.csv');
 
 SELECT * FROM read_csv_auto('/path/to/file.csv') LIMIT 10;
 ```
 
-### Агрегация без загрузки в память через sql_tool
+### Handling encodings and delimiters → sql_tool
+
 ```sql
--- Группировка и агрегация напрямую из файла
+-- Non-standard delimiter or encoding
+SELECT * FROM read_csv(
+    '/path/to/file.csv',
+    encoding='utf-8',        -- or 'cp1251' for Windows Cyrillic
+    delim=';',               -- semicolon delimiter
+    header=true,
+    auto_detect=true
+) LIMIT 10;
+```
+
+### Reading multiple files via glob → sql_tool
+
+```sql
+-- All CSVs from a directory
+SELECT * FROM read_csv_auto('/data/monthly/*.csv') LIMIT 10;
+
+-- Multiple Parquet files
+SELECT year, SUM(sales)
+FROM read_parquet('/data/sales/*.parquet')
+GROUP BY year ORDER BY year;
+```
+
+### Aggregation without loading into memory → sql_tool
+
+```sql
+-- Group and aggregate directly from file
 SELECT
     category,
     COUNT(*) AS count,
@@ -34,9 +72,10 @@ ORDER BY total_revenue DESC
 LIMIT 20;
 ```
 
-### JOIN нескольких файлов через sql_tool
+### JOIN across multiple files → sql_tool
+
 ```sql
--- Объединение двух CSV по ключу
+-- Join two CSVs on a key
 SELECT
     a.user_id,
     a.event_date,
@@ -50,9 +89,10 @@ WHERE a.event_date >= '2024-01-01'
 LIMIT 1000;
 ```
 
-### Временные таблицы для сложных запросов через sql_tool
+### Temporary tables for complex queries → sql_tool
+
 ```sql
--- Создание временной таблицы для повторного использования
+-- Create a temp table for reuse across queries
 CREATE OR REPLACE TABLE tmp_filtered AS
 SELECT * FROM read_csv_auto('/path/to/file.csv')
 WHERE status = 'active' AND amount > 0;
@@ -66,9 +106,10 @@ GROUP BY 1
 ORDER BY 1;
 ```
 
-### Анализ Parquet файлов через sql_tool
+### Parquet file analysis → sql_tool
+
 ```sql
--- Parquet читается так же, только read_parquet вместо read_csv_auto
+-- Parquet works the same — just use read_parquet instead of read_csv_auto
 SELECT
     year,
     region,
@@ -78,9 +119,22 @@ GROUP BY year, region
 ORDER BY year, total_sales DESC;
 ```
 
-### Правила
-- Используй `read_csv_auto` — он автоматически определяет типы, разделитель и кодировку
-- Для файлов > 1GB всегда добавляй `WHERE` условия и `LIMIT` при первичном исследовании
-- `PERCENTILE_CONT` и `PERCENTILE_DISC` — только в DuckDB, не в стандартном SQL
-- После получения агрегата через sql_tool — результат доступен как `df` в pandas_tool для дальнейшей обработки
-- Если путь к файлу неизвестен — попроси пользователя уточнить или используй `df` который уже загружен в сессию
+### Passing SQL results to pandas_tool
+
+After running a query via sql_tool, the result is automatically available as `df` in the next pandas_tool:
+
+```python
+# In pandas_tool after sql_tool:
+# df already contains the SQL query result
+df.dtypes      # check types
+df.describe()  # statistics
+```
+
+### Rules
+
+- ALWAYS use `read_csv_auto` — it auto-detects types, delimiter, and encoding
+- ALWAYS add `LIMIT` when initially exploring files > 1 GB
+- DO NOT guess the file path — if the user hasn't specified it, ask explicitly
+- For Cyrillic files try `auto_detect=true` first; if characters are garbled, explicitly set `encoding='cp1251'`
+- `PERCENTILE_CONT` and `PERCENTILE_DISC` are DuckDB-specific, not standard SQL
+- After aggregating via sql_tool, the result is available as `df` in pandas_tool for further processing
