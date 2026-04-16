@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Auto-mark files that are obviously live/e2e by name convention so
 # test authors don't have to add markers manually to every function.

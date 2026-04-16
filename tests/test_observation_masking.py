@@ -7,9 +7,13 @@ from __future__ import annotations
 
 from langchain_core.messages import ToolMessage
 
-from backend.agent.runner import _apply_observation_masking, _MASK_KEEP_LAST_N, _MASK_MIN_STEPS, _MASK_MIN_TOOLS
+from backend.agent.runner import (
+    _MASK_KEEP_LAST_N,
+    _MASK_MIN_STEPS,
+    _MASK_MIN_TOOLS,
+    _apply_observation_masking,
+)
 from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
-
 
 # ---------------------------------------------------------------------------
 # Helpers

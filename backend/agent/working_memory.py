@@ -1,6 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+
 import logging
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ class ArtifactHandle:
         """
         Informative compact string used to replace ToolMessage content after masking.
         Examples:
-          [artifact: revenue_by_region | table | 1200×5 cols | cols: region, revenue, growth_pct, rank, period | step 2]
+          [artifact: revenue_by_region | table | 1200×5 cols |
+           cols: region, revenue, growth_pct, rank, period | step 2]
           [artifact: monthly_trend_chart | plot | Revenue by month 2024 | step 3]
           [artifact: total_revenue | value | step 1]
         """

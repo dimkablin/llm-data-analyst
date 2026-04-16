@@ -116,7 +116,10 @@ _SESSION_NOTE_DESCRIPTION = """\
 
 
 class _SessionNoteInput(BaseModel):
-    text: str = Field(default="", description="Дистиллированный контекст или вывод о сессии (1–3 предложения).")
+    text: str = Field(
+        default="",
+        description="Дистиллированный контекст или вывод о сессии (1–3 предложения).",
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -7,6 +7,7 @@ without spinning up the full agent graph or an LLM.
 from __future__ import annotations
 
 import unittest
+from typing import ClassVar
 
 import pandas as pd
 
@@ -19,7 +20,7 @@ def _table_result(name: str, df: pd.DataFrame):
 
     class _Res:
         content = f"Query returned {len(df)} rows."
-        artifact = {
+        artifact: ClassVar[dict] = {
             "artifact_type": "table",
             "items": {name: df},
         }
@@ -30,7 +31,7 @@ def _table_result(name: str, df: pd.DataFrame):
 def _value_result(name: str, value):
     class _Res:
         content = f"Computed value: {value}"
-        artifact = {
+        artifact: ClassVar[dict] = {
             "artifact_type": "value",
             "items": {name: value},
         }
@@ -41,7 +42,7 @@ def _value_result(name: str, value):
 def _plot_result(name: str):
     class _Res:
         content = "Plot created."
-        artifact = {
+        artifact: ClassVar[dict] = {
             "artifact_type": "plot",
             "items": {name: "<fig>"},
         }

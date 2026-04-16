@@ -25,13 +25,13 @@ from backend.agent.callbacks import (
     PhaseCollector,
     ToolCollector,
 )
-from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.agent.llm_client import AnyReasoningLLM, make_reasoning_llm
 from backend.agent.prompts import (
     chat_system_prompt,
     execution_agent_prompt,
     get_detailed_data_info,
 )
+from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.artifacts.execution import artifact_type_label
 from backend.auth.user_memory import UserMemory
 from backend.core.config import DEPTH_PROFILES, Settings
@@ -298,7 +298,8 @@ def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None
         if artifact_type in ("table", "value", "plot", "json") and isinstance(items, dict):
             if artifact_type == "table" and isinstance(items, dict) and len(items) > 1:
                 logger.debug(
-                    "_build_tool_message_text: multi-table result (%d tables); handle created for first only: %s",
+                    "_build_tool_message_text: multi-table result (%d tables);"
+                    " handle created for first only: %s",
                     len(items),
                     list(items.keys()),
                 )
@@ -2116,7 +2117,9 @@ class AgentRunner:
                                 _handle.tool_name = tool_name
                                 _handle.step_index = working_memory.step_index
                                 working_memory.artifact_handles.append(_handle)
-                                working_memory.last_tool_result_summary = _handle.summary or _handle.masked_ref
+                                working_memory.last_tool_result_summary = (
+                                    _handle.summary or _handle.masked_ref
+                                )
                                 action_line = f"{tool_name} → {_handle.name}"
                             else:
                                 working_memory.last_tool_result_summary = tool_message_text[:120]
@@ -2127,13 +2130,18 @@ class AgentRunner:
 
                         # Track for masking (after working_memory update)
                         if working_memory is not None:
-                            _tc_id_to_step[tool_call_id] = _handle.step_index if _handle is not None else (working_memory.step_index - 1)
+                            _tc_id_to_step[tool_call_id] = (
+                                _handle.step_index if _handle is not None
+                                else (working_memory.step_index - 1)
+                            )
                             if _handle is not None:
                                 _tc_id_to_handle[tool_call_id] = _handle
                     except Exception as tool_exc:
                         tool_message_text = f"Tool error: {tool_exc}"
                         if working_memory is not None:
-                            working_memory.completed_actions.append(f"{tool_name} → [error: {str(tool_exc)[:60]}]")
+                            working_memory.completed_actions.append(
+                                f"{tool_name} → [error: {str(tool_exc)[:60]}]"
+                            )
                             working_memory.step_index += 1
                             working_memory.tool_call_count += 1
                         _tc_id_to_step[tool_call_id] = working_memory.step_index - 1 if working_memory else 0
@@ -2270,7 +2278,7 @@ class AgentRunner:
         trace_context = state.get("trace_context") or {}
         session_source = state.get("session_source") or {}
 
-        tool_db_runtime = runner._resolve_tool_db_runtime_config(session_source, trace_context)  # noqa: SLF001
+        tool_db_runtime = runner._resolve_tool_db_runtime_config(session_source, trace_context)
         csv_loaded, csv_session_id = AgentRunner._resolve_csv_runtime_state(session_source, trace_context)
         has_data = bool(
             df is not None
@@ -2295,7 +2303,7 @@ class AgentRunner:
                 )
             except Exception:
                 response = AgentResponse(
-                    final_text=runner._fallback_text(prompt, df),  # noqa: SLF001
+                    final_text=runner._fallback_text(prompt, df),
                     reasoning=None,
                     artifacts=[],
                     route="chat",
@@ -2304,23 +2312,23 @@ class AgentRunner:
 
         # ── Summary bypass ───────────────────────────────────────────────────
         if quick == "summary":
-            runner._emit_phase_event(  # noqa: SLF001
+            runner._emit_phase_event(
                 callbacks, phase="act", title="Формирование управленческой записки",
                 content="", step_index=0, max_steps=1, status="streaming",
             )
-            runner._emit_progress_event(  # noqa: SLF001
+            runner._emit_progress_event(
                 callbacks, phase="act", title="Собираю управленческую записку",
                 details="Анализирую релевантную историю переписки и артефакты.",
                 step_index=0, max_steps=1,
             )
-            response = runner._build_management_note(  # noqa: SLF001
+            response = runner._build_management_note(
                 prompt=prompt,
                 history=history,
                 include_reasoning=include_reasoning,
                 callbacks=callbacks,
                 trace_context=trace_context,
             )
-            runner._emit_phase_event(  # noqa: SLF001
+            runner._emit_phase_event(
                 callbacks, phase="act", title="Формирование управленческой записки",
                 content="Управленческая записка сформирована.",
                 step_index=0, max_steps=1, status="done",
@@ -2347,8 +2355,8 @@ class AgentRunner:
             csv_session_id=csv_session_id,
             sandbox=sandbox,
         )
-        tools = runner._tool_registry.build_tools(_ctx)  # noqa: SLF001
-        tool_descriptions = runner._tool_registry.describe_available_tools(_ctx)  # noqa: SLF001
+        tools = runner._tool_registry.build_tools(_ctx)
+        tool_descriptions = runner._tool_registry.describe_available_tools(_ctx)
 
         # Inject tool descriptions into planner_tool, excluding itself to avoid
         # the planner recommending a recursive planner_tool call.
@@ -2358,14 +2366,14 @@ class AgentRunner:
         ).strip()
         # Append analytical skills so the planner knows which skill IDs exist
         # and can route "инсайты", "EDA", "когорты" etc. to get_tool_instructions.
-        _analytical_block = runner.skill_registry.build_analytical_skills_brief_block()  # noqa: SLF001
+        _analytical_block = runner.skill_registry.build_analytical_skills_brief_block()
         if _analytical_block:
             _planner_descriptions = _planner_descriptions + "\n\n" + _analytical_block
         for _tool in tools:
             if hasattr(_tool, "set_tool_descriptions"):
                 _tool.set_tool_descriptions(_planner_descriptions)
 
-        depth_inner_limit = runner._depth_profile.get("inner_recursion_limit")  # noqa: SLF001
+        depth_inner_limit = runner._depth_profile.get("inner_recursion_limit")
         max_steps = max(
             1,
             depth_inner_limit if isinstance(depth_inner_limit, int)
@@ -2424,7 +2432,7 @@ class AgentRunner:
         sandbox = state.get("sandbox")
         working_memory: AnalysisWorkingMemory | None = state.get("working_memory")
 
-        execution_system_prompt = runner._build_execution_system_prompt(  # noqa: SLF001
+        execution_system_prompt = runner._build_execution_system_prompt(
             capability_context=state.get("capability_context"),
             sandbox=sandbox,
             selected_skill_ids=state.get("selected_skill_ids") or [],
@@ -2445,7 +2453,7 @@ class AgentRunner:
         if planner is not None:
             planner_runtime_config: dict[str, Any] = {"callbacks": callbacks}
             if tc := state.get("trace_context"):
-                planner_runtime_config["metadata"] = runner._build_runtime_metadata(tc)  # noqa: SLF001
+                planner_runtime_config["metadata"] = runner._build_runtime_metadata(tc)
 
             history = state.get("history", [])
             recent_history_snippet = "\n".join(
@@ -2457,7 +2465,7 @@ class AgentRunner:
 
             # Hint planner about analytical skills whose triggers match the
             # prompt so the generated plan includes their prescribed steps.
-            matched_skills_hint = runner._matched_analytical_skills_hint(state.get("prompt"))  # noqa: SLF001
+            matched_skills_hint = runner._matched_analytical_skills_hint(state.get("prompt"))
             planner_context = recent_history_snippet
             if matched_skills_hint:
                 planner_context = (
@@ -2491,11 +2499,11 @@ class AgentRunner:
                 logger.warning("Pre-loop planner_tool failed: %s", _plan_exc)
             tools_for_loop = [t for t in tools if getattr(t, "name", "") != "planner_tool"]
 
-        runner._emit_phase_event(  # noqa: SLF001
+        runner._emit_phase_event(
             callbacks, phase="act", title="Выполнение анализа",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
         )
-        runner._emit_progress_event(  # noqa: SLF001
+        runner._emit_progress_event(
             callbacks, phase="act", title="Выполняю анализ",
             details="Подбираю инструмент и формирую вызов tool.",
             step_index=step_index, max_steps=max_steps,
@@ -2506,7 +2514,7 @@ class AgentRunner:
 
         started_at = time.perf_counter()
         try:
-            response = runner._direct_tool_loop(  # noqa: SLF001
+            response = runner._direct_tool_loop(
                 prompt=state.get("prompt", ""),
                 history=state.get("history", []),
                 use_history=state.get("use_history", True),
@@ -2519,9 +2527,9 @@ class AgentRunner:
                 working_memory=working_memory,
             )
         except Exception as exc:
-            artifacts, tool_calls, tool_names = runner._collect_tool_stats(callbacks)  # noqa: SLF001
+            artifacts, tool_calls, tool_names = runner._collect_tool_stats(callbacks)
             response = AgentResponse(
-                final_text=runner._artifacts_recovery_text(artifacts),  # noqa: SLF001
+                final_text=runner._artifacts_recovery_text(artifacts),
                 reasoning=f"Agent step failed: {exc}",
                 artifacts=artifacts,
                 route="analysis",
@@ -2553,7 +2561,7 @@ class AgentRunner:
             types = [artifact_type_label(getattr(a, "artifact_type", "")) for a in response.artifacts]
             tool_summary_lines.append(f"Артефакты: {', '.join(t for t in types if t)}")
 
-        runner._emit_phase_event(  # noqa: SLF001
+        runner._emit_phase_event(
             callbacks, phase="act", title="Анализ завершён",
             content="\n".join(tool_summary_lines) if tool_summary_lines else "Шаг выполнен.",
             step_index=step_index, max_steps=max_steps, status="done",
@@ -2569,11 +2577,11 @@ class AgentRunner:
         step_index = int(state.get("step_index", 0))
         max_steps = int(state.get("max_steps", 1))
 
-        runner._emit_phase_event(  # noqa: SLF001
+        runner._emit_phase_event(
             callbacks, phase="finalize", title="Финализация",
             content="", step_index=step_index, max_steps=max_steps, status="streaming",
         )
-        runner._emit_progress_event(  # noqa: SLF001
+        runner._emit_progress_event(
             callbacks, phase="finalize", title="Формирую финальный ответ",
             details="Собираю выводы только по подтвержденным артефактам.",
             step_index=step_index, max_steps=max_steps,
@@ -2586,12 +2594,12 @@ class AgentRunner:
 
         # LLM unreachable before any response was produced.
         if state.get("llm_unreachable") and response is None:
-            runner._emit_phase_event(  # noqa: SLF001
+            runner._emit_phase_event(
                 callbacks, phase="finalize", title="Финализация",
                 content=_LLM_UNAVAILABLE_USER_TEXT,
                 step_index=step_index, max_steps=max_steps, status="done",
             )
-            runner._emit_progress_event(  # noqa: SLF001
+            runner._emit_progress_event(
                 callbacks, phase="finalize", title="LLM недоступна",
                 details=_LLM_UNAVAILABLE_USER_TEXT, step_index=step_index, max_steps=max_steps,
             )
@@ -2610,25 +2618,25 @@ class AgentRunner:
         # LLM became unreachable mid-execution — return partial response as-is.
         if response is not None and getattr(response, "llm_unreachable", False):
             text = (response.final_text or "").strip() or _LLM_UNAVAILABLE_USER_TEXT
-            runner._emit_phase_event(  # noqa: SLF001
+            runner._emit_phase_event(
                 callbacks, phase="finalize", title="Финализация",
                 content=text, step_index=step_index, max_steps=max_steps, status="done",
             )
-            runner._emit_progress_event(  # noqa: SLF001
+            runner._emit_progress_event(
                 callbacks, phase="finalize", title="LLM недоступна",
                 details=text, step_index=step_index, max_steps=max_steps,
             )
             return {"response": response}
 
         if response is None:
-            runner._emit_phase_event(  # noqa: SLF001
+            runner._emit_phase_event(
                 callbacks, phase="finalize", title="Финализация",
                 content="Нет ответа от агента, формирую fallback.",
                 step_index=step_index, max_steps=max_steps, status="done",
             )
             return {
                 "response": AgentResponse(
-                    final_text=runner._fallback_text(prompt, df, stop_reason=stop_reason),  # noqa: SLF001
+                    final_text=runner._fallback_text(prompt, df, stop_reason=stop_reason),
                     reasoning="No response produced by graph.",
                     artifacts=[],
                     route="analysis",
@@ -2655,7 +2663,7 @@ class AgentRunner:
                 or _used_search
             )
             if should_rewrite:
-                grounded_summary = runner._artifact_grounded_summary(  # noqa: SLF001
+                grounded_summary = runner._artifact_grounded_summary(
                     prompt, response.artifacts, base_text=response.final_text,
                 )
                 if grounded_summary:
@@ -2686,9 +2694,9 @@ class AgentRunner:
                 pass
 
         if not response.final_text.strip():
-            response.final_text = runner._fallback_text(prompt, df, stop_reason=stop_reason)  # noqa: SLF001
+            response.final_text = runner._fallback_text(prompt, df, stop_reason=stop_reason)
 
-        runner._emit_phase_event(  # noqa: SLF001
+        runner._emit_phase_event(
             callbacks, phase="finalize", title="Финализация",
             content="Ответ сформирован.",
             step_index=step_index, max_steps=max_steps, status="done",

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from backend.skills import SkillRegistry
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 

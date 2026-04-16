@@ -1,12 +1,9 @@
 """Tests for Task 4: flush working_memory → StructuredSessionMemory."""
 from __future__ import annotations
 
-import pytest
-
 from backend.agent.runner import _extract_findings_from_actions
 from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
-
 
 # ---------------------------------------------------------------------------
 # _extract_findings_from_actions

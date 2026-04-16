@@ -11,19 +11,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
-import pytest
+from langchain_core.messages import ToolMessage
 
 from backend.agent.runner import (
     _apply_observation_masking,
     _build_tool_message_text,
     _extract_findings_from_actions,
-    _MASK_KEEP_LAST_N,
 )
-from backend.agent.working_memory import ArtifactHandle, AnalysisWorkingMemory
+from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
 from backend.sessions.session_store import SessionStore
-from langchain_core.messages import ToolMessage
-
 
 # ---------------------------------------------------------------------------
 # Story 1: After a tool call produces a table, the agent sees its metadata
@@ -52,7 +49,7 @@ def test_table_handle_created_and_flushed_to_session():
     result_obj = SimpleNamespace(content="", artifact=artifact)
 
     # 3. Call _build_tool_message_text(result_obj) → get (text, handle)
-    text, handle = _build_tool_message_text(result_obj)
+    _text, handle = _build_tool_message_text(result_obj)
 
     # 4. Assert handle properties
     assert handle is not None, "Expected a handle to be created from table artifact"
@@ -259,7 +256,7 @@ def test_observation_masking_compresses_early_tool_messages():
     so the LLM context doesn't get overloaded with raw data.
     """
     # 1. Create AnalysisWorkingMemory
-    wm = AnalysisWorkingMemory(goal="big analysis")
+    _wm = AnalysisWorkingMemory(goal="big analysis")
 
     # 2. Build 5 handles for steps 0-4
     handles = [

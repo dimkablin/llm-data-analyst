@@ -3,13 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from backend.sessions.session_store import SessionStore
 from backend.sessions.session_memory import (
     SessionArtifactRef,
     StructuredSessionMemory,
 )
+from backend.sessions.session_store import SessionStore
 
 
 def _make_store(tmp_path: Path) -> SessionStore:
