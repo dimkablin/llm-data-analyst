@@ -6,6 +6,7 @@ services:
     volumes:
       - backend_storage:/app/backend_storage
       - ./certs:/opt/certs:ro
+      - ./skills:/app/skills:ro
     env_file:
       - .env
     environment:

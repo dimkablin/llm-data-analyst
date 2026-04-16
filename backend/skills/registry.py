@@ -66,10 +66,11 @@ class SkillRegistry:
     def load(self) -> SkillRegistry:
         if self._loaded:
             return self
-        self._loaded = True
-        self._skills_by_id = {}
+        skills_by_id: dict[str, Skill] = {}
         if not self.skills_dir.exists():
             logger.warning("Skills directory '%s' not found — no skills loaded.", self.skills_dir.resolve())
+            self._skills_by_id = skills_by_id
+            self._loaded = True
             return self
         if not self.skills_dir.is_dir():
             raise SkillValidationError(f"Skills path is not a directory: {self.skills_dir}")
@@ -85,11 +86,13 @@ class SkillRegistry:
                 skill_md,
                 details_path=details_md if details_md.exists() else None,
             )
-            if skill.skill_id in self._skills_by_id:
+            if skill.skill_id in skills_by_id:
                 raise SkillValidationError(
                     f"Duplicate skill id '{skill.skill_id}' in {skill_dir.name}/SKILL.md."
                 )
-            self._skills_by_id[skill.skill_id] = skill
+            skills_by_id[skill.skill_id] = skill
+        self._skills_by_id = skills_by_id
+        self._loaded = True
         return self
 
     def list_skills(self) -> tuple[Skill, ...]:
