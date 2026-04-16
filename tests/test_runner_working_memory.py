@@ -88,6 +88,19 @@ class TestBuildToolMessageTextReturnsTuple(unittest.TestCase):
         self.assertIn("region", handle.schema)
         self.assertIn("revenue", handle.schema)
 
+    def test_multi_table_only_first_handle_returned(self):
+        """When a tool returns multiple tables, only the first gets a handle (current behaviour)."""
+        df1 = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+        df2 = pd.DataFrame({"c": [5, 6]})
+        result = {"schema_version": "1.0", "artifact_type": "table", "items": {"first_table": df1, "second_table": df2}}
+        # Wrap as a mock result object
+        class _R:
+            content = ""
+            artifact = result
+        _, handle = _build_tool_message_text(_R())
+        self.assertIsNotNone(handle)
+        self.assertEqual(handle.name, "first_table")  # documents that only first table gets a handle
+
 
 class TestBuildToolMessageTextNoArtifact(unittest.TestCase):
     """test_build_tool_message_text_no_artifact"""

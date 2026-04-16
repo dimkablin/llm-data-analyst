@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date
@@ -195,8 +196,6 @@ def _log_llm_invoke_failure(where: str, exc: BaseException, settings: Settings) 
         logger.exception("%s failed", where)
 
 def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None]:
-    import uuid as _uuid
-
     def _short(obj: object, limit: int = 1600) -> str:
         try:
             text = json.dumps(obj, ensure_ascii=False, default=str, indent=2)
@@ -298,10 +297,16 @@ def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None
         artifact_type = artifact.get("artifact_type")
         items = artifact.get("items")
         if artifact_type in ("table", "value", "plot", "json") and isinstance(items, dict):
+            if artifact_type == "table" and isinstance(items, dict) and len(items) > 1:
+                logger.debug(
+                    "_build_tool_message_text: multi-table result (%d tables); handle created for first only: %s",
+                    len(items),
+                    list(items.keys()),
+                )
             artifact_name = next(iter(items), "")
             payload = items.get(artifact_name)
 
-            schema: dict[str, str] | None = None
+            handle_schema: dict[str, str] | None = None
             row_count: int | None = None
             summary: str | None = None
 
@@ -309,9 +314,9 @@ def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None
                 try:
                     import pandas as pd
                     if isinstance(payload, pd.DataFrame):
-                        schema = {col: str(dtype) for col, dtype in payload.dtypes.items()}
+                        handle_schema = {col: str(dtype) for col, dtype in payload.dtypes.items()}
                         row_count = len(payload)
-                        summary = f"{artifact_name}, {row_count}×{len(schema)}"
+                        summary = f"{artifact_name}, {row_count}×{len(handle_schema)}"
                 except Exception:
                     pass
             elif artifact_type == "value":
@@ -321,12 +326,12 @@ def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None
 
             if artifact_name:
                 handle = ArtifactHandle(
-                    id=str(_uuid.uuid4()),
+                    id=str(uuid.uuid4()),
                     name=artifact_name,
                     type=artifact_type,
                     tool_name="",  # filled in by caller
                     step_index=0,  # filled in by caller
-                    schema=schema,
+                    schema=handle_schema,
                     row_count=row_count,
                     summary=summary,
                 )
