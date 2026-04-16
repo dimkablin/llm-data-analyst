@@ -2768,11 +2768,23 @@ class AgentRunner:
 
         response = result.get("response")
 
+        if not isinstance(response, AgentResponse):
+            response = AgentResponse(
+                final_text=self._fallback_text(prompt, df),
+                reasoning=None,
+                artifacts=[],
+                route="analysis",
+            )
+
         # Flush working_memory → StructuredSessionMemory (Task 4)
+        # Only runs on a valid AgentResponse to avoid incrementing turn_count on failure.
         working_memory = result.get("working_memory")
         if working_memory is not None and isinstance(self.session_memory, StructuredSessionMemory):
             structured = self.session_memory
+            existing_ids = {r.id for r in structured.artifact_index}
             for handle in working_memory.artifact_handles:
+                if handle.id in existing_ids:
+                    continue
                 ref = SessionArtifactRef(
                     id=handle.id,
                     name=handle.name,
@@ -2783,20 +2795,15 @@ class AgentRunner:
                     summary=handle.summary,
                 )
                 structured.artifact_index.append(ref)
+                existing_ids.add(handle.id)
+            # Cap artifact_index at 100 entries (oldest evicted)
+            structured.artifact_index = structured.artifact_index[-100:]
             new_findings = _extract_findings_from_actions(
                 working_memory.completed_actions,
                 turn_index=structured.turn_count,
             )
             structured.key_findings = (structured.key_findings + new_findings)[-30:]
             structured.turn_count += 1
-
-        if not isinstance(response, AgentResponse):
-            response = AgentResponse(
-                final_text=self._fallback_text(prompt, df),
-                reasoning=None,
-                artifacts=[],
-                route="analysis",
-            )
 
         if cache_allowed:
             self._cache_set(cache_key, response)

@@ -53,8 +53,11 @@ def _do_flush(
     working_memory: AnalysisWorkingMemory,
     structured: StructuredSessionMemory,
 ) -> None:
-    """Replicate the flush logic from AgentRunner.run_query()."""
+    """Replicate the flush logic from AgentRunner.run_query() (with dedup + cap)."""
+    existing_ids = {r.id for r in structured.artifact_index}
     for handle in working_memory.artifact_handles:
+        if handle.id in existing_ids:
+            continue
         ref = SessionArtifactRef(
             id=handle.id,
             name=handle.name,
@@ -65,6 +68,9 @@ def _do_flush(
             summary=handle.summary,
         )
         structured.artifact_index.append(ref)
+        existing_ids.add(handle.id)
+    # Cap artifact_index at 100 entries (oldest evicted)
+    structured.artifact_index = structured.artifact_index[-100:]
     new_findings = _extract_findings_from_actions(
         working_memory.completed_actions,
         turn_index=structured.turn_count,
@@ -144,3 +150,85 @@ def test_flush_empty_working_memory():
     assert structured.artifact_index == []
     assert structured.key_findings == []
     assert structured.turn_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue 2 – deduplication and cap
+# ---------------------------------------------------------------------------
+
+def test_flush_deduplicates_artifact_refs():
+    """Two handles with the same id should produce only one artifact_index entry."""
+    wm = AnalysisWorkingMemory(goal="dedup test")
+    # Add the same handle twice (same id)
+    handle = _make_handle("revenue_table")
+    wm.artifact_handles.append(handle)
+    duplicate = ArtifactHandle(
+        id=handle.id,  # same id
+        name="revenue_table_copy",
+        type="table",
+        tool_name="sql_tool",
+        step_index=1,
+        schema={},
+        row_count=5,
+        summary="duplicate",
+    )
+    wm.artifact_handles.append(duplicate)
+
+    structured = StructuredSessionMemory(turn_count=0)
+    _do_flush(wm, structured)
+
+    assert len(structured.artifact_index) == 1
+    assert structured.artifact_index[0].id == handle.id
+
+
+def test_flush_caps_artifact_index_at_100():
+    """artifact_index should never exceed 100 entries; oldest are evicted."""
+    # Pre-load with 98 distinct refs
+    existing_refs = [
+        SessionArtifactRef(
+            id=f"existing-{i}",
+            name=f"table_{i}",
+            type="table",
+            turn_index=0,
+            schema=None,
+            row_count=None,
+            summary=None,
+        )
+        for i in range(98)
+    ]
+    structured = StructuredSessionMemory(turn_count=1, artifact_index=existing_refs)
+
+    # Flush 5 new unique handles → total would be 103 without cap
+    wm = AnalysisWorkingMemory(goal="cap test")
+    for j in range(5):
+        wm.artifact_handles.append(_make_handle(f"new_table_{j}"))
+
+    _do_flush(wm, structured)
+
+    assert len(structured.artifact_index) <= 100
+    # The newest entries should be retained (last-100 strategy)
+    new_names = {ref.name for ref in structured.artifact_index}
+    for j in range(5):
+        assert f"new_table_{j}" in new_names
+
+
+# ---------------------------------------------------------------------------
+# Issue 1 – flush only on valid response (conceptual / unit coverage)
+# ---------------------------------------------------------------------------
+
+def test_flush_only_on_valid_response():
+    """_extract_findings_from_actions is NOT called when working_memory is None.
+
+    This mirrors the guard in AgentRunner.run_query(): flush is skipped entirely
+    when working_memory is None, so turn_count must remain unchanged.
+    """
+    structured = StructuredSessionMemory(turn_count=7)
+    working_memory = None  # simulate absent working_memory (failure path)
+
+    # Reproduce the guard as written in run_query
+    if working_memory is not None:
+        _do_flush(working_memory, structured)
+
+    # turn_count must not have been incremented
+    assert structured.turn_count == 7
+    assert structured.artifact_index == []

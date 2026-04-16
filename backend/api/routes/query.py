@@ -754,6 +754,9 @@ async def _execute_query(
         if runtime_runner._session_memory_buffer:  # noqa: SLF001
             for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                 _store.append_session_memory(session_id, note)
+                # Also merge into structured memory so set_structured_memory won't clobber it
+                existing = runtime_runner.session_memory.notes or ""
+                runtime_runner.session_memory.notes = (existing + "\n" + note).strip() if existing else note
     except Exception:
         pass
 
@@ -951,6 +954,9 @@ async def query_stream(
                 if runtime_runner._session_memory_buffer:  # noqa: SLF001
                     for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                         _store.append_session_memory(session_id, note)
+                        # Also merge into structured memory so set_structured_memory won't clobber it
+                        existing = runtime_runner.session_memory.notes or ""
+                        runtime_runner.session_memory.notes = (existing + "\n" + note).strip() if existing else note
             except Exception:
                 pass
 
