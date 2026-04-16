@@ -6,102 +6,31 @@ tool_key: database_tool
 triggers: таблицы, покажи таблицы, структура бд, колонки, схема, превью, первые строки, список таблиц, describe, list tables, show tables, какие таблицы, перечисли таблицы
 ---
 
-# Database Tool — быстрый просмотр структуры БД
+## Database Tool — structure inspection
 
-Лёгкий инструмент для структурных операций с базой данных.
-**Не генерирует SQL** — вызывает каталог БД напрямую, поэтому работает быстро.
+Light tool for structural DB operations. **Does not generate SQL** — calls catalog directly, fast.
 
-## Когда использовать
-
-- Пользователь спрашивает "какие таблицы есть в БД?"
-- Нужно посмотреть колонки таблицы перед аналитическим запросом
-- Нужен превью первых N строк таблицы
-- Нужен список схем в базе данных
-
-## Когда НЕ использовать
-
-- Для сложных аналитических запросов с JOIN, GROUP BY, подзапросами — используй `sql_tool`
-- Для агрегации, фильтрации, вычислений — используй `sql_tool`
-- Для работы с CSV-данными — используй `pandas_tool`
-
-## Обязательный порядок действий
-
-⚠️ **НИКОГДА не вызывай `preview` или `describe_table` с угаданным именем таблицы.**
-Всегда придерживайся следующего порядка:
-
-1. Если схема БД неизвестна → сначала `list_schemas`, затем `list_tables`
-2. Если схема известна → сразу `list_tables`
-3. Только после получения реального списка таблиц → `preview` или `describe_table`
-
-```
-# Правильно: разведка → действие
-database_tool(action="list_tables")          # узнать реальные имена
-database_tool(action="preview", table="<реальное_имя>", limit=5)
-
-# Неправильно: угадывать имена таблиц
-database_tool(action="preview", table="table1")   # ❌ выдуманное имя
+### API
+```python
+database_tool(action: Literal["list_tables","describe_table","preview","list_schemas"],
+              table: str | None = None, db_schema: str | None = None, limit: int = 10)
+# table required for describe_table/preview; db_schema from list_schemas; limit max 50
 ```
 
-Если `list_tables` вернул пустой список — вызови `list_schemas` и повтори
-`list_tables` с найденной схемой перед тем, как делать выводы об отсутствии таблиц.
+### Mandatory order
+⚠️ Never call `preview` or `describe_table` with a guessed table name.
 
-## Параметры
+1. Schema unknown → `list_schemas` → `list_tables(db_schema=<result>)`
+2. Schema known → `list_tables` directly
+3. Only after getting real table names → `preview` or `describe_table`
 
-| Параметр | Тип | Описание |
-|----------|-----|----------|
-| `action` | `"list_tables"` \| `"describe_table"` \| `"preview"` \| `"list_schemas"` | Действие |
-| `table` | `str` (опционально) | Имя таблицы (для `describe_table` и `preview`). **Только реальные имена из `list_tables`!** |
-| `db_schema` | `str` (опционально) | Схема БД. Не угадывай — используй результат `list_schemas` |
-| `limit` | `int` (опционально) | Количество строк для preview (по умолчанию 10, макс. 50) |
+If `list_tables` returns empty → call `list_schemas` first, then retry.
 
-## Примеры вызовов
+### Final result protocol
+This tool returns results directly to the agent — no code execution, no `tool_result` needed.
+Use `describe_table` or `preview` results as context; pass table names to `sql_tool` for further querying.
 
-### Показать первые строки всех таблиц (правильный порядок)
-```
-# Шаг 1: получить список таблиц
-database_tool(action="list_tables")
-# Шаг 2: для каждой таблицы из результата
-database_tool(action="preview", table="<имя_из_list_tables>", limit=5)
-```
-
-### Список таблиц
-```
-database_tool(action="list_tables")
-```
-
-### Список таблиц, если схема неизвестна
-```
-# Шаг 1: узнать схемы
-database_tool(action="list_schemas")
-# Шаг 2: список таблиц в нужной схеме
-database_tool(action="list_tables", db_schema="<схема_из_list_schemas>")
-```
-
-### Описание колонок таблицы
-```
-database_tool(action="describe_table", table="orders")
-```
-
-### Превью первых строк
-```
-database_tool(action="preview", table="users", limit=5)
-```
-
-### Список схем
-```
-database_tool(action="list_schemas")
-```
-
-## Примеры запросов пользователя
-
-- "Покажи таблицы в БД"
-- "Какие колонки в таблице users?"
-- "Покажи первые 10 строк таблицы orders"
-- "Какие схемы есть в базе?"
-- "Что за таблица titanic?"
-- "Перечисли таблицы"
-
-## Результат
-
-Результат инжектится в sandbox как переменная (например `db_tables`, `columns_orders`, `preview_users`)
-и доступен для последующих инструментов (`plotly_tool`, `pandas_tool`).
+### When NOT to use
+- Complex queries (JOIN, GROUP BY, subqueries) → `sql_tool`
+- Aggregation, filtering, computation → `sql_tool`
+- CSV data → `pandas_tool`
