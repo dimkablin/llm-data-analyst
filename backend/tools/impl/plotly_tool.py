@@ -202,4 +202,3 @@ class PlotlyTool(BaseExecTool):
                 timeout_sec=min(15.0, self.execution_timeout_sec),
             )
         return scope
-

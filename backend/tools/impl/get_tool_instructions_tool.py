@@ -1,9 +1,11 @@
-"""On-demand tool instruction loader — claude-code ToolSearch pattern.
+"""On-demand tool instruction loader with two-level retrieval (core / details).
 
-The agent calls ``get_tool_instructions(tool_name)`` before using a complex
-tool to receive its full ``.md`` skill file: variables in scope, code patterns,
-examples, and rules.  This keeps the base execution prompt compact while
-giving the LLM full context exactly when it needs it.
+The agent calls get_tool_instructions(skill_id) to receive core instructions
+(API signatures, behavioral rules). For code examples and scenarios the agent
+calls get_tool_instructions(skill_id, details=True).
+
+Retrieval policy is encoded in the tool description so the model follows
+deterministic rules rather than guessing.
 """
 from __future__ import annotations
 
@@ -17,28 +19,49 @@ from backend.skills.models import SkillError
 
 logger = logging.getLogger(__name__)
 
+_EXTENDED_HINT_TEMPLATE = (
+    "\n\n[Extended available: "
+    "call get_tool_instructions('{skill_id}', details=True) "
+    "for code scenarios, error patterns, and edge cases.]"
+)
+
+_RETRIEVAL_POLICY = (
+    "Загрузи инструкции по инструменту или аналитическому методу.\n"
+    "\n"
+    "ПРАВИЛА ЗАГРУЗКИ:\n"
+    "1. Перед первым использованием незнакомого или нетривиального инструмента → вызови без details (по умолчанию).\n"
+    "2. Перед сложными сценариями (несколько графиков, DB-режим, JOIN-цепочки, многошаговый анализ) "
+    "→ вызови с details=True.\n"
+    "3. После сбоя tool-вызова → вызови с details=True перед повтором.\n"
+    "4. Никогда не вызывай get_tool_instructions для одного и того же skill_id + details дважды за сессию.\n"
+    "\n"
+    "details=False (по умолчанию): API-сигнатуры, правила поведения, контракт.\n"
+    "details=True: примеры кода, паттерны ошибок, граничные случаи (только по запросу)."
+)
+
 
 class _Input(BaseModel):
-    tool_name: str = Field(
+    skill_id: str = Field(
         description=(
-            "ID инструмента или аналитического скила для загрузки инструкций. "
-            "Инструменты: 'plotly_tool', 'sql_tool', 'pandas_tool' и др. "
+            "ID инструмента или аналитического скила. "
+            "Инструменты: 'plotly_tool', 'sql_tool', 'pandas_tool', 'database_tool' и др. "
             "Аналитические методы: 'auto_eda', 'cohort_analysis', 'ab_test_analysis' и др."
         )
+    )
+    details: bool = Field(
+        default=False,
+        description=(
+            "False (по умолчанию) — вернуть core: API-сигнатуры, правила поведения, контракт. "
+            "True — вернуть DETAILS.md: примеры кода, паттерны ошибок, граничные случаи."
+        ),
     )
 
 
 class GetToolInstructionsTool(BaseTool):
-    """Returns the full skill markdown for *tool_name* from the SkillRegistry."""
+    """Returns skill instructions at the requested detail level."""
 
     name: str = "get_tool_instructions"
-    description: str = (
-        "Загрузи полные инструкции по использованию инструмента или аналитического метода. "
-        "Возвращает переменные scope, паттерны кода, правила и пошаговые алгоритмы. "
-        "Вызывай для сложных инструментов (plotly_tool, sql_tool, forecast_tool и др.) "
-        "и аналитических методов (auto_eda, cohort_analysis, ab_test_analysis и др.), "
-        "когда нужен полный контракт перед выполнением."
-    )
+    description: str = _RETRIEVAL_POLICY
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"
 
@@ -48,14 +71,30 @@ class GetToolInstructionsTool(BaseTool):
         super().__init__()
         self._skill_registry = skill_registry
 
-    def _run(self, tool_name: str) -> str:
+    def _run(self, skill_id: str, details: bool = False) -> str:
         try:
-            skill = self._skill_registry.get(str(tool_name).strip())
-            return skill.instructions_markdown
+            skill = self._skill_registry.get(str(skill_id).strip())
         except SkillError:
-            pass
+            return self._not_found_response(str(skill_id).strip())
         except Exception:
-            logger.exception("Unexpected error looking up skill '%s'", tool_name)
+            logger.exception("Unexpected error looking up skill '%s'", skill_id)
+            return self._not_found_response(str(skill_id).strip())
+
+        if details:
+            if not skill.has_details:
+                return (
+                    f"Extended instructions not available for '{skill.skill_id}'. "
+                    f"Core instructions were already provided."
+                )
+            return skill.details_markdown  # type: ignore[return-value]
+
+        # Core — inject hint if details are available
+        content = skill.core_markdown
+        if skill.has_details:
+            content += _EXTENDED_HINT_TEMPLATE.format(skill_id=skill.skill_id)
+        return content
+
+    def _not_found_response(self, skill_id: str) -> str:
         all_skills = self._skill_registry.list_skills()
         tool_ids = sorted(s.skill_id for s in all_skills if s.kind == "tool")
         analytical_ids = sorted(s.skill_id for s in all_skills if s.kind == "analytical")
@@ -65,7 +104,4 @@ class GetToolInstructionsTool(BaseTool):
         if analytical_ids:
             parts.append(f"аналитические методы: {', '.join(analytical_ids)}")
         available_str = "; ".join(parts) or "нет"
-        return (
-            f"Скил '{tool_name}' не найден. "
-            f"Доступные: {available_str}."
-        )
+        return f"Скил '{skill_id}' не найден. Доступные: {available_str}."

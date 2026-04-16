@@ -10,62 +10,28 @@ triggers: таблица, таблиц, агрегация, агрег, филь
 
 Вход: Python-код. Выполняется в **sandbox сессии** — все переменные сохраняются между вызовами инструментов.
 
-### Примеры запросов пользователя
+### API
+```python
+# Нет фиксированного API — свободный Python-код в sandbox
+# Доступно всегда: df, pd, np
+# При подключённой БД: db.query_dataframe(sql: str) -> pd.DataFrame, db_connection
+```
 
-Вызывай этот инструмент, когда пользователь просит:
-- "Покажи распределение по колонке X"
-- "Посчитай корреляцию между X и Y"
-- "Статистика по данным"
-- "Группировка по категориям"
-- "Отфильтруй строки где ..."
-- "Describe датасета"
-- "Pivot-таблица по ..."
-
-### Переменные в scope
+### Scope
 - `df` — DataFrame текущей сессии (уже загружен, **не вызывай** `pd.read_csv`)
-- `pd` — pandas
-- `np` — numpy
-- Все переменные из предыдущих tool-вызовов (доступны автоматически)
+- `pd`, `np` — всегда доступны
+- `db`, `db_connection` — при подключённой БД
+- Все переменные из предыдущих tool-вызовов доступны по имени
 
-Если подключена БД:
-- `db` — хелпер для SQL-запросов (`db.query_dataframe(sql)`)
-- `db_connection` — объект подключения
+### Final result protocol
+Последнее выражение в коде должно быть `tool_result`. Sandbox захватывает только последнее выражение — print или присвоение последней строкой дадут пустой результат.
 
-### Контракт результата
-```python
-tool_result = {
-    "schema_version": "1.0",
-    "artifact_type": "table",
-    "items": {"имя_таблицы": <pd.DataFrame | pd.Series>}
-}
-tool_result
-```
+Для табличных данных `tool_result` содержит `artifact_type: "table"` и `items` с DataFrame'ами.
+Структуру смотри в DETAILS.md — вызови `get_tool_instructions('pandas_tool', details=True)`.
 
-### Правила
-- НЕ вызывай `pd.read_csv()` / `pd.read_excel()` — `df` уже есть.
-- Последняя строка: `tool_result`.
-- Округляй числа до 2-4 знаков.
-- Переменные, которые ты создаёшь (например `agg = df.groupby(...).sum()`), будут доступны в следующих tool-вызовах (plotly_tool, value_tool и т.д.).
-- Запрещено: `globals()`, `locals()`, `os`, `sys`, `__import__`, `.plot()`, `matplotlib`.
-
-### Примеры
-```python
-result_df = df.describe(include="all").transpose()
-tool_result = {
-    "schema_version": "1.0",
-    "artifact_type": "table",
-    "items": {"describe": result_df}
-}
-tool_result
-```
-
-```python
-# agg будет доступен в следующем plotly_tool для визуализации
-agg = df.groupby("category")["revenue"].sum().reset_index()
-tool_result = {
-    "schema_version": "1.0",
-    "artifact_type": "table",
-    "items": {"revenue_by_category": agg}
-}
-tool_result
-```
+### Rules
+- НЕ вызывай `pd.read_csv()` / `pd.read_excel()` — `df` уже есть
+- Последняя строка: `tool_result`
+- Округляй числа до 2-4 знаков
+- Переменные, созданные здесь (например `agg`), доступны в следующих tool-вызовах
+- Запрещено: `globals()`, `locals()`, `os`, `sys`, `__import__`, `.plot()`, `matplotlib`

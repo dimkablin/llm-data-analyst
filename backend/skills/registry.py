@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 _PYTHON_FENCE_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
-_DEFAULT_MAX_SKILL_BYTES = 64 * 1024
+_DEFAULT_MAX_CORE_BYTES = 8 * 1024
+_DEFAULT_MAX_DETAILS_BYTES = 64 * 1024
 
 
 def _slugify_skill_id(raw: str) -> str:
@@ -53,7 +54,7 @@ def _extract_python_examples(markdown: str) -> tuple[SkillExample, ...]:
 @dataclass
 class SkillRegistry:
     skills_dir: Path
-    max_skill_bytes: int = _DEFAULT_MAX_SKILL_BYTES
+    max_skill_bytes: int = _DEFAULT_MAX_CORE_BYTES  # kept for backward compat; core cap is now _DEFAULT_MAX_CORE_BYTES
     _skills_by_id: dict[str, Skill] = field(default_factory=dict, init=False, repr=False)
     _loaded: bool = field(default=False, init=False, repr=False)
 
@@ -72,11 +73,20 @@ class SkillRegistry:
         if not self.skills_dir.is_dir():
             raise SkillValidationError(f"Skills path is not a directory: {self.skills_dir}")
 
-        for md_file in sorted(self.skills_dir.glob("*/SKILL.md")):
-            skill = self._parse_skill_file(md_file)
+        for skill_dir in sorted(self.skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            details_md = skill_dir / "DETAILS.md"
+            skill = self._parse_skill_file(
+                skill_md,
+                details_path=details_md if details_md.exists() else None,
+            )
             if skill.skill_id in self._skills_by_id:
                 raise SkillValidationError(
-                    f"Duplicate skill id '{skill.skill_id}' in {md_file.parent.name}/SKILL.md."
+                    f"Duplicate skill id '{skill.skill_id}' in {skill_dir.name}/SKILL.md."
                 )
             self._skills_by_id[skill.skill_id] = skill
         return self
@@ -240,14 +250,43 @@ class SkillRegistry:
             lines.append(f"- `{skill.tool_key}`: {skill.description}{triggers_hint}")
         return "\n".join(lines).strip()
 
-    def _parse_skill_file(self, path: Path) -> Skill:
+    def _lint_core_markdown(self, path: Path, core: str, kind: str) -> None:
+        """Validate core markdown structure and content limits."""
+        for match in _PYTHON_FENCE_RE.finditer(core):
+            lines = match.group(1).strip().splitlines()
+            if len(lines) > 5:
+                raise SkillValidationError(
+                    f"{path.name}: core contains a Python block with {len(lines)} lines "
+                    f"(max 5). Move code examples to DETAILS.md."
+                )
+        if kind == "tool":
+            if "### API" not in core:
+                raise SkillValidationError(
+                    f"{path.name}: tool skill missing '### API' section."
+                )
+            if "### Final result protocol" not in core:
+                raise SkillValidationError(
+                    f"{path.name}: tool skill missing '### Final result protocol' section."
+                )
+        else:  # analytical
+            if not re.search(r"^### (Algorithm|Алгоритм)", core, re.MULTILINE):
+                raise SkillValidationError(
+                    f"{path.name}: analytical skill missing '### Algorithm' (or '### Алгоритм') section."
+                )
+            if not re.search(r"^### (Rules|Правила)", core, re.MULTILINE):
+                raise SkillValidationError(
+                    f"{path.name}: analytical skill missing '### Rules' (or '### Правила') section."
+                )
+
+    def _parse_skill_file(self, path: Path, details_path: Path | None = None) -> Skill:
         try:
             stat = path.stat()
         except OSError as exc:
             raise SkillValidationError(f"Failed to stat skill file {path}: {exc}") from exc
-        if stat.st_size > self.max_skill_bytes:
+        if stat.st_size > _DEFAULT_MAX_CORE_BYTES:
             raise SkillValidationError(
-                f"Skill file {path.name} exceeds max size of {self.max_skill_bytes} bytes."
+                f"Skill file {path.name} exceeds max core size of {_DEFAULT_MAX_CORE_BYTES} bytes. "
+                f"Move code examples to DETAILS.md."
             )
         try:
             text = path.read_text(encoding="utf-8")
@@ -269,6 +308,31 @@ class SkillRegistry:
         if not body:
             raise SkillValidationError(f"Skill file {path.name} must contain markdown instructions.")
 
+        # Parse kind early — needed for section presence lint
+        kind = str(raw_frontmatter.get("kind", "analytical")).strip().lower()
+        if kind not in ("analytical", "tool"):
+            raise SkillValidationError(
+                f"Skill kind must be 'analytical' or 'tool', got '{kind}' in {path.name}."
+            )
+
+        self._lint_core_markdown(path, body, kind)
+
+        # Load optional DETAILS.md
+        details_markdown: str | None = None
+        if details_path is not None:
+            try:
+                details_stat = details_path.stat()
+            except OSError as exc:
+                raise SkillValidationError(f"Failed to stat {details_path}: {exc}") from exc
+            if details_stat.st_size > _DEFAULT_MAX_DETAILS_BYTES:
+                raise SkillValidationError(
+                    f"Details file {details_path.name} exceeds max size of {_DEFAULT_MAX_DETAILS_BYTES} bytes."
+                )
+            try:
+                details_markdown = details_path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise SkillValidationError(f"Failed to read {details_path}: {exc}") from exc
+
         default_id = _slugify_skill_id(path.parent.name)
         skill_id = str(raw_frontmatter.get("id") or default_id).strip().lower()
         if not _SKILL_ID_RE.match(skill_id):
@@ -286,11 +350,6 @@ class SkillRegistry:
             )
 
         triggers = _normalize_triggers(raw_frontmatter.get("triggers"))
-        kind = str(raw_frontmatter.get("kind", "analytical")).strip().lower()
-        if kind not in ("analytical", "tool"):
-            raise SkillValidationError(
-                f"Skill kind must be 'analytical' or 'tool', got '{kind}' in {path.name}."
-            )
         tool_key = raw_frontmatter.get("tool_key")
         if tool_key is not None:
             tool_key = str(tool_key).strip()
@@ -307,7 +366,8 @@ class SkillRegistry:
             skill_id=skill_id,
             name=name,
             description=description,
-            instructions_markdown=body,
+            core_markdown=body,
+            details_markdown=details_markdown,
             source_path=str(path),
             triggers=triggers,
             python_examples=_extract_python_examples(body),
