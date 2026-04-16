@@ -80,7 +80,7 @@ class SessionStore:
             if not state_path.exists():
                 continue
             try:
-                state = json.loads(state_path.read_text())
+                state = json.loads(state_path.read_text(encoding="utf-8"))
                 last_access = datetime.fromisoformat(state.get("last_access"))
                 if last_access.tzinfo is None:
                     last_access = last_access.replace(tzinfo=UTC)
@@ -121,7 +121,7 @@ class SessionStore:
         state_path = self._state_path(session_id)
         if not state_path.exists():
             return None
-        raw = json.loads(state_path.read_text())
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
         return SessionState(
             session_id=raw["session_id"],
             created_at=raw["created_at"],
