@@ -353,6 +353,46 @@ _LLM_UNAVAILABLE_USER_TEXT = (
     "LLM_MODEL_API_URL доступен из контейнера backend."
 )
 
+
+def _apply_observation_masking(
+    messages: list,
+    tc_id_to_handle: dict,
+    tc_id_to_step: dict,
+    current_step: int,
+    masked_tc_ids: set,
+) -> None:
+    """Apply observation masking in-place on the messages list.
+
+    Replaces old ToolMessage content with compact masked_ref strings.
+    Modifies messages and masked_tc_ids in-place.
+    """
+    for _mi, _msg in enumerate(messages):
+        if not isinstance(_msg, ToolMessage):
+            continue
+        _msg_id = getattr(_msg, "tool_call_id", "")
+        if _msg_id in masked_tc_ids:
+            continue  # already masked
+        _h = tc_id_to_handle.get(_msg_id)
+        _step = tc_id_to_step.get(_msg_id)
+        if _step is None:
+            continue
+        steps_ago = current_step - _step
+        if steps_ago < _MASK_KEEP_LAST_N:
+            continue
+        if _h is not None and _h.type == "error":
+            continue
+        if _h is not None:
+            masked_content = _h.masked_ref
+        else:
+            original = str(_msg.content)
+            masked_content = (
+                f"[step {_step}: {original[:80]}...]"
+                if len(original) > 80
+                else f"[step {_step}: {original}]"
+            )
+        messages[_mi] = ToolMessage(content=masked_content, tool_call_id=_msg_id)
+        masked_tc_ids.add(_msg_id)
+
 # DEPTH_PROFILES imported from backend.core.config — single source of truth.
 
 
@@ -1982,6 +2022,8 @@ class AgentRunner:
         _tc_id_to_handle: dict[str, ArtifactHandle] = {}
         # Maps tool_call_id → step_index when it was executed (for masking non-artifact tools)
         _tc_id_to_step: dict[str, int] = {}
+        # Tracks which tool_call_ids have already been masked (prevents double-wrap)
+        _masked_tc_ids: set[str] = set()
 
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
@@ -2102,8 +2144,7 @@ class AgentRunner:
 
                         # Track for masking (after working_memory update)
                         if working_memory is not None:
-                            current_step = working_memory.step_index - 1  # step_index already incremented
-                            _tc_id_to_step[tool_call_id] = current_step
+                            _tc_id_to_step[tool_call_id] = _handle.step_index if _handle is not None else (working_memory.step_index - 1)
                             if _handle is not None:
                                 _tc_id_to_handle[tool_call_id] = _handle
                     except Exception as tool_exc:
@@ -2123,29 +2164,13 @@ class AgentRunner:
                 and working_memory.step_index >= _MASK_MIN_STEPS
                 and working_memory.tool_call_count >= _MASK_MIN_TOOLS
             ):
-                current_step = working_memory.step_index
-                for _mi, _msg in enumerate(messages):
-                    if not isinstance(_msg, ToolMessage):
-                        continue
-                    _msg_id = getattr(_msg, "tool_call_id", "")
-                    _h = _tc_id_to_handle.get(_msg_id)
-                    _step = _tc_id_to_step.get(_msg_id)
-                    if _step is None:
-                        continue
-                    steps_ago = current_step - _step
-                    if steps_ago < _MASK_KEEP_LAST_N:
-                        continue
-                    # Never mask errors
-                    if _h is not None and _h.type == "error":
-                        continue
-                    # Apply masking
-                    if _h is not None:
-                        masked_content = _h.masked_ref
-                    else:
-                        # No artifact handle — use compact truncation
-                        original = str(_msg.content)
-                        masked_content = f"[step {_step}: {original[:80]}...]" if len(original) > 80 else f"[step {_step}: {original}]"
-                    messages[_mi] = ToolMessage(content=masked_content, tool_call_id=_msg_id)
+                _apply_observation_masking(
+                    messages,
+                    _tc_id_to_handle,
+                    _tc_id_to_step,
+                    current_step=working_memory.step_index,
+                    masked_tc_ids=_masked_tc_ids,
+                )
         else:
             # Max iterations reached — try to recover text from collector.
             _limit_reached = True

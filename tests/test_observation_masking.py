@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from langchain_core.messages import ToolMessage
 
-from backend.agent.runner import _MASK_KEEP_LAST_N, _MASK_MIN_STEPS, _MASK_MIN_TOOLS
+from backend.agent.runner import _apply_observation_masking, _MASK_KEEP_LAST_N, _MASK_MIN_STEPS, _MASK_MIN_TOOLS
 from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 
 
@@ -32,35 +32,11 @@ def run_masking_pass(
     messages: list,
     tc_id_to_handle: dict,
     tc_id_to_step: dict,
-    working_memory: AnalysisWorkingMemory,
+    current_step: int,
 ) -> list:
-    """Standalone replica of the masking pass from _direct_tool_loop."""
-    current_step = working_memory.step_index
-    for _mi, _msg in enumerate(messages):
-        if not isinstance(_msg, ToolMessage):
-            continue
-        _msg_id = getattr(_msg, "tool_call_id", "")
-        _h = tc_id_to_handle.get(_msg_id)
-        _step = tc_id_to_step.get(_msg_id)
-        if _step is None:
-            continue
-        steps_ago = current_step - _step
-        if steps_ago < _MASK_KEEP_LAST_N:
-            continue
-        # Never mask errors
-        if _h is not None and _h.type == "error":
-            continue
-        # Apply masking
-        if _h is not None:
-            masked_content = _h.masked_ref
-        else:
-            original = str(_msg.content)
-            masked_content = (
-                f"[step {_step}: {original[:80]}...]"
-                if len(original) > 80
-                else f"[step {_step}: {original}]"
-            )
-        messages[_mi] = ToolMessage(content=masked_content, tool_call_id=_msg_id)
+    """Helper: calls the real production masking function."""
+    masked_ids: set = set()
+    _apply_observation_masking(messages, tc_id_to_handle, tc_id_to_step, current_step, masked_ids)
     return messages
 
 
@@ -114,7 +90,7 @@ def test_masked_ref_error_never_contains_data():
 # ---------------------------------------------------------------------------
 
 def test_masking_policy_skips_recent_tools():
-    # 5 tool calls at steps 0..4; working_memory.step_index = 5
+    # 5 tool calls at steps 0..4; current_step = 5
     # steps_ago = current_step - step_when_executed = 5 - step
     # steps_ago for each: tc1→5, tc2→4, tc3→3, tc4→2, tc5→1
     # _MASK_KEEP_LAST_N = 3: keep only steps_ago < 3 (i.e. steps_ago 0, 1, 2)
@@ -134,8 +110,7 @@ def test_masking_policy_skips_recent_tools():
         for i in range(5)
     ]
 
-    wm = AnalysisWorkingMemory(goal="test", step_index=5, tool_call_count=5)
-    result = run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, wm)
+    result = run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, current_step=5)
 
     # steps 0, 1, 2 are old enough (steps_ago >= 3) — should be masked
     assert "artifact:" in result[0].content, f"tc1 should be masked, got: {result[0].content}"
@@ -167,8 +142,7 @@ def test_masking_skips_error_type_handles():
         ToolMessage(content=original_tc2_content, tool_call_id="tc2"),
     ]
 
-    wm = AnalysisWorkingMemory(goal="test", step_index=5, tool_call_count=4)
-    result = run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, wm)
+    result = run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, current_step=5)
 
     # tc1 (normal table at step 0) should be masked
     assert "artifact:" in result[0].content
@@ -177,7 +151,7 @@ def test_masking_skips_error_type_handles():
 
 
 # ---------------------------------------------------------------------------
-# Test 7: No masking below min steps
+# Test 7: No masking below min steps (guard in caller)
 # ---------------------------------------------------------------------------
 
 def test_masking_not_applied_below_min_steps():
@@ -195,7 +169,7 @@ def test_masking_not_applied_below_min_steps():
 
     # Guard: masking pass should only be called when step_index >= _MASK_MIN_STEPS
     if wm.step_index >= _MASK_MIN_STEPS and wm.tool_call_count >= _MASK_MIN_TOOLS:
-        run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, wm)
+        run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, current_step=wm.step_index)
 
     for i in range(4):
         assert messages[i].content == original_contents[f"tc{i}"], (
@@ -204,7 +178,7 @@ def test_masking_not_applied_below_min_steps():
 
 
 # ---------------------------------------------------------------------------
-# Test 8: No masking below min tools
+# Test 8: No masking below min tools (guard in caller)
 # ---------------------------------------------------------------------------
 
 def test_masking_not_applied_below_min_tools():
@@ -222,7 +196,7 @@ def test_masking_not_applied_below_min_tools():
 
     # Guard: masking pass should only be called when tool_call_count >= _MASK_MIN_TOOLS
     if wm.step_index >= _MASK_MIN_STEPS and wm.tool_call_count >= _MASK_MIN_TOOLS:
-        run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, wm)
+        run_masking_pass(messages, tc_id_to_handle, tc_id_to_step, current_step=wm.step_index)
 
     for i in range(4):
         assert messages[i].content == original_contents[f"tc{i}"], (
