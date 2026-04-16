@@ -5,6 +5,51 @@ from pathlib import Path
 import pytest
 
 from backend.skills import SkillRegistry, SkillSelectionError, SkillValidationError
+from backend.skills.models import Skill
+
+
+# ---------------------------------------------------------------------------
+# Task 1: Skill model two-level fields
+# ---------------------------------------------------------------------------
+
+
+def test_skill_core_markdown_field() -> None:
+    skill = Skill(
+        skill_id="my_skill",
+        name="My Skill",
+        description="Does things.",
+        core_markdown="## API\nfoo() -> None",
+        details_markdown=None,
+        source_path="/fake/path",
+    )
+    assert skill.core_markdown == "## API\nfoo() -> None"
+    assert skill.details_markdown is None
+    assert skill.has_details is False
+
+
+def test_skill_has_details_true_when_details_present() -> None:
+    skill = Skill(
+        skill_id="my_skill",
+        name="My Skill",
+        description="Does things.",
+        core_markdown="## API\nfoo() -> None",
+        details_markdown="## Examples\n```python\nfoo()\n```",
+        source_path="/fake/path",
+    )
+    assert skill.has_details is True
+    assert skill.details_markdown == "## Examples\n```python\nfoo()\n```"
+
+
+def test_skill_instructions_markdown_backward_compat() -> None:
+    skill = Skill(
+        skill_id="my_skill",
+        name="My Skill",
+        description="Does things.",
+        core_markdown="## API\nfoo() -> None",
+        details_markdown=None,
+        source_path="/fake/path",
+    )
+    assert skill.instructions_markdown == skill.core_markdown
 
 
 def _write_skill(tmp_path: Path, folder: str, content: str) -> None:
