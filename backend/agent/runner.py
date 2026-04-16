@@ -342,6 +342,11 @@ def _build_tool_message_text(result: object) -> tuple[str, ArtifactHandle | None
 RECOVERY_TEXT_PREFIX = "Шаг анализа завершился с ограничением итераций модели"
 GENERIC_ARTIFACT_SUMMARY_PREFIX = "Анализ выполнен, артефакты построены"
 
+# Observation masking — conservative policy (feature-flagged)
+_MASK_KEEP_LAST_N = 3     # keep last N tool results at full content
+_MASK_MIN_STEPS = 4       # do not mask if step_index < 4
+_MASK_MIN_TOOLS = 3       # do not mask if tool_call_count < 3
+
 _LLM_UNAVAILABLE_USER_TEXT = (
     "Языковая модель сейчас недоступна: нет соединения с LLM-сервером или сработал таймаут. "
     "Проверьте, что Ollama (или другой провайдер) запущен и что "
@@ -1973,6 +1978,11 @@ class AgentRunner:
         reasoning_steps: list[str] = []
         _limit_reached = False
 
+        # Maps tool_call_id → ArtifactHandle (for masking)
+        _tc_id_to_handle: dict[str, ArtifactHandle] = {}
+        # Maps tool_call_id → step_index when it was executed (for masking non-artifact tools)
+        _tc_id_to_step: dict[str, int] = {}
+
         runtime_config: dict[str, Any] = {"callbacks": callbacks}
         metadata = self._build_runtime_metadata(trace_context)
         if metadata:
@@ -2063,6 +2073,7 @@ class AgentRunner:
                         working_memory.completed_actions.append(f"{tool_name} → [unknown tool]")
                         working_memory.step_index += 1
                         working_memory.tool_call_count += 1
+                    _tc_id_to_step[tool_call_id] = working_memory.step_index - 1 if working_memory else 0
                 else:
                     try:
                         tool_call_input = {
@@ -2088,14 +2099,53 @@ class AgentRunner:
                             working_memory.completed_actions.append(action_line)
                             working_memory.step_index += 1
                             working_memory.tool_call_count += 1
+
+                        # Track for masking (after working_memory update)
+                        if working_memory is not None:
+                            current_step = working_memory.step_index - 1  # step_index already incremented
+                            _tc_id_to_step[tool_call_id] = current_step
+                            if _handle is not None:
+                                _tc_id_to_handle[tool_call_id] = _handle
                     except Exception as tool_exc:
                         tool_message_text = f"Tool error: {tool_exc}"
                         if working_memory is not None:
                             working_memory.completed_actions.append(f"{tool_name} → [error: {str(tool_exc)[:60]}]")
                             working_memory.step_index += 1
                             working_memory.tool_call_count += 1
+                        _tc_id_to_step[tool_call_id] = working_memory.step_index - 1 if working_memory else 0
 
                 messages.append(ToolMessage(content=tool_message_text, tool_call_id=tool_call_id))
+
+            # Observation masking pass
+            if (
+                self.settings.observation_mask_enabled
+                and working_memory is not None
+                and working_memory.step_index >= _MASK_MIN_STEPS
+                and working_memory.tool_call_count >= _MASK_MIN_TOOLS
+            ):
+                current_step = working_memory.step_index
+                for _mi, _msg in enumerate(messages):
+                    if not isinstance(_msg, ToolMessage):
+                        continue
+                    _msg_id = getattr(_msg, "tool_call_id", "")
+                    _h = _tc_id_to_handle.get(_msg_id)
+                    _step = _tc_id_to_step.get(_msg_id)
+                    if _step is None:
+                        continue
+                    steps_ago = current_step - _step
+                    if steps_ago < _MASK_KEEP_LAST_N:
+                        continue
+                    # Never mask errors
+                    if _h is not None and _h.type == "error":
+                        continue
+                    # Apply masking
+                    if _h is not None:
+                        masked_content = _h.masked_ref
+                    else:
+                        # No artifact handle — use compact truncation
+                        original = str(_msg.content)
+                        masked_content = f"[step {_step}: {original[:80]}...]" if len(original) > 80 else f"[step {_step}: {original}]"
+                    messages[_mi] = ToolMessage(content=masked_content, tool_call_id=_msg_id)
         else:
             # Max iterations reached — try to recover text from collector.
             _limit_reached = True
