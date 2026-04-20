@@ -3,6 +3,32 @@ import { useTheme } from "next-themes";
 import type { ArtifactPayload } from "../../lib/backend-types";
 import { formatNumber } from "../../lib/format";
 
+function looksTechnicalArtifactTitle(value: string): boolean {
+  const text = value.trim();
+  if (!text) return true;
+  return /^[a-z0-9]+(?:[_-][a-z0-9]+)+$/i.test(text);
+}
+
+function getArtifactDisplayTitle(artifact: ArtifactPayload): string {
+  const raw = typeof artifact.text === "string" ? artifact.text.trim() : "";
+  if (raw && !looksTechnicalArtifactTitle(raw)) {
+    return raw;
+  }
+
+  switch (artifact.type) {
+    case "plot":
+      return "График";
+    case "table":
+      return "Таблица";
+    case "value":
+      return "Показатель";
+    case "json":
+      return "Данные";
+    default:
+      return "Артефакт";
+  }
+}
+
 function formatCellValue(value: unknown): string {
   if (typeof value === "number") {
     return formatNumber(value);
@@ -393,7 +419,7 @@ export function ArtifactSurface({
     <article className="overflow-hidden rounded-3xl border border-border/50 bg-card p-5 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
-          <h4 className="text-base font-bold tracking-tight">{artifact.text || artifact.type}</h4>
+          <h4 className="text-base font-bold tracking-tight">{getArtifactDisplayTitle(artifact)}</h4>
           <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{artifact.type}</p>
         </div>
       </div>
@@ -415,7 +441,7 @@ export function ArtifactSurface({
 
       {showCode && code ? (
         <details className="mt-4 rounded-2xl border border-border/40 bg-background/30 p-4">
-          <summary className="cursor-pointer text-sm font-semibold">Код артефакта</summary>
+          <summary className="cursor-pointer text-sm font-semibold">Выгрузить отчетную презентацию</summary>
           <pre className="mt-3 overflow-auto text-xs">{code}</pre>
         </details>
       ) : null}

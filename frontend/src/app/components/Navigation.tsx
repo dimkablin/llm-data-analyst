@@ -14,7 +14,7 @@ export function Navigation() {
     { path: "/", label: "Платформа" },
     { path: "/technical", label: "Архитектура" },
     { path: "/workspace", label: "Рабочая область" },
-    { path: "/sessions", label: "Сессии" },
+    { path: "/sessions", label: "Мои дашборды" },
     { path: "/tracing", label: "Phoenix" },
   ];
 
@@ -38,7 +38,7 @@ export function Navigation() {
               </svg>
             </div>
             <span className="hidden whitespace-nowrap text-[15px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:block lg:text-[16px]">
-              Генеративная аналитика
+              ИИ Монитор
             </span>
           </Link>
         </div>
