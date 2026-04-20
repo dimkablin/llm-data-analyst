@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link, useLocation } from "react-router";
-import { Bell, Search, User } from "lucide-react";
+import { Bell, Search } from "lucide-react";
 import { motion } from "motion/react";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAppSession } from "../context/AppSessionContext";
@@ -20,9 +20,12 @@ export function Navigation() {
 
   const accountLabel = useMemo(() => {
     if (!user) {
-      return "Войти";
+      return { title: "Войти", subtitle: "" };
     }
-    return user.is_admin ? `${user.username} • admin` : user.username;
+    return {
+      title: "Глава городского округа",
+      subtitle: "Иванов И. И.",
+    };
   }, [user]);
 
   return (
@@ -83,14 +86,19 @@ export function Navigation() {
           <div className="mx-1 hidden h-6 w-[1px] bg-border/50 sm:block"></div>
           <Link
             to={signedIn ? "/account" : "/auth"}
-            className="flex items-center gap-2 rounded-xl border border-border/50 bg-secondary px-3 py-2 transition-all hover:border-border hover:bg-muted active:scale-95 sm:px-4"
+            className="flex items-center gap-3 rounded-xl border border-border/50 bg-secondary px-3 py-2 transition-all hover:border-border hover:bg-muted active:scale-95 sm:px-4"
           >
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/20">
-              <User className="h-3.5 w-3.5 text-primary" />
+            <div className="flex h-8 w-8 items-center justify-center rounded-full border border-border/40 bg-white text-[16px] shadow-sm">
+              <span aria-hidden="true">🇷🇺</span>
             </div>
-            <span className="max-w-[120px] truncate text-[13px] font-medium text-foreground sm:max-w-[160px] sm:text-[14px] lg:max-w-[180px]">
-              {accountLabel}
-            </span>
+            <div className="min-w-0">
+              <div className="max-w-[180px] truncate text-[12px] font-semibold uppercase tracking-[0.08em] text-muted-foreground sm:max-w-[220px]">
+                {accountLabel.title}
+              </div>
+              <div className="max-w-[140px] truncate text-[13px] font-medium text-foreground sm:max-w-[180px] sm:text-[14px] lg:max-w-[220px]">
+                {accountLabel.subtitle}
+              </div>
+            </div>
           </Link>
         </div>
       </div>
