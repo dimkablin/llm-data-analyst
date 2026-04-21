@@ -9,7 +9,13 @@ triggers: база знаний, регламент, политика, проц�
 ## rag_tool — поиск по базе знаний
 
 Вход: строка запроса на естественном языке.
-Вызов: `rag_tool("запрос")` — без Python-кода, без sandbox.
+Вызов: `rag_tool(query="запрос")` — без Python-кода, без sandbox.
+
+### API
+Вызывается с параметром `query` (не Python-sandbox): `rag_tool(query="запрос на ест. языке")`.
+
+### Final result protocol
+Не sandbox-инструмент. Вызывается напрямую — без Python-кода и без `tool_result`.
 
 ### Когда использовать
 

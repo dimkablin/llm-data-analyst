@@ -14,7 +14,7 @@ graph LR
         Value["🔢 value_tool\nВычисление одной метрики\n(число + подпись)\nисточник: csv / db_connection"]
         Planner["📋 planner_tool\nПланирование сложного\nмногошагового анализа"]
         Reviewer["✅ reviewer_tool\nПроверка качества итогового\nответа агента"]
-        GetInstructions["📖 get_tool_instructions\nПолучить .md инструкции из ./skills/\nkind=tool: scope, contract, примеры\nkind=analytical: алгоритм\n💡 cohort_analysis"]
+        GetInstructions["📖 get_tool_instructions(skill_id, details=False)\nДвухуровневая загрузка из skills/{id}/\ndetails=False → SKILL.md core:\n  API-сигнатуры · правила · контракт\ndetails=True → DETAILS.md:\n  примеры кода · паттерны ошибок\nkind=tool: plotly·sql·pandas·value\n  database·planner·review·forecast\n  rag·search·anomaly\nkind=analytical: auto_eda·ab_test\n  cohort·csv_summarizer·dqa\n  insight·root_cause·stats·timeseries"]
     end
 
     subgraph Integrations["Интеграционные инструменты (integration)"]

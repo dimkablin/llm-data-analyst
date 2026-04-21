@@ -28,13 +28,23 @@ class Skill:
     skill_id: str
     name: str
     description: str
-    instructions_markdown: str
+    core_markdown: str
+    details_markdown: str | None
     source_path: str
     triggers: tuple[str, ...] = ()
     python_examples: tuple[SkillExample, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     kind: str = "analytical"
     tool_key: str | None = None
+
+    @property
+    def instructions_markdown(self) -> str:
+        """Backward-compat alias → core_markdown."""
+        return self.core_markdown
+
+    @property
+    def has_details(self) -> bool:
+        return self.details_markdown is not None
 
     @property
     def source_name(self) -> str:

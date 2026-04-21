@@ -35,6 +35,11 @@ const DEFAULT_SETTINGS: UserSettings = {
   agent_step_timeout_sec: 45,
   agent_inner_recursion_limit: 6,
   ui_scale: 100,
+  llm_streaming: true,
+  show_thinking: true,
+  show_think_planning: true,
+  show_think_tool: true,
+  show_think_final: true,
 };
 
 type AppSessionContextValue = {

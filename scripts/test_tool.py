@@ -25,7 +25,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 # ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 def _request(method: str, url: str, *, token: str | None = None,
@@ -188,7 +187,7 @@ def main() -> None:
     auth = _request("POST", f"{base}/auth/login",
                     body={"username": args.user, "password": args.password})
     token = auth["access_token"]
-    print(f"      ✓ token получен")
+    print("      ✓ token получен")
 
     # 2. Create session
     print("[2/4] Создание сессии...")

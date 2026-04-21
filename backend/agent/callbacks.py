@@ -18,6 +18,15 @@ from backend.artifacts.execution import (
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
 
+# Infrastructure tools whose pre_reasoning is not stored — they produce generic
+# boilerplate thinking ("let me check what tool to use") that adds UI noise.
+_INFRA_TOOL_NAMES: frozenset[str] = frozenset({
+    "planner_tool",
+    "get_tool_instructions",
+    "memory_tool",
+    "session_note_tool",
+})
+
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _THINK_OPEN_LEN = len(_THINK_OPEN)
@@ -337,11 +346,16 @@ class ToolCollector(BaseCallbackHandler):
             self.tool_names.append(tool_name)
         input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
         input_code = self._extract_input_code(input_str[:2000])
-        pre_reasoning = (
+        # Always consume pending thinking to keep the buffer clean,
+        # but only attach it to data/analysis tools — infrastructure tools
+        # (planner, skill loader, memory) produce generic boilerplate thinking
+        # that adds noise without analytical value.
+        raw_pre_reasoning = (
             self.token_callback.take_pending_thinking()
             if self.token_callback is not None
             else ""
         )
+        pre_reasoning = raw_pre_reasoning if tool_name not in _INFRA_TOOL_NAMES else ""
         event: dict[str, Any] = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
@@ -771,10 +785,12 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         loop: asyncio.AbstractEventLoop,
         *,
         show_think: bool = True,
+        enable_thinking: bool = True,
     ) -> None:
         self.queue = queue
         self.loop = loop
         self._show_think = show_think
+        self._enable_thinking = enable_thinking
         # Per-call parser (reset after each on_llm_end).
         self._stream_parser: ThinkingOutputParser = ThinkingOutputParser()
         self.reasoning_tokens_emitted = 0
@@ -807,24 +823,28 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         # Ollama streams reasoning in ChatGenerationChunk.message.additional_kwargs["reasoning"].
-        chunk = kwargs.get("chunk")
-        if chunk is not None:
-            msg = getattr(chunk, "message", None)
-            chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
-            if chunk_reasoning:
-                self._emit_reasoning(chunk_reasoning)
+        # Only capture when thinking is enabled — Ollama emits this field unconditionally
+        # even when enable_thinking=False was requested via chat_template_kwargs.
+        if self._enable_thinking:
+            chunk = kwargs.get("chunk")
+            if chunk is not None:
+                msg = getattr(chunk, "message", None)
+                chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
+                if chunk_reasoning:
+                    self._emit_reasoning(chunk_reasoning)
         if not token:
             return
         visible, reasoning = self._stream_parser.feed(token)
         if visible:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
-        if reasoning:
+        # Only emit reasoning from <think> tags when thinking is enabled.
+        if reasoning and self._enable_thinking:
             self._emit_reasoning(reasoning)
 
     def on_llm_end(self, response: object, **kwargs: Any) -> None:
         # Flush any buffered partial tag text; unclosed <think> is discarded (no leak).
         visible, reasoning = self._stream_parser.flush()
-        if reasoning:
+        if reasoning and self._enable_thinking:
             self._emit_reasoning(reasoning)
         if visible:
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
@@ -835,7 +855,9 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Ollama + Qwen3 returns thinking in the `reasoning` field of the message
         # (OpenAI-compatible API), not as <think> tags in the token stream.
         # If no reasoning was captured via tag parsing, extract it from the response.
-        if not self.reasoning_chunks:
+        # Only do this when thinking is enabled — Ollama always returns reasoning even
+        # when enable_thinking=False was requested, so we must explicitly ignore it.
+        if not self.reasoning_chunks and self._enable_thinking:
             try:
                 gen = response.generations[0][0]  # type: ignore[union-attr]
                 ak = getattr(gen.message, "additional_kwargs", {})

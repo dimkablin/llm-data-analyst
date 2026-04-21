@@ -17,6 +17,7 @@ from backend.api.models import (
     SessionTitleUpdateRequest,
 )
 from backend.auth.auth_db import AuthDB, AuthUser
+from backend.core.config import settings
 from backend.notebook.manifest_store import ManifestStore
 from backend.sessions.session_store import SessionState, SessionStore
 
@@ -91,6 +92,31 @@ def _dataset_hint_for_title(
     if df is not None:
         return f"dataset {len(df)}x{len(df.columns)}"
     return None
+
+
+def _strip_thinking_from_history(
+    chat_history: list[dict],
+) -> list[dict]:
+    """Remove reasoning_steps and pre_reasoning from AI messages.
+
+    Called when settings.llm_show_think=False so that think blocks
+    are not exposed to the frontend on page refresh.
+    Data is preserved in storage — only the API response is filtered.
+    """
+    result = []
+    for message in chat_history:
+        if str(message.get("role", "")).strip().lower() not in ("ai", "assistant"):
+            result.append(message)
+            continue
+        filtered = {k: v for k, v in message.items() if k != "reasoning_steps"}
+        tools = filtered.get("tools")
+        if tools:
+            filtered["tools"] = [
+                {k: v for k, v in tool.items() if k != "pre_reasoning"}
+                for tool in tools
+            ]
+        result.append(filtered)
+    return result
 
 
 @router.get("/sessions", response_model=list[SessionSummaryResponse])
@@ -244,10 +270,14 @@ def get_session(
             for s in manifest.sources
         ]
 
+    chat_history = state.chat_history
+    if not settings.llm_show_think:
+        chat_history = _strip_thinking_from_history(chat_history)
+
     return SessionStateResponse(
         session_id=state.session_id,
         title=title,
-        chat_history=state.chat_history,
+        chat_history=chat_history,
         artifacts=state.artifacts,
         has_dataset=bool(state.df_path),
         dataset_name=state.dataset_name,

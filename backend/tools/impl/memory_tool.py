@@ -18,36 +18,46 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field, model_validator
 
 # ── User Memory Tool ──────────────────────────────────────────────────────────
 
 _USER_MEMORY_DESCRIPTION = """\
-Persist a long-term insight about the user that will be useful across \
-future conversations. Call this when you infer something meaningful \
-about the user — their role, domain, expertise level, analytical \
-goals, preferred output format, communication style, or recurring \
-patterns in how they work.
+Сохрани долгосрочное наблюдение о пользователе, которое будет полезно \
+в будущих разговорах. Вызывай, когда делаешь значимый вывод о пользователе — \
+его роль, домен, уровень экспертизы, аналитические цели, предпочтительный \
+формат вывода, стиль общения или повторяющиеся паттерны в работе.
 
-Write a distilled, semantic note — NOT a verbatim quote. Capture \
-*what it means*, not *what was said*. For example, instead of \
-"User said they work in retail", write "User is a retail industry \
-analyst focused on sales performance".
+Записывай сжатую семантическую заметку — дистиллируй *смысл*, а не цитируй \
+дословно. Например, вместо «Пользователь сказал, что работает в ритейле» \
+пиши «Пользователь — аналитик розничной торговли, фокус на продажах».
 
-Guidelines:
-- Infer and abstract: translate observations into durable facts.
-- Be specific: "prefers Plotly bar charts with monthly granularity" \
-  is better than "likes charts".
-- One atomic fact per call; call multiple times for multiple facts.
-- Do NOT save session-specific data (datasets, schemas, findings) \
-  — use session_note for that.
-- Do NOT call this to recall history — it is already in the prompt.
+Правила:
+- Делай вывод и обобщай: переводи наблюдения в устойчивые факты.
+- Будь конкретным: «предпочитает bar-чарты Plotly с месячной гранулярностью» \
+  лучше, чем «любит графики».
+- Один атомарный факт на вызов; для нескольких фактов — несколько вызовов.
+- Данные сессии (датасеты, схемы, результаты) — для этого подходит session_note.
+- История разговора уже есть в промпте, повторно сохранять её смысла нет.
 
-Input: 1–2 sentences of distilled insight.
-Output: confirmation message.
+Параметр: text — строка 1–2 предложения с дистиллированным наблюдением.
 
-Example: memory("User is a retail data analyst. \
-Prefers concise monthly aggregations and Plotly bar charts over tables.")
+Пример: memory(text="Пользователь — аналитик данных в ритейле. \
+Предпочитает сжатые месячные агрегации и bar-чарты Plotly вместо таблиц.")
 """
+
+
+class _MemoryInput(BaseModel):
+    text: str = Field(default="", description="Дистиллированное наблюдение о пользователе (1–2 предложения).")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_to_text(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "text" not in values:
+            for v in values.values():
+                if isinstance(v, str):
+                    return {"text": v}
+        return values
 
 
 class MemoryTool(BaseTool):
@@ -55,6 +65,7 @@ class MemoryTool(BaseTool):
 
     name: str = "memory"
     description: str = _USER_MEMORY_DESCRIPTION
+    args_schema: type[BaseModel] = _MemoryInput
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -65,10 +76,10 @@ class MemoryTool(BaseTool):
     def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:
         note = text.strip()
         if not note:
-            return "Nothing saved — the note was empty."
+            return "Ничего не сохранено — заметка пустая."
         cb: Callable[[str], None] = object.__getattribute__(self, "_memo_cb")
         cb(note)
-        return f"Saved to user memory: {note[:120]}{'…' if len(note) > 120 else ''}"
+        return f"Сохранено в память пользователя: {note[:120]}{'…' if len(note) > 120 else ''}"
 
     async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:
         return self._run(text)
@@ -77,34 +88,47 @@ class MemoryTool(BaseTool):
 # ── Session Note Tool ─────────────────────────────────────────────────────────
 
 _SESSION_NOTE_DESCRIPTION = """\
-Persist a semantic insight about the current analysis session so it \
-can be referenced in follow-up questions without re-running analysis.
+Сохрани семантическое наблюдение о текущей аналитической сессии, \
+чтобы на него можно было ссылаться в уточняющих вопросах без повторного анализа.
 
-Use this for:
-- The *meaning* of loaded data (domain, granularity, time range, \
-  business purpose) — not just column names.
-- Key findings and conclusions: what patterns, anomalies, or answers \
-  were discovered and *why they matter*.
-- Data-quality issues that affect interpretation (e.g., "Q2 revenue \
-  has 3% nulls — likely export gap, not zero sales").
-- Decisions made during analysis (filters applied, assumptions used).
+Используй для:
+- *Смысла* загруженных данных (домен, гранулярность, временной диапазон, \
+  бизнес-цель) — не просто названий колонок.
+- Ключевых выводов и заключений: какие паттерны, аномалии или ответы \
+  были найдены и *почему они важны*.
+- Проблем качества данных, влияющих на интерпретацию (например, «В Q2 выручка \
+  имеет 3% пропусков — вероятно, пробел в выгрузке, а не нулевые продажи»).
+- Решений, принятых в ходе анализа (применённые фильтры, допущения).
 
-Write a distilled, semantic note — NOT a verbatim copy of data or \
-output. Capture *understanding*, not raw facts. For example, instead \
-of listing columns, explain what the dataset represents: "Monthly \
-retail sales by product and region, 2023 — used to analyze \
-regional revenue trends".
+Записывай сжатую семантическую заметку — дистиллируй *понимание*, а не копируй \
+сырые данные. Например, вместо перечисления колонок объясни суть датасета: \
+«Ежемесячные продажи ритейла по продукту и региону, 2023 — \
+для анализа региональной выручки».
 
-Do NOT use this for facts about the user (role, preferences) \
-— use memory for that.
+Факты о пользователе (роль, предпочтения) лучше сохранять через memory.
 
-Input: 1–3 sentences of distilled context or insight.
-Output: confirmation message.
+Параметр: text — строка 1–3 предложения с дистиллированным контекстом или выводом.
 
-Example: session_note("Sales dataset covers Jan–Dec 2023 with \
-revenue by product and region. Q2 revenue has 3% nulls likely \
-due to a data export gap, not actual zero sales.")
+Пример: session_note(text="Датасет продаж охватывает янв–дек 2023 с выручкой \
+по продукту и региону. В Q2 3% пропусков — вероятно, пробел в выгрузке, \
+а не реальные нулевые продажи.")
 """
+
+
+class _SessionNoteInput(BaseModel):
+    text: str = Field(
+        default="",
+        description="Дистиллированный контекст или вывод о сессии (1–3 предложения).",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_to_text(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "text" not in values:
+            for v in values.values():
+                if isinstance(v, str):
+                    return {"text": v}
+        return values
 
 
 class SessionNoteTool(BaseTool):
@@ -112,6 +136,7 @@ class SessionNoteTool(BaseTool):
 
     name: str = "session_note"
     description: str = _SESSION_NOTE_DESCRIPTION
+    args_schema: type[BaseModel] = _SessionNoteInput
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -122,10 +147,10 @@ class SessionNoteTool(BaseTool):
     def _run(self, text: str, *args: Any, **_kwargs: Any) -> str:
         note = text.strip()
         if not note:
-            return "Nothing saved — the note was empty."
+            return "Ничего не сохранено — заметка пустая."
         cb: Callable[[str], None] = object.__getattribute__(self, "_memo_cb")
         cb(note)
-        return f"Saved to session notes: {note[:120]}{'…' if len(note) > 120 else ''}"
+        return f"Сохранено в заметки сессии: {note[:120]}{'…' if len(note) > 120 else ''}"
 
     async def _arun(self, text: str, *args: Any, **_kwargs: Any) -> str:
         return self._run(text)

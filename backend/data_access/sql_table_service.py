@@ -10,10 +10,8 @@ import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
-from backend.core.config import settings
-from backend.core.llm_provider import get_provider_policy
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import (
@@ -196,24 +194,18 @@ class SQLTableService:
         self._cached_db_helper: DBAnalyticsHelper | None = None
         self._cached_candidates: list[TableCandidate] | None = None
 
-        llm_kwargs: dict[str, Any] = {
-            "model": llm_model,
-            "base_url": llm_base_url,
-            "api_key": llm_api_key,
-            "streaming": False,
-            "temperature": 0.0,
-            "timeout": 120.0,
-        }
-        if llm_chat_template_kwargs_enabled:
-            # effective = global setting AND this service's class default
-            effective_thinking = llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING
-            _eb: dict[str, Any] = dict(llm_kwargs.get("extra_body") or {})
-            _eb.update(
-                get_provider_policy(llm_provider).build_extra_body(enable_thinking=effective_thinking)
-            )
-            if _eb:
-                llm_kwargs["extra_body"] = _eb
-        self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
+        self.llm = make_reasoning_llm(
+            provider=llm_provider,
+            model=llm_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+            enable_thinking=llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING,
+            temperature=0.0,
+            max_tokens=2048,
+            streaming=False,
+            timeout=120.0,
+            chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+        )
 
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
@@ -416,7 +408,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только валидный JSON.".strip()),
+                SystemMessage(content="Верни только валидный JSON."),
                 HumanMessage(content=prompt),
             ]
         )
@@ -571,9 +563,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(
-                    content=f"{settings.llm_no_think_prefix} Ты SQL-генератор. Верни только SQL SELECT/WITH.".strip()  # noqa: E501
-                ),
+                SystemMessage(content="Ты SQL-генератор. Верни только SQL SELECT/WITH."),
                 HumanMessage(content=user_prompt),
             ]
         )
@@ -628,7 +618,7 @@ SAMPLE_RESULT:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только JSON.".strip()),
+                SystemMessage(content="Верни только JSON."),
                 HumanMessage(content=prompt),
             ]
         )

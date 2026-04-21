@@ -172,6 +172,11 @@ export type UserSettings = {
   agent_inner_recursion_limit: number;
   agent_react_enabled: boolean;
   ui_scale: number;
+  llm_streaming: boolean;
+  show_thinking: boolean;
+  show_think_planning: boolean;
+  show_think_tool: boolean;
+  show_think_final: boolean;
 };
 
 export type RuntimeModelProfile = {
@@ -277,6 +282,8 @@ export type ThinkingBlock = {
   type: "thinking";
   id: string;
   content: string;
+  /** Mirrors PersistedReasoningStep.kind — used for per-kind visibility filtering. */
+  kind?: "planning" | "tool_synthesis" | "final_synthesis" | "unknown";
 };
 
 export type TextBlock = {

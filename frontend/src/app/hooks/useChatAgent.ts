@@ -14,10 +14,18 @@ import type {
   StreamToolCall,
 } from "../lib/backend-types";
 
-const META_TOOLS = new Set(["get_tool_instructions"]);
+const META_TOOLS = new Set<string>();
 
 function parseInputSummary(toolName: string, raw: string): string {
   if (META_TOOLS.has(toolName)) return "";
+  if (toolName === "get_tool_instructions") {
+    try {
+      const parsed = JSON.parse(raw.trim()) as Record<string, unknown>;
+      return typeof parsed.tool_name === "string" ? parsed.tool_name : raw.trim().slice(0, 40);
+    } catch {
+      return raw.trim().slice(0, 40);
+    }
+  }
   const trimmed = raw.trim();
   if (!trimmed) return "";
   try {
@@ -186,6 +194,121 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
   };
 }
 
+/**
+ * Reconstruct an ordered AssistantBlock[] from persisted history so reload
+ * renders thinking interleaved with tool calls exactly as it did live.
+ *
+ * Order rule (mirrors backend `_build_reasoning_steps` + live stream order):
+ *   pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
+ *   followed by unique orphan reasoning_steps not already captured as pre_reasoning.
+ *
+ * Deduplication: the backend `_build_reasoning_steps` uses index-based mapping
+ * between raw thinking blocks and tool calls. When internal LLM calls (e.g. inside
+ * planner_tool) produce extra thinking blocks, the index mapping drifts and some
+ * reasoning_steps end up containing content identical to a tool's pre_reasoning.
+ * We deduplicate by content so thinking blocks do not appear twice.
+ *
+ * Returns undefined if there are no blocks to render (no tools & no orphan steps).
+ */
+function buildBlocksFromHistory(
+  tools: StreamToolCall[] | undefined,
+  reasoningSteps: import("../lib/backend-types").PersistedReasoningStep[] | null | undefined,
+): AssistantBlock[] | undefined {
+  const blocks: AssistantBlock[] = [];
+  let counter = 0;
+  const nextId = (prefix: string): string => `hist-blk-${prefix}-${counter++}`;
+
+  // Collect trimmed pre_reasoning content for deduplication of orphan steps.
+  const preReasoningSet = new Set<string>();
+
+  // Index infra-tool reasoning steps by tool_name for inline fallback rendering.
+  // These steps have tool_name set because pre_reasoning was discarded for infra tools
+  // but the backend still persists them in reasoning_steps so reload can show them.
+  const infraStepsByToolName = new Map<string, import("../lib/backend-types").PersistedReasoningStep[]>();
+  if (reasoningSteps) {
+    for (const step of reasoningSteps) {
+      if (step.tool_name) {
+        const arr = infraStepsByToolName.get(step.tool_name) ?? [];
+        arr.push(step);
+        infraStepsByToolName.set(step.tool_name, arr);
+      }
+    }
+  }
+
+  if (tools && tools.length > 0) {
+    for (const tool of tools) {
+      const trimmedPre = tool.pre_reasoning?.trim();
+      if (trimmedPre) {
+        preReasoningSet.add(trimmedPre);
+        blocks.push({
+          type: "thinking",
+          id: nextId("think"),
+          content: tool.pre_reasoning!,
+          kind: "tool_synthesis",
+        });
+      } else {
+        // Infra tool fallback: pre_reasoning was discarded on backend; use the
+        // reasoning_step that was saved with this tool_name instead.
+        const stepsForTool = infraStepsByToolName.get(tool.tool_name) ?? [];
+        for (const step of stepsForTool) {
+          const content = step.content?.trim();
+          if (content && !preReasoningSet.has(content)) {
+            preReasoningSet.add(content);
+            blocks.push({
+              type: "thinking",
+              id: nextId(`rs-${step.step_index}`),
+              content: step.content,
+              kind: step.kind ?? "tool_synthesis",
+            });
+          }
+        }
+      }
+      const toolUseId = nextId("tool");
+      blocks.push({
+        type: "tool_use",
+        id: toolUseId,
+        tool_name: tool.tool_name,
+        input_summary: tool.input_summary,
+        input_preview: tool.input_preview,
+        status: tool.status,
+        started_at: tool.started_at,
+        result_summary: undefined,
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+      blocks.push({
+        type: "tool_result",
+        id: nextId("res"),
+        tool_use_id: toolUseId,
+        tool_name: tool.tool_name,
+        status: tool.status === "error" ? "error" : "ok",
+        result_summary: "",
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+    }
+  }
+
+  // Orphan reasoning steps (final_synthesis etc.) appear AFTER tool calls.
+  // Skip any step already placed inline (either via pre_reasoning or infra fallback).
+  if (reasoningSteps && reasoningSteps.length > 0) {
+    for (const step of reasoningSteps) {
+      const content = step.content?.trim();
+      if (!content) continue;
+      if (preReasoningSet.has(content)) continue; // already shown inline
+      if (step.tool_name) continue; // infra step — already placed inline above
+      blocks.push({
+        type: "thinking",
+        id: nextId(`rs-${step.step_index}`),
+        content: step.content,
+        kind: step.kind ?? "unknown",
+      });
+    }
+  }
+
+  return blocks.length > 0 ? blocks : undefined;
+}
+
 function toChatMessages(
   sessionId: string,
   history: Array<{
@@ -199,17 +322,32 @@ function toChatMessages(
     tools?: PersistedToolCall[];
   }>,
 ): ChatMessage[] {
-  const messages = history.map((item, index) => ({
-    id: item.id ?? `${item.timestamp}-${index}`,
-    backendId: item.id,
-    timestamp: item.timestamp,
-    role: item.role === "user" ? "user" : ("assistant" as const),
-    content: item.content,
-    reasoning: item.reasoning ?? null,
-    reasoning_steps: item.reasoning_steps ?? null,
-    artifacts: item.artifacts ?? [],
-    tools: item.tools?.length ? item.tools.map(persistedToolToStream) : undefined,
-  }));
+  const messages = history.map((item, index) => {
+    // Filter META_TOOLS (e.g. get_tool_instructions) to match live streaming behavior.
+    // Backend persists all tool calls; frontend hides meta tools from the UI.
+    const filteredPersistedTools = item.tools?.filter(
+      (t) => !META_TOOLS.has(t.tool_name),
+    );
+    const tools = filteredPersistedTools?.length
+      ? filteredPersistedTools.map(persistedToolToStream)
+      : undefined;
+    const blocks =
+      item.role === "assistant" || item.role === "ai"
+        ? buildBlocksFromHistory(tools, item.reasoning_steps ?? null)
+        : undefined;
+    return {
+      id: item.id ?? `${item.timestamp}-${index}`,
+      backendId: item.id,
+      timestamp: item.timestamp,
+      role: item.role === "user" ? "user" : ("assistant" as const),
+      content: item.content,
+      reasoning: item.reasoning ?? null,
+      reasoning_steps: item.reasoning_steps ?? null,
+      artifacts: item.artifacts ?? [],
+      tools,
+      blocks,
+    };
+  });
   return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
 }
 
@@ -530,6 +668,8 @@ export function useChatAgent({
               if (!includeReasoning || !reasoningChunk) return;
               if (mode === "token") {
                 setStreamReasoning((prev) => prev + reasoningChunk);
+              } else if (mode === "chunk") {
+                setStreamReasoning(reasoningChunk);
               }
             },
             onThinkingStart: () => {
@@ -597,7 +737,6 @@ export function useChatAgent({
               if (META_TOOLS.has(event.tool_name)) return;
               const callId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
               const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
-              const preReasoning = pendingThinkingBlock;
               pendingThinkingBlock = "";
 
               const intentText = pendingIntentText.trim();
@@ -618,7 +757,6 @@ export function useChatAgent({
                 input_preview: event.input_preview || undefined,
                 status: "running",
                 started_at: Date.now(),
-                pre_reasoning: preReasoning || undefined,
               };
               collectedTools.push(entry);
               collectedBlocks.push({
@@ -716,6 +854,30 @@ export function useChatAgent({
         setStreamPhases([]);
         setStreamTools([]);
         setStreamBlocks([]);
+      }
+
+      // Assign kind to thinking blocks to match backend's _build_reasoning_steps logic.
+      // During streaming, onThinkingEnd pushes thinking blocks without kind. After streaming
+      // ends, filterBlocks() defaults kind=undefined to "tool_synthesis", which may differ
+      // from the kind the backend assigns (e.g. first block → "planning"). This causes
+      // thinking blocks to disappear until page reload restores them via reasoning_steps.
+      // Fix: replicate backend's position-based kind assignment before saving the message.
+      {
+        const thinkingIndices: number[] = [];
+        for (let i = 0; i < collectedBlocks.length; i++) {
+          const b = collectedBlocks[i]!;
+          if (b.type === "thinking" && !b.kind) thinkingIndices.push(i);
+        }
+        const n = thinkingIndices.length;
+        if (n === 1) {
+          (collectedBlocks[thinkingIndices[0]!] as import("../lib/backend-types").ThinkingBlock).kind = "final_synthesis";
+        } else if (n > 1) {
+          for (let pos = 0; pos < n; pos++) {
+            const kind: import("../lib/backend-types").ThinkingBlock["kind"] =
+              pos === 0 ? "planning" : pos === n - 1 ? "final_synthesis" : "tool_synthesis";
+            (collectedBlocks[thinkingIndices[pos]!] as import("../lib/backend-types").ThinkingBlock).kind = kind;
+          }
+        }
       }
 
       if (aborted) {
@@ -861,9 +1023,25 @@ export function useChatAgent({
     if (!query) {
       return;
     }
-    if (lastUserMsg?.backendId) {
+    let backendMsgId = lastUserMsg?.backendId;
+    if (!backendMsgId) {
+      // Message was added during the current stream and never hydrated, so its
+      // backend ID is unknown. Fetch the session to find the last user message.
       try {
-        await deleteLastMessages(sessionId, lastUserMsg.backendId);
+        const session = await getSession(sessionId);
+        for (let i = session.chat_history.length - 1; i >= 0; i -= 1) {
+          if (session.chat_history[i]!.role === "user") {
+            backendMsgId = session.chat_history[i]!.id;
+            break;
+          }
+        }
+      } catch {
+        // Best-effort.
+      }
+    }
+    if (backendMsgId) {
+      try {
+        await deleteLastMessages(sessionId, backendMsgId);
       } catch {
         // Best-effort: continue even if the message wasn't persisted yet.
       }

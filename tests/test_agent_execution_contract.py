@@ -20,7 +20,6 @@ import pandas as pd
 import pytest
 
 from backend.agent.prompts import execution_agent_prompt
-from backend.core.config import DEPTH_PROFILES
 from backend.skills.models import SkillSelectionError, SkillValidationError
 from backend.skills.registry import SkillRegistry
 from backend.tools.policy import (
@@ -30,8 +29,6 @@ from backend.tools.policy import (
     normalize_allowed_tool_keys,
 )
 from backend.tools.sandbox import SAFE_BUILTINS, SessionSandbox
-
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures

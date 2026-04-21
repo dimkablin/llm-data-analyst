@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import type { AssistantBlock, ToolResultBlock as ToolResultBlockType } from "../../../lib/backend-types";
 import { ThinkingBlock, LiveThinkingBlock } from "./ThinkingBlock";
 import { ToolUseBlock } from "./ToolUseBlock";
-import { IntentTextBlock } from "./TextBlock";
+
 
 type Props = {
   blocks: AssistantBlock[];
@@ -35,20 +35,38 @@ export function BlockTimeline({ blocks, liveThinking, isLive }: Props) {
 
   return (
     <div className="flex flex-col gap-0.5 py-0.5">
-      {blocks.map((block) => {
+      {blocks.map((block, idx) => {
         switch (block.type) {
-          case "thinking":
+          case "thinking": {
+            // If this thinking precedes a tool call — use the tool name as label.
+            // Otherwise derive the label from the block's semantic kind.
+            const next = blocks[idx + 1];
+            let sourceLabel: string | undefined;
+            if (next?.type === "tool_use") {
+              sourceLabel = next.tool_name;
+            } else {
+              switch (block.kind) {
+                case "planning":
+                  sourceLabel = "planner";
+                  break;
+                case "final_synthesis":
+                  sourceLabel = "agent";
+                  break;
+                default:
+                  sourceLabel = "agent";
+              }
+            }
             return (
               <ThinkingBlock
                 key={block.id}
                 content={block.content}
                 defaultCollapsed
+                sourceLabel={sourceLabel}
               />
             );
+          }
           case "text":
-            return (
-              <IntentTextBlock key={block.id} content={block.content} />
-            );
+            return null;
           case "tool_use": {
             // Merge result data into the tool use block for unified display
             const result = resultByToolUseId.get(block.id);

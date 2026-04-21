@@ -45,6 +45,11 @@ class UserSettings:
     agent_inner_recursion_limit: int
     agent_react_enabled: bool = False
     ui_scale: int = 100
+    llm_streaming: bool = True
+    show_thinking: bool = True
+    show_think_planning: bool = True
+    show_think_tool: bool = True
+    show_think_final: bool = True
 
 
 @dataclass(frozen=True)
@@ -392,6 +397,41 @@ class AuthDB:
                 ADD COLUMN agent_react_enabled INTEGER NOT NULL DEFAULT 0
                 """
             )
+        if "llm_streaming" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN llm_streaming INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_thinking" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_thinking INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_planning" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_planning INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_tool" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_tool INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_final" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_final INTEGER NOT NULL DEFAULT 1
+                """
+            )
 
     @staticmethod
     def _ensure_user_db_connections_columns(conn: sqlite3.Connection) -> None:
@@ -688,6 +728,21 @@ class AuthDB:
                 bool(row["agent_react_enabled"]) if "agent_react_enabled" in row.keys() else False
             ),
             ui_scale=int(row["ui_scale"] if "ui_scale" in row.keys() else 100),
+            llm_streaming=(
+                bool(row["llm_streaming"]) if "llm_streaming" in row.keys() else True
+            ),
+            show_thinking=(
+                bool(row["show_thinking"]) if "show_thinking" in row.keys() else True
+            ),
+            show_think_planning=(
+                bool(row["show_think_planning"]) if "show_think_planning" in row.keys() else True
+            ),
+            show_think_tool=(
+                bool(row["show_think_tool"]) if "show_think_tool" in row.keys() else True
+            ),
+            show_think_final=(
+                bool(row["show_think_final"]) if "show_think_final" in row.keys() else True
+            ),
         )
 
     def get_user_settings(self, user_id: int) -> UserSettings:
@@ -703,6 +758,8 @@ class AuthDB:
                     , agent_step_timeout_sec, agent_inner_recursion_limit
                     , agent_react_enabled
                     , ui_scale
+                    , llm_streaming, show_thinking
+                    , show_think_planning, show_think_tool, show_think_final
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -724,6 +781,11 @@ class AuthDB:
                 agent_inner_recursion_limit=6,
                 agent_react_enabled=False,
                 ui_scale=100,
+                llm_streaming=True,
+                show_thinking=True,
+                show_think_planning=True,
+                show_think_tool=True,
+                show_think_final=True,
             )
         return self._parse_user_settings(row)
 
@@ -745,6 +807,11 @@ class AuthDB:
         agent_inner_recursion_limit: int | None = None,
         agent_react_enabled: bool | None = None,
         ui_scale: int | None = None,
+        llm_streaming: bool | None = None,
+        show_thinking: bool | None = None,
+        show_think_planning: bool | None = None,
+        show_think_tool: bool | None = None,
+        show_think_final: bool | None = None,
     ) -> UserSettings:
         with self._connect() as conn:
             self._ensure_user_settings_row(conn, user_id)
@@ -756,7 +823,10 @@ class AuthDB:
                     , llm_max_tokens_default, llm_max_tokens_reasoning
                     , backend_query_timeout_sec, agent_max_steps
                     , agent_step_timeout_sec, agent_inner_recursion_limit
+                    , agent_react_enabled
                     , ui_scale
+                    , llm_streaming, show_thinking
+                    , show_think_planning, show_think_tool, show_think_final
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -835,6 +905,27 @@ class AuthDB:
                 if ui_scale is not None
                 else current.ui_scale
             )
+            next_llm_streaming = (
+                bool(llm_streaming) if llm_streaming is not None else current.llm_streaming
+            )
+            next_show_thinking = (
+                bool(show_thinking) if show_thinking is not None else current.show_thinking
+            )
+            next_show_think_planning = (
+                bool(show_think_planning)
+                if show_think_planning is not None
+                else current.show_think_planning
+            )
+            next_show_think_tool = (
+                bool(show_think_tool)
+                if show_think_tool is not None
+                else current.show_think_tool
+            )
+            next_show_think_final = (
+                bool(show_think_final)
+                if show_think_final is not None
+                else current.show_think_final
+            )
             conn.execute(
                 """
                 UPDATE user_settings
@@ -846,6 +937,8 @@ class AuthDB:
                     agent_step_timeout_sec = ?, agent_inner_recursion_limit = ?,
                     agent_react_enabled = ?,
                     ui_scale = ?,
+                    llm_streaming = ?, show_thinking = ?,
+                    show_think_planning = ?, show_think_tool = ?, show_think_final = ?,
                     updated_at = ?
                 WHERE user_id = ?
                 """,
@@ -864,6 +957,11 @@ class AuthDB:
                     next_agent_inner_recursion_limit,
                     1 if next_agent_react_enabled else 0,
                     next_ui_scale,
+                    1 if next_llm_streaming else 0,
+                    1 if next_show_thinking else 0,
+                    1 if next_show_think_planning else 0,
+                    1 if next_show_think_tool else 0,
+                    1 if next_show_think_final else 0,
                     self._now_iso(),
                     user_id,
                 ),
@@ -883,6 +981,11 @@ class AuthDB:
             agent_inner_recursion_limit=next_agent_inner_recursion_limit,
             agent_react_enabled=next_agent_react_enabled,
             ui_scale=next_ui_scale,
+            llm_streaming=next_llm_streaming,
+            show_thinking=next_show_thinking,
+            show_think_planning=next_show_think_planning,
+            show_think_tool=next_show_think_tool,
+            show_think_final=next_show_think_final,
         )
 
     def list_user_tool_settings(self, user_id: int) -> dict[str, bool]:

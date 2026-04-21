@@ -1,87 +1,21 @@
 ---
-name: Синтез инсайтов
-description: Трансформация результатов анализа в структурированные бизнес-инсайты с фреймворком So What / Why / Now What и приоритизацией.
-triggers: инсайты, выводы, резюме анализа, что это значит, бизнес-вывод, итоги, рекомендации, executive summary, что делать дальше, интерпретация
+name: Insight Synthesis
+description: Transform analysis results into structured business insights using the So What / Why / Now What framework with impact prioritization.
+triggers: insights, conclusions, analysis summary, what does this mean, business conclusion, results, recommendations, executive summary, what to do next, interpretation, инсайты, выводы, резюме анализа, рекомендации, интерпретация
 ---
 
-## Синтез инсайтов
+## Insight Synthesis
 
-Используй как финальный шаг после выполнения анализа. Собирает ключевые наблюдения, структурирует их через фреймворк «So What / Why / Now What», приоритизирует по impact×confidence и формирует executive summary.
+Final step after completing analysis. Structures observations via So What / Why / Now What, prioritizes by impact×confidence, produces executive summary.
 
-### Шаг 1 — сбор ключевых метрик через value_tool
-```python
-# Собери самые важные цифры из предыдущих результатов анализа
-num_cols = df.select_dtypes(include="number").columns.tolist()
-key_metrics = {}
-for col in num_cols[:5]:
-    key_metrics[f"{col}_mean"] = round(df[col].mean(), 3)
-    key_metrics[f"{col}_median"] = round(df[col].median(), 3)
-    key_metrics[f"{col}_std"] = round(df[col].std(), 3)
+### Algorithm (3 steps)
+1. **Key metrics** → `value_tool`: total/mean/median per numeric column; skip constants (CV ≤ 0.01); flag mean/median divergence > 20%.
+2. **Programmatic insight extraction** → `pandas_tool`: auto-detect missing > 30%, extreme outliers (3×IQR, > 1%), dominant category (> 70%). Append manual insights from prior session steps (root_cause, ab_test, etc.). Sort by priority, keep top 5.
+3. **Priority chart** → `plotly_tool`: horizontal bar, colored by Critical / Important / FYI.
 
-tool_result = {
-    "schema_version": "1.0",
-    "artifact_type": "value",
-    "items": key_metrics
-}
-tool_result
-```
-
-### Шаг 2 — структурированная таблица инсайтов через pandas_tool
-```python
-# Формируй insights на основе фактически вычисленных данных в сессии.
-# Каждый инсайт использует фреймворк: SO WHAT (что произошло) / WHY (вероятная причина) / NOW WHAT (действие).
-# Ниже — шаблон, заполни реальными наблюдениями.
-
-insights = [
-    {
-        "priority": "🔴 Критический",
-        "metric": "Ключевая метрика / аномалия",
-        "so_what": "Что произошло и какой масштаб: конкретная цифра, отклонение от нормы",
-        "why": "Вероятная причина на основе данных сессии",
-        "now_what": "Конкретное действие: rollback, кампания, мониторинг",
-        "confidence": "Высокая",
-        "expected_outcome": "Измеримый результат действия",
-    },
-    {
-        "priority": "🟡 Важный",
-        "metric": "Второй по важности паттерн",
-        "so_what": "Второе по важности наблюдение с цифрами",
-        "why": "Гипотеза о причине",
-        "now_what": "Следующий шаг для команды",
-        "confidence": "Средняя",
-        "expected_outcome": "Ожидаемый эффект",
-    },
-    {
-        "priority": "🟢 К сведению",
-        "metric": "Позитивный факт / контекст",
-        "so_what": "Положительный факт или фоновый контекст",
-        "why": "Почему это важно знать",
-        "now_what": "Мониторинг / нет действий",
-        "confidence": "Высокая",
-        "expected_outcome": "—",
-    },
-]
-
-insights_df = pd.DataFrame(insights)
-
-# Приоритизация: critical=3, important=2, info=1
-priority_map = {"🔴 Критический": 3, "🟡 Важный": 2, "🟢 К сведению": 1}
-insights_df["_rank"] = insights_df["priority"].map(priority_map).fillna(0)
-insights_df = insights_df.sort_values("_rank", ascending=False).drop(columns=["_rank"])
-
-tool_result = {
-    "schema_version": "1.0",
-    "artifact_type": "table",
-    "items": {"insights": insights_df}
-}
-tool_result
-```
-
-### Правила
-- Максимум 5 инсайтов — выбирай самые важные по impact × confidence, не перечисляй всё подряд
-- Каждый инсайт: **So What** (конкретные цифры) + **Why** (гипотеза) + **Now What** (конкретное действие)
-- Рекомендация — конкретное действие с ответственным и сроком, а не "провести дополнительный анализ"
-- Приоритеты: 🔴 Критический (немедленное действие) → 🟡 Важный (рассмотреть) → 🟢 К сведению
-- Confidence: Высокая — подтверждено данными; Средняя — корреляция без причинно-следственной связи; Низкая — гипотеза
-- Если анализ дал нейтральные результаты — честно скажи "Значимых отклонений не выявлено" с обоснованием
-- Синтез пишется после других инструментов — опирайся на реальные результаты сессии, не на шаблон
+### Rules
+- Generate insights programmatically from real data — do NOT summarize from memory
+- After auto_insights, manually append findings from prior session tool calls
+- Maximum 5 insights — prioritize by impact × confidence
+- Each insight: **So What** (numbers) + **Why** (hypothesis) + **Now What** (concrete action)
+- Recommendations must be actionable with owner + timeline, not "conduct further analysis"

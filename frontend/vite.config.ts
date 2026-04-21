@@ -81,6 +81,7 @@ export default defineConfig(({ mode }) => {
         "/admin": backendProxy,
         "/db-connections": backendProxy,
         "/sessions": backendProxy,
+        "/skills": backendProxy,
         "/runtime": backendProxy,
         "/observability": backendProxy,
         "/health": backendProxy,

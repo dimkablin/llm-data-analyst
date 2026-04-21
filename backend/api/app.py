@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from backend.agent.callbacks import (
-    AgentProgressCollector,
     LLMTextCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
@@ -248,7 +247,6 @@ def _configure_routes() -> None:
         csv_runtime=csv_runtime,
         LLMTextCollector=LLMTextCollector,
         ToolCollector=ToolCollector,
-        AgentProgressCollector=AgentProgressCollector,
         PhaseCollector=PhaseCollector,
         TokenStreamCallbackHandler=TokenStreamCallbackHandler,
         AgentRunner=AgentRunner,
