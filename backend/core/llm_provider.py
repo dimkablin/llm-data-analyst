@@ -7,7 +7,6 @@ from __future__ import annotations
 # to ReasoningChatOllama using the native /api/chat endpoint (langchain-ollama ChatOllama).
 # The methods below (build_extra_body) remain valid for vLLM and other OpenAI-compat
 # providers; the Ollama path no longer calls them.
-
 from dataclasses import dataclass
 from typing import Any, Literal
 

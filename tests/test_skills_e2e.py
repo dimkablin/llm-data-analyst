@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -187,7 +188,7 @@ class TestSkillPythonExamples:
 class TestSkillInstructionsStructure:
     """Проверяет что инструкции содержат обязательные разделы."""
 
-    REQUIRED_SECTIONS = {
+    REQUIRED_SECTIONS: ClassVar[dict] = {
         "csv_summarizer": ["Шаг", "Правила"],
         "auto_eda": ["Шаг", "Правила", "корреляц"],
         "ab_test_analysis": ["Шаг", "Правила", "t-test"],
@@ -218,7 +219,7 @@ class TestSkillInstructionsStructure:
 class TestExistingSkillsNotBroken:
     """Убеждаемся что новые скилы не сломали загрузку существующих."""
 
-    EXISTING_SKILLS = [
+    EXISTING_SKILLS: ClassVar[list] = [
         "cohort_analysis",
         "pandas_tool",
         "sql_tool",

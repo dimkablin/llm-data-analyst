@@ -12,3 +12,4 @@
 | [diagram_06_tool_parsing.md](diagram_06_tool_parsing.md) | Парсинг тул-вызовов |
 | [diagram_07_planner_flow.md](diagram_07_planner_flow.md) | Флоу планировщика |
 | [diagram_08_tool_streaming.md](diagram_08_tool_streaming.md) | Стриминг тул-вызовов на фронтенд |
+| [diagram_09_thinking_stream.md](diagram_09_thinking_stream.md) | LLM-вызовы и поток мышления агента |

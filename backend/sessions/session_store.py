@@ -10,7 +10,10 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from backend.sessions.session_memory import StructuredSessionMemory
 
 import pandas as pd
 
@@ -391,10 +394,11 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
-    def get_structured_memory(self, session_id: str) -> "StructuredSessionMemory":
+    def get_structured_memory(self, session_id: str) -> StructuredSessionMemory:
         """Load StructuredSessionMemory from session state. Returns empty if session not found."""
-        from backend.sessions.session_memory import StructuredSessionMemory, SessionArtifactRef
         import json as _json
+
+        from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
         state = self._load_state(session_id)
         if state is None:
             return StructuredSessionMemory()
@@ -419,7 +423,7 @@ class SessionStore:
             turn_count=int(state.session_turn_count or 0),
         )
 
-    def set_structured_memory(self, session_id: str, memory: "StructuredSessionMemory") -> None:
+    def set_structured_memory(self, session_id: str, memory: StructuredSessionMemory) -> None:
         """Persist StructuredSessionMemory to session state."""
         import json as _json
         with self._get_session_lock(session_id):
@@ -428,9 +432,8 @@ class SessionStore:
                 return
             state.session_memory = memory.notes.strip()
             # Serialize artifact_index to JSON
-            refs_as_dicts = []
-            for ref in memory.artifact_index:
-                refs_as_dicts.append({
+            refs_as_dicts = [
+                {
                     "id": ref.id,
                     "name": ref.name,
                     "type": ref.type,
@@ -438,7 +441,9 @@ class SessionStore:
                     "schema": ref.schema,
                     "row_count": ref.row_count,
                     "summary": ref.summary,
-                })
+                }
+                for ref in memory.artifact_index
+            ]
             state.artifact_index_json = _json.dumps(refs_as_dicts, ensure_ascii=False)
             state.key_findings = list(memory.key_findings)
             state.session_turn_count = int(memory.turn_count)

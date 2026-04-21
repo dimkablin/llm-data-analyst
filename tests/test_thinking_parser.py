@@ -405,6 +405,7 @@ class TestThinkingPolicy(unittest.TestCase):
     def test_runner_role_tool_sends_thinking_kwargs(self) -> None:
         """role='tool' must send chat_template_kwargs just like role='chat'."""
         import inspect
+
         from backend.agent.runner import AgentRunner
         src = inspect.getsource(AgentRunner._build_llm)
         # The old guard "role != 'tool'" must be absent
@@ -419,22 +420,25 @@ class TestThinkingPolicy(unittest.TestCase):
 
     def test_effective_thinking_global_off_tool_off(self) -> None:
         """Global=False, tool=False → effective False."""
-        from backend.tools.impl.pandas_tool import PandasTool
         import pandas as pd
+
+        from backend.tools.impl.pandas_tool import PandasTool
         tool = PandasTool(pd.DataFrame(), llm_enable_thinking=False)
         self.assertFalse(tool._llm_enable_thinking)
 
     def test_effective_thinking_global_on_tool_off(self) -> None:
         """Global=True, tool=False → effective False (tool default wins)."""
-        from backend.tools.impl.pandas_tool import PandasTool
         import pandas as pd
+
+        from backend.tools.impl.pandas_tool import PandasTool
         tool = PandasTool(pd.DataFrame(), llm_enable_thinking=True)
         self.assertFalse(tool._llm_enable_thinking)
 
     def test_effective_thinking_global_off_tool_on(self) -> None:
         """Global=False, tool=True → effective False (global is master switch)."""
-        from backend.tools.impl.base_tool import BaseExecTool
         import pandas as pd
+
+        from backend.tools.impl.base_tool import BaseExecTool
 
         class ThinkingTool(BaseExecTool):
             name: str = "thinking_tool"
@@ -449,8 +453,9 @@ class TestThinkingPolicy(unittest.TestCase):
 
     def test_effective_thinking_global_on_tool_on(self) -> None:
         """Global=True, tool=True → effective True."""
-        from backend.tools.impl.base_tool import BaseExecTool
         import pandas as pd
+
+        from backend.tools.impl.base_tool import BaseExecTool
 
         class ThinkingTool(BaseExecTool):
             name: str = "thinking_tool2"
@@ -498,6 +503,7 @@ class TestReasoningSteps(unittest.TestCase):
 
     def _make_handler(self):
         import asyncio
+
         from backend.agent.callbacks import TokenStreamCallbackHandler
         loop = asyncio.new_event_loop()
         q: asyncio.Queue = asyncio.Queue()
@@ -657,6 +663,7 @@ class TestReasoningSteps(unittest.TestCase):
 
     def test_session_store_persists_reasoning_steps(self):
         import tempfile
+
         from backend.sessions.session_store import SessionStore
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionStore(root_dir=tmpdir, ttl_days=1)
@@ -671,6 +678,7 @@ class TestReasoningSteps(unittest.TestCase):
 
     def test_session_store_omits_reasoning_steps_when_none(self):
         import tempfile
+
         from backend.sessions.session_store import SessionStore
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionStore(root_dir=tmpdir, ttl_days=1)

@@ -54,7 +54,8 @@ def _extract_python_examples(markdown: str) -> tuple[SkillExample, ...]:
 @dataclass
 class SkillRegistry:
     skills_dir: Path
-    max_skill_bytes: int = _DEFAULT_MAX_CORE_BYTES  # kept for backward compat; core cap is now _DEFAULT_MAX_CORE_BYTES
+    # kept for backward compat; core cap is now _DEFAULT_MAX_CORE_BYTES
+    max_skill_bytes: int = _DEFAULT_MAX_CORE_BYTES
     _skills_by_id: dict[str, Skill] = field(default_factory=dict, init=False, repr=False)
     _loaded: bool = field(default=False, init=False, repr=False)
 
@@ -157,10 +158,10 @@ class SkillRegistry:
                 lines.append(f"Триггеры: {', '.join(skill.triggers)}")
             if skill.python_examples:
                 lines.append(
-                    f"Примеры Python: {len(skill.python_examples)} (только примеры; не выполнять напрямую)"  # noqa: E501
+                    f"Примеры Python: {len(skill.python_examples)} (только примеры; не выполнять напрямую)"
                 )
             else:
-                lines.append("Встроенные фрагменты кода, если есть, — только примеры; не выполнять напрямую.")  # noqa: E501
+                lines.append("Встроенные фрагменты кода, если есть, — только примеры; не выполнять напрямую.")
             lines.append("")
             lines.append(skill.instructions_markdown.strip())
             lines.append("")
@@ -326,7 +327,8 @@ class SkillRegistry:
                 raise SkillValidationError(f"Failed to stat {details_path}: {exc}") from exc
             if details_stat.st_size > _DEFAULT_MAX_DETAILS_BYTES:
                 raise SkillValidationError(
-                    f"Details file {details_path.name} exceeds max size of {_DEFAULT_MAX_DETAILS_BYTES} bytes."
+                    f"Details file {details_path.name} exceeds max size"
+                    f" of {_DEFAULT_MAX_DETAILS_BYTES} bytes."
                 )
             try:
                 details_markdown = details_path.read_text(encoding="utf-8").strip()

@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from backend.agent.callbacks import strip_thinking
 from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import extract_artifact_hints
-from backend.core.config import settings
 from backend.core.redaction import sanitize_error_text
 
 if TYPE_CHECKING:

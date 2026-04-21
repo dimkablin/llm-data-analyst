@@ -18,17 +18,25 @@ flowchart TD
     agent -->|"no more tool_calls\nor max_iterations reached"| finalize
     finalize --> END
 
-    skills["📚 SkillRegistry  ./skills/
+    skills["📚 SkillRegistry  skills/{id}/
     ───────────────
-    get_tool_instructions(tool_name)
+    get_tool_instructions(skill_id, details=False)
     ───────────────
-    kind=tool → инструкции к тулу
-    sql · pandas · plotly · value
-    database · planner · reviewer
+    kind=tool → core: API + правила
+    plotly · sql · pandas · value
+    database · planner · review
     forecast · rag · search · anomaly
     ───────────────
-    kind=analytical → алгоритмы
-    💡 cohort_analysis"]
+    kind=analytical → алгоритм + правила
+    auto_eda · ab_test_analysis
+    cohort_analysis · cohort_analysis_advanced
+    csv_summarizer · data_quality_audit
+    duckdb_analysis · insight_synthesis
+    root_cause_investigation
+    statistical_analysis · time_series_analysis
+    ───────────────
+    details=False → SKILL.md (core ≤8KB)
+    details=True  → DETAILS.md (примеры ≤64KB)"]
 
     tools["🛠 Tools
     ───────────────
@@ -37,7 +45,7 @@ flowchart TD
     plotly_tool · search_tool
     rag_tool · forecast_tool
     anomaly_planfact_tool
-    planner_tool · reviewer_tool"]
+    planner_tool · review_tool"]
 
     style dispatch fill:#2d2d2d,color:#fff
     style agent fill:#1a3a5c,color:#fff

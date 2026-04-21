@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from backend.agent.working_memory import ArtifactHandle, AnalysisWorkingMemory
+from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
 from backend.sessions.session_memory import (
     SessionArtifactRef,
-    StructuredSessionMemory,
     SessionMemory,
+    StructuredSessionMemory,
 )
 
 

@@ -1,19 +1,17 @@
 """Tests for make_reasoning_llm factory and ReasoningChatOllama adapter."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 from backend.agent.llm_client import (
-    AnyReasoningLLM,
     ReasoningChatOllama,
     ReasoningChatOpenAI,
     _remap_ollama_reasoning,
     make_reasoning_llm,
 )
-
 
 # ── _remap_ollama_reasoning ────────────────────────────────────────────────────
 

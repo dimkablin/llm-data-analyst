@@ -5,21 +5,18 @@ All tests here are offline — no LLM, no database, no network required.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-import time
 import threading
-from pathlib import Path
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+import backend.data_access.sql_table_service as _sql_table_svc_mod
 
 # The tools.impl package must be imported before sql_table_service to avoid a
 # circular import: sql_table_service → tools.impl.db_helpers (triggers __init__)
 # → factory → sql_tool → sql_table_service.
 import backend.tools.impl  # noqa: F401 — side-effect import resolves the cycle
-import backend.data_access.sql_table_service as _sql_table_svc_mod
-
 
 # ---------------------------------------------------------------------------
 # 1. /csv/schema authentication
@@ -32,8 +29,9 @@ class TestCsvSchemaAuth:
     def test_csv_schema_handler_requires_current_user_dependency(self):
         """csv_schema must declare a get_current_user dependency."""
         import inspect
-        from backend.api.routes.data import csv_schema
+
         from backend.api.deps import get_current_user
+        from backend.api.routes.data import csv_schema
 
         sig = inspect.signature(csv_schema)
         for param in sig.parameters.values():
@@ -55,8 +53,7 @@ class TestCsvSchemaAuth:
     def test_csv_schema_uses_owned_session_loader(self):
         """csv_schema must call _load_owned_session, not access csv_runtime directly."""
         import inspect
-        import ast
-        import textwrap
+
         from backend.api.routes import data as data_module
 
         source = inspect.getsource(data_module.csv_schema)
@@ -123,6 +120,7 @@ class TestSafeSampleSQL:
     def test_safe_sample_sql_does_not_use_raw_qualified_name(self):
         """Verify the old unsafe pattern is gone."""
         import inspect
+
         from backend.data_access import sql_table_service
         source = inspect.getsource(sql_table_service.SQLTableService._table_sample)
         assert "candidate.qualified_name" not in source or "_safe_sample_sql" in source, (
@@ -145,7 +143,6 @@ class TestConfigValidation:
 
     def _get_validate_fn(self):
         """Import _validate_startup_config without running the full app module."""
-        import importlib, types, sys
 
         # Build a minimal stub module so the function can be extracted cleanly.
         import backend.api.app as app_mod
@@ -182,12 +179,10 @@ class TestCORSConfig:
 
     def test_cors_wildcard_disables_credentials(self):
         """When CORS origins = '*', allow_credentials must be False (Fetch standard)."""
-        import importlib
-        import sys
 
         # Reload app module with wildcard CORS to test the middleware registration.
         # We inspect the middleware stack directly.
-        from fastapi.middleware.cors import CORSMiddleware
+
         from backend.core.config import Settings
 
         wildcard_settings = Settings(cors_allow_origins="*")
@@ -217,7 +212,7 @@ class TestAtomicSessionStateWrite:
     """Session state writes must be atomic — no partial state on crash."""
 
     def test_save_state_produces_valid_json(self, tmp_path):
-        from backend.sessions.session_store import SessionStore, SessionState
+        from backend.sessions.session_store import SessionStore
 
         store = SessionStore(str(tmp_path), ttl_days=7)
         state = store.create_session()
@@ -302,6 +297,7 @@ class TestSandboxManagerCleanup:
     def test_lifespan_uses_sandbox_manager(self):
         """The lifespan must call SandboxManager.get_instance().cleanup_expired."""
         import inspect
+
         from backend.api import app as app_module
         lifespan_src = inspect.getsource(app_module._lifespan)
         assert "SandboxManager" in lifespan_src or "cleanup_expired" in lifespan_src, (

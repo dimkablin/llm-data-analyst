@@ -7,7 +7,6 @@ import pytest
 from backend.skills import SkillRegistry, SkillSelectionError, SkillValidationError
 from backend.skills.models import Skill
 
-
 # ---------------------------------------------------------------------------
 # Task 1: Skill model two-level fields
 # ---------------------------------------------------------------------------
@@ -186,7 +185,7 @@ def test_registry_rejects_core_with_long_python_block(tmp_path: Path) -> None:
         f"### Rules\n- Rule.\n\n"
         f"```python\n{long_block}```\n",
     )
-    with pytest.raises(SkillValidationError, match="DETAILS.md"):
+    with pytest.raises(SkillValidationError, match=r"DETAILS\.md"):
         SkillRegistry.from_path(tmp_path).load()
 
 

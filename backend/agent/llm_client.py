@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Union
+from typing import Any
 
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
@@ -274,7 +274,7 @@ class ReasoningChatOllama(ChatOllama):
 
 
 # Union type for type annotations across the codebase
-AnyReasoningLLM = Union[ReasoningChatOpenAI, ReasoningChatOllama]
+AnyReasoningLLM = ReasoningChatOpenAI | ReasoningChatOllama
 
 
 def make_reasoning_llm(

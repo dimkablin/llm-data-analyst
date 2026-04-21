@@ -51,7 +51,7 @@ def update_skill_enabled(
     try:
         skill = _runner.skill_registry.get(skill_id)
     except Exception:
-        raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found")
+        raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found") from None
     if skill.kind != "analytical":
         raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found")
 
