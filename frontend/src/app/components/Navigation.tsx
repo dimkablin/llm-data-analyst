@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link, useLocation } from "react-router";
-import { Bell, Search, User } from "lucide-react";
+import { Bell, Search } from "lucide-react";
 import { motion } from "motion/react";
 import { ThemeToggle } from "./ThemeToggle";
 import { useAppSession } from "../context/AppSessionContext";
@@ -14,15 +14,18 @@ export function Navigation() {
     { path: "/", label: "Платформа" },
     { path: "/technical", label: "Архитектура" },
     { path: "/workspace", label: "Рабочая область" },
-    { path: "/sessions", label: "Сессии" },
+    { path: "/sessions", label: "Мои дашборды" },
     { path: "/tracing", label: "Phoenix" },
   ];
 
   const accountLabel = useMemo(() => {
     if (!user) {
-      return "Войти";
+      return { title: "Войти", subtitle: "" };
     }
-    return user.is_admin ? `${user.username} • admin` : user.username;
+    return {
+      title: "Глава городского округа",
+      subtitle: "Иванов И. И.",
+    };
   }, [user]);
 
   return (
@@ -38,7 +41,7 @@ export function Navigation() {
               </svg>
             </div>
             <span className="hidden whitespace-nowrap text-[16px] font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:block lg:text-[17px]">
-              Генеративная аналитика
+              ИИ Монитор
             </span>
           </Link>
         </div>
