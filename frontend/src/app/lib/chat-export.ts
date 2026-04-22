@@ -20,32 +20,6 @@ function escapeHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function looksTechnicalArtifactTitle(value: string): boolean {
-  const text = value.trim();
-  if (!text) return true;
-  return /^[a-z0-9]+(?:[_-][a-z0-9]+)+$/i.test(text);
-}
-
-function getArtifactDisplayTitle(artifact: ArtifactPayload): string {
-  const raw = typeof artifact.text === "string" ? artifact.text.trim() : "";
-  if (raw && !looksTechnicalArtifactTitle(raw)) {
-    return raw;
-  }
-
-  switch (artifact.type) {
-    case "plot":
-      return "График";
-    case "table":
-      return "Таблица";
-    case "value":
-      return "Показатель";
-    case "json":
-      return "Данные";
-    default:
-      return "Артефакт";
-  }
-}
-
 function buildTableHtml(artifact: ArtifactPayload): string {
   const raw = artifact.data.data as { columns?: unknown[]; index?: unknown[]; data?: unknown[][] };
   const columns = Array.isArray(raw.columns) ? raw.columns : [];
@@ -98,10 +72,10 @@ function buildChatHistoryHtml(
         : "";
       const artifacts = (message.artifacts || [])
         .map((artifact, artifactIndex) => {
-          const artifactTitle = getArtifactDisplayTitle(artifact);
+          const artifactTitle = artifact.text || artifact.type;
           const code = typeof artifact.meta?.code === "string" ? artifact.meta.code : "";
           const codeBlock = code
-            ? `<details><summary>Выгрузить отчетную презентацию</summary><pre>${escapeHtml(code)}</pre></details>`
+            ? `<details><summary>Код артефакта</summary><pre>${escapeHtml(code)}</pre></details>`
             : "";
 
           if (artifact.type === "plot" && artifact.data.format === "plotly-json") {

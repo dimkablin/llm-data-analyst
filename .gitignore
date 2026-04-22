@@ -268,5 +268,6 @@ release/
 .*
 
 test.py
+test_report_generation.py
 dump.txt
 /superpowers/

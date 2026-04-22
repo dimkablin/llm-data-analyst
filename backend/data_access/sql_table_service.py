@@ -207,6 +207,23 @@ class SQLTableService:
             chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
         )
 
+    @staticmethod
+    def _sanitize_artifact_name(value: str | None) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+
+        text = re.sub(r"\W+", "_", text, flags=re.UNICODE)
+        text = re.sub(r"_+", "_", text).strip("_")
+
+        if not text:
+            return None
+
+        if text[0].isdigit():
+            text = f"result_{text}"
+
+        return text[:80]
+
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
             raise ValueError("DB runtime is not configured")
@@ -793,15 +810,18 @@ SAMPLE_RESULT:
         question: str,
         candidate: TableCandidate,
         sql: str,
+        artifact_name: str | None = None,
     ) -> dict[str, Any]:
-        artifact_name = f"sql_{candidate.table_name}"
+        clean_artifact_name = self._sanitize_artifact_name(artifact_name)
+        fallback_artifact_name = self._sanitize_artifact_name(f"sql_{candidate.table_name}") or "sql_result"
+        final_artifact_name = clean_artifact_name or fallback_artifact_name
 
         if candidate.source_kind == "db":
             payload = self._db_helper().execute_analytic_query(
                 sql,
                 purpose=question,
                 max_rows=self.max_rows,
-                artifact_name=artifact_name,
+                artifact_name=final_artifact_name,
             )
             meta = dict(payload.get("meta") or {})
             meta["table_selection"] = {
@@ -818,10 +838,14 @@ SAMPLE_RESULT:
             candidate=candidate,
             question=question,
             sql=sql,
-            artifact_name=artifact_name,
+            artifact_name=final_artifact_name,
         )
 
-    def build_table_artifact(self, question: str) -> dict[str, Any]:
+    def build_table_artifact(
+        self,
+        question: str,
+        artifact_name: str | None = None,
+    ) -> dict[str, Any]:
         if self._wants_catalog_table_list(question):
             return self._build_catalog_table_list_artifact()
         candidate = self.resolve_table(question)
@@ -832,6 +856,7 @@ SAMPLE_RESULT:
             question=question,
             candidate=candidate,
             sql=str(gen["sql"]),
+            artifact_name=artifact_name,
         )
 
 

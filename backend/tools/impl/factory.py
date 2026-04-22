@@ -210,7 +210,13 @@ class PandasToolFactory:
     key = "pandas_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.df is not None and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> PandasTool:
         return PandasTool(
@@ -232,7 +238,13 @@ class ValueToolFactory:
     key = "value_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.df is not None and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> ValueTool:
         return ValueTool(

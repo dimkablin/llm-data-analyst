@@ -166,7 +166,7 @@ class Settings:
     agent_prompt_max_columns: int = int(os.getenv("AGENT_PROMPT_MAX_COLUMNS", "16"))
     agent_prompt_head_rows: int = int(os.getenv("AGENT_PROMPT_HEAD_ROWS", "3"))
     agent_cache_enabled: bool = _get_bool("AGENT_CACHE_ENABLED", True)
-    observation_mask_enabled: bool = _get_bool("OBSERVATION_MASK_ENABLED", False)
+    observation_mask_enabled: bool = _get_bool("OBSERVATION_MASK_ENABLED", True)
     agent_cache_size: int = int(os.getenv("AGENT_CACHE_SIZE", "128"))
     agent_cache_ttl_sec: int = int(os.getenv("AGENT_CACHE_TTL_SEC", "900"))
     agent_analysis_depth: str = (

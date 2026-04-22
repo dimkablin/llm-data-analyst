@@ -822,18 +822,14 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
-        # Ollama via OpenAI-compat stores reasoning in additional_kwargs["reasoning"]
-        # (mapped by ReasoningChatOpenAI._convert_chunk_to_generation_chunk).
-        # Ollama via native ChatOllama (ReasoningChatOllama) stores it in
-        # additional_kwargs["reasoning_content"] — check both keys.
+        # Ollama streams reasoning in ChatGenerationChunk.message.additional_kwargs["reasoning"].
         # Only capture when thinking is enabled — Ollama emits this field unconditionally
-        # even when enable_thinking=False was requested.
+        # even when enable_thinking=False was requested via chat_template_kwargs.
         if self._enable_thinking:
             chunk = kwargs.get("chunk")
             if chunk is not None:
                 msg = getattr(chunk, "message", None)
-                ak = getattr(msg, "additional_kwargs", {}) or {}
-                chunk_reasoning = ak.get("reasoning") or ak.get("reasoning_content", "")
+                chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
                 if chunk_reasoning:
                     self._emit_reasoning(chunk_reasoning)
         if not token:
@@ -856,18 +852,16 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Reset per-call parser so the next LLM call starts clean.
         self._stream_parser = ThinkingOutputParser()
 
-        # Ollama + Qwen3 returns thinking outside the token stream.
-        # OpenAI-compat path: additional_kwargs["reasoning"] (mapped by
-        #   ReasoningChatOpenAI._convert_chunk_to_generation_chunk / _create_chat_result).
-        # Native ChatOllama path (ReasoningChatOllama): additional_kwargs["reasoning_content"].
-        # If no reasoning was captured via tag parsing, check both keys.
+        # Ollama + Qwen3 returns thinking in the `reasoning` field of the message
+        # (OpenAI-compatible API), not as <think> tags in the token stream.
+        # If no reasoning was captured via tag parsing, extract it from the response.
         # Only do this when thinking is enabled — Ollama always returns reasoning even
         # when enable_thinking=False was requested, so we must explicitly ignore it.
         if not self.reasoning_chunks and self._enable_thinking:
             try:
                 gen = response.generations[0][0]  # type: ignore[union-attr]
-                ak = getattr(gen.message, "additional_kwargs", {}) or {}
-                ollama_reasoning = ak.get("reasoning") or ak.get("reasoning_content", "")
+                ak = getattr(gen.message, "additional_kwargs", {})
+                ollama_reasoning = (ak or {}).get("reasoning", "")
                 if ollama_reasoning:
                     self._emit_reasoning(ollama_reasoning)
             except (AttributeError, IndexError, TypeError):
