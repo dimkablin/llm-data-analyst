@@ -436,7 +436,12 @@ class BaseExecTool(BaseTool):
                 f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
                 f"{', '.join(normalized_result.keys())}"
             )
-            payload: dict[str, object] = {"text": text, "code": code}
+            payload: dict[str, object] = {
+                "text": text,
+                "code": code,
+                "artifact_type": self.artifact_name,
+                "items": normalized_result,
+            }
             if artifact_hints:
                 payload.update(artifact_hints)
             payload[self.artifact_name] = normalized_result
