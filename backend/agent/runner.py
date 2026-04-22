@@ -2366,7 +2366,9 @@ class AgentRunner:
         ).strip()
         # Append analytical skills so the planner knows which skill IDs exist
         # and can route "инсайты", "EDA", "когорты" etc. to get_tool_instructions.
-        _analytical_block = runner.skill_registry.build_analytical_skills_brief_block()
+        _analytical_block = runner.skill_registry.build_analytical_skills_brief_block(
+            enabled_skill_ids=runner.enabled_analytical_skill_ids,
+        )
         if _analytical_block:
             _planner_descriptions = _planner_descriptions + "\n\n" + _analytical_block
         for _tool in tools:
