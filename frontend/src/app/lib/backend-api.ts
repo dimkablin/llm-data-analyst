@@ -573,3 +573,48 @@ export async function streamQuery(
     consumeSseLine(line, state, handlers);
   }
 }
+
+export async function downloadReportFile(href: string): Promise<void> {
+  const headers = new Headers();
+  const token = getStoredToken();
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const cleanHref = href.trim();
+
+  let url: string;
+  if (/^https?:\/\//i.test(cleanHref)) {
+    url = cleanHref;
+  } else {
+    const cleanPath = cleanHref.startsWith("/")
+      ? cleanHref
+      : `/${cleanHref}`;
+    url = `${API_BASE}${cleanPath}`;
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+  });
+
+  await assertOk(response);
+
+  const blob = await response.blob();
+
+  const contentDisposition = response.headers.get("content-disposition") ?? "";
+  const fileNameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+  const fileName = fileNameMatch?.[1] || cleanHref.split("/").pop() || "report.docx";
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = objectUrl;
+  link.download = decodeURIComponent(fileName);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.URL.revokeObjectURL(objectUrl);
+}

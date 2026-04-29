@@ -67,19 +67,37 @@ class GetToolInstructionsTool(BaseTool):
     response_format: str = "content"
 
     _skill_registry: Any = PrivateAttr()
+    _allowed_skill_ids: set[str] | None = PrivateAttr(default=None)
 
-    def __init__(self, skill_registry: Any) -> None:
+    def __init__(
+        self,
+        skill_registry: Any,
+        allowed_skill_ids: set[str] | None = None,
+    ) -> None:
         super().__init__()
         self._skill_registry = skill_registry
+        self._allowed_skill_ids = (
+            {str(skill_id).strip() for skill_id in allowed_skill_ids if str(skill_id).strip()}
+            if allowed_skill_ids is not None
+            else None
+        )
 
     def _run(self, skill_id: str, details: bool = False) -> str:
+        normalized_skill_id = str(skill_id).strip()
+
+        if (
+            self._allowed_skill_ids is not None
+            and normalized_skill_id not in self._allowed_skill_ids
+        ):
+            return f"Скил '{normalized_skill_id}' отключен для этого пользователя."
+
         try:
-            skill = self._skill_registry.get(str(skill_id).strip())
+            skill = self._skill_registry.get(normalized_skill_id)
         except SkillError:
-            return self._not_found_response(str(skill_id).strip())
+            return self._not_found_response(normalized_skill_id)
         except Exception:
             logger.exception("Unexpected error looking up skill '%s'", skill_id)
-            return self._not_found_response(str(skill_id).strip())
+            return self._not_found_response(normalized_skill_id)
 
         if details:
             if not skill.has_details:

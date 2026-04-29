@@ -246,6 +246,23 @@ def _effective_selected_skill_ids(
         ]
     return list(dict.fromkeys(selected_skill_ids))
 
+def _enabled_analytical_skill_ids_for_user(user_id: int) -> set[str]:
+    user_skill_settings = _auth_db.list_user_skill_settings(user_id)
+    return {
+        skill.skill_id
+        for skill in _runner.skill_registry.list_skills()
+        if skill.kind == "analytical"
+        and user_skill_settings.get(skill.skill_id, True)
+    }
+
+
+def _filter_selected_skill_ids_for_user(
+    user_id: int,
+    selected_skill_ids: list[str],
+) -> list[str]:
+    allowed_skill_ids = _enabled_analytical_skill_ids_for_user(user_id)
+    return [skill_id for skill_id in selected_skill_ids if skill_id in allowed_skill_ids]
+
 
 def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | None = None):
     user_runtime = _auth_db.get_user_settings(user_id)
@@ -439,7 +456,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis", "summary"}:
+    if normalized_route not in {"chat", "analysis", "summary", "report"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []
@@ -614,7 +631,10 @@ async def _execute_query(
     state = _load_owned_session(session_id, current_user)
     if _session_source_type(state) == "csv":
         state = _ensure_csv_runtime_state(session_id, state)
-    selected_skill_ids = _effective_selected_skill_ids(state, payload)
+    selected_skill_ids = _filter_selected_skill_ids_for_user(
+        current_user.id,
+        _effective_selected_skill_ids(state, payload),
+    )
     df = _active_session_dataframe(state, session_id)
     session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -647,13 +667,7 @@ async def _execute_query(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
-    user_skill_settings = _auth_db.list_user_skill_settings(current_user.id)
-    enabled_analytical_skill_ids = {
-        skill.skill_id
-        for skill in _runner.skill_registry.list_skills()
-        if skill.kind == "analytical"
-        and user_skill_settings.get(skill.skill_id, True)
-    }
+    enabled_analytical_skill_ids = _enabled_analytical_skill_ids_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
     session_memory = _store.get_structured_memory(session_id)
     # TODO(perf): A new AgentRunner (and a new compiled LangGraph) is built on every
@@ -842,7 +856,10 @@ async def query_stream(
     state = _load_owned_session(session_id, current_user)
     if _session_source_type(state) == "csv":
         state = _ensure_csv_runtime_state(session_id, state)
-    selected_skill_ids = _effective_selected_skill_ids(state, payload)
+    selected_skill_ids = _filter_selected_skill_ids_for_user(
+        current_user.id,
+        _effective_selected_skill_ids(state, payload),
+    )
     df = _active_session_dataframe(state, session_id)
     session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -886,13 +903,7 @@ async def query_stream(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
-    user_skill_settings = _auth_db.list_user_skill_settings(current_user.id)
-    enabled_analytical_skill_ids = {
-        skill.skill_id
-        for skill in _runner.skill_registry.list_skills()
-        if skill.kind == "analytical"
-        and user_skill_settings.get(skill.skill_id, True)
-    }
+    enabled_analytical_skill_ids = _enabled_analytical_skill_ids_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
     session_memory = _store.get_structured_memory(session_id)
     # TODO(perf): See same comment in query endpoint — graph recompilation per request.

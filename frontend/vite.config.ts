@@ -84,6 +84,7 @@ export default defineConfig(({ mode }) => {
         "/skills": backendProxy,
         "/runtime": backendProxy,
         "/observability": backendProxy,
+        "/reports": backendProxy,
         "/health": backendProxy,
         "/phoenix/assets/": phoenixAssetProxy,
         "/phoenix/api": phoenixApiProxy,

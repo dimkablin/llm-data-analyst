@@ -310,7 +310,10 @@ class GetToolInstructionsToolFactory:
         return True
 
     def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:
-        return GetToolInstructionsTool(self._skill_registry)
+        return GetToolInstructionsTool(
+            self._skill_registry,
+            allowed_skill_ids=ctx.allowed_skill_ids,
+        )
 
 
 class MemoryToolFactory:

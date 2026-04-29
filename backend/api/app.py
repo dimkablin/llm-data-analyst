@@ -28,6 +28,7 @@ from backend.api.routes import (
     health,
     observability_route,
     query,
+    reports,
     sessions,
     skills,
     sources,
@@ -269,6 +270,7 @@ def _configure_routes() -> None:
     app.include_router(sources.router)
     app.include_router(query.router)
     app.include_router(db_connections.router)
+    app.include_router(reports.router)
 
 
 _configure_routes()

@@ -110,33 +110,34 @@ Full instructions and examples: `get_tool_instructions("anomaly_planfact_tool")`
 
 
 pandas_tool_prompt = """Pandas table tool. Input: Python code executed in session sandbox.
-Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`. If DB connected: `db`, `db_connection`.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`.
 All variables from previous tool calls persist in sandbox — use them directly.
+Use `sql_tool` to fetch data from the database first if needed. Do not query the database here.
 Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "table", "items": {"name": result_df}}`.
 Last line: `tool_result`.
-Variables you create (e.g. `agg = df.groupby("col").sum()`) are automatically available to subsequent tools.
+Variables you create are automatically available to subsequent tools.
 """
 
 
 plotly_tool_prompt = """Plotly chart tool. Input: Python code executed in session sandbox.
-Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `px`, `go`, `chart`, `pd`, `np`. If DB connected: `db`, `db_connection`.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `px`, `go`, `chart`, `pd`, `np`.
 All variables from previous tool calls persist in sandbox — use them directly instead of recalculating.
-Allowed stdlib modules: `datetime` (date/time parsing and formatting), `math` (sin, cos, log, ceil, floor, etc.),
-`statistics` (mean, median, stdev, etc.), `calendar` (month/week helpers), `collections` (Counter, defaultdict),
-`itertools` (groupby, combinations, etc.), `re` (regex for string field parsing).
+Use `sql_tool` to fetch data from the database first if needed. Do not query the database here.
+Allowed stdlib modules: `datetime`, `math`, `statistics`, `calendar`, `collections`, `itertools`, `re`.
 Create `fig` (plotly Figure), then: `tool_result = chart.result(fig, artifact_name="chart_name")`.
 Last line: `tool_result`.
 
-go.Table (только если явно нужна таблица внутри Plotly-фигуры, иначе используй pandas_tool):
+go.Table (only if a table inside a Plotly figure is explicitly needed; otherwise use pandas_tool):
 - `header.values` and `cells.values` MUST be a plain `list`, never `dict.values()` or any iterator.
-- Correct: `cells=dict(values=list(some_dict.values()))` — always wrap with `list(...)`.
+- Correct: `cells=dict(values=list(some_dict.values()))`.
 - Correct: `cells=dict(values=[df[c].tolist() for c in cols])`.
 """
 
 
 value_tool_prompt = """Scalar metric tool. Input: Python code executed in session sandbox.
-Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`. If DB connected: `db`, `db_connection`.
+Available in scope: `df` (DataFrame preloaded — do NOT call pd.read_csv), `pd`, `np`.
 All variables from previous tool calls persist in sandbox — use them directly.
+Use `sql_tool` to fetch data from the database first if needed. Do not query the database here.
 Return format: `tool_result = {"schema_version": "1.0", "artifact_type": "value", "items": {"metric_name": number_or_string}}`.
 Last line: `tool_result`.
 """

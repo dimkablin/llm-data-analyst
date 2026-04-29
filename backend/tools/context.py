@@ -18,6 +18,7 @@ class ToolBuildContext:
 
     settings: Settings
     allowed_tool_keys: set[str] | None = None
+    allowed_skill_ids: set[str] | None = None
     df: pd.DataFrame | None = None
     tool_db_runtime: RuntimeDBConnectionConfig | None = None
     csv_loaded: bool = False

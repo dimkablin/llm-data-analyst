@@ -43,8 +43,16 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="sql_tool",
         tool_label="SQL tool",
         display_name_ru="SQL по таблицам",
-        description="Natural-language questions over attached DB and/or CSV-in-DuckDB: table pick, safe SELECT, tabular artifact.",  # noqa: E501
-        description_ru="Вопросы на естественном языке по привязанной БД и/или CSV в DuckDB: выбор таблицы, безопасный SELECT, табличный артефакт.",  # noqa: E501
+        description=(
+            "Primary entry point for tabular data extraction from attached DB and/or CSV-in-DuckDB: "
+            "pick table, generate safe SELECT, return a named table artifact. "
+            "Use this first when data must be fetched from the database."
+        ),
+        description_ru=(
+            "Основной вход для получения табличных данных из подключённой БД и/или CSV в DuckDB: "
+            "выбор таблицы, безопасный SELECT, именованный табличный артефакт. "
+            "Используй его первым, когда нужно получить данные из БД."
+        ),
         capabilities=("read_only_sql", "table_artifact", "nl_to_sql"),
         requires_session_data=True,
         kind="builtin",
@@ -63,8 +71,15 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="pandas_tool",
         tool_label="Pandas Tool",
         display_name_ru="Табличная обработка",
-        description="Tabular transformations and aggregations over the active dataframe session data.",
-        description_ru="Табличные преобразования, группировки и вычисления по данным текущей сессии.",
+        description=(
+            "Tabular transformations and aggregations over dataframe variables already present in the session sandbox."  # noqa: E501
+            "Does not fetch data from the database directly."
+        ),
+        description_ru=(
+            "Табличные преобразования, группировки и вычисления по датафреймам, "
+            "которые уже лежат в sandbox текущей сессии. "
+            "Не получает данные из БД напрямую."
+        ),
         capabilities=("dataframe_transform", "aggregation", "table_artifact"),
         requires_session_data=True,
         kind="builtin",
@@ -73,8 +88,14 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="plotly_tool",
         tool_label="Plotly Tool",
         display_name_ru="Графики",
-        description="Chart creation and plot artifacts from tabular data (CSV dataframe or SQL query result).",  # noqa: E501
-        description_ru="Построение графиков по табличным данным (CSV датафрейм или результат SQL-запроса).",
+        description=(
+            "Chart creation from dataframe variables already present in the session sandbox. "
+            "Use after sql_tool or pandas_tool. Does not fetch data from the database directly."
+        ),
+        description_ru=(
+            "Построение графиков по датафреймам, которые уже лежат в sandbox текущей сессии. "
+            "Используй после sql_tool или pandas_tool. Не получает данные из БД напрямую."
+        ),
         capabilities=("chart", "plotly", "chart_artifact"),
         requires_session_data=True,
         kind="builtin",
@@ -83,8 +104,15 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="value_tool",
         tool_label="Value Tool",
         display_name_ru="Метрики",
-        description="Scalar metrics and compact numeric/text outputs from session data.",
-        description_ru="Быстрые одиночные метрики и компактные числовые результаты по данным сессии.",
+        description=(
+            "Scalar metrics and compact numeric/text outputs from dataframe variables already present in the session sandbox. "  # noqa: E501
+            "Does not fetch data from the database directly."
+        ),
+        description_ru=(
+            "Быстрые одиночные метрики и компактные числовые/текстовые результаты "
+            "по датафреймам, которые уже лежат в sandbox текущей сессии. "
+            "Не получает данные из БД напрямую."
+        ),
         capabilities=("scalar_metric", "value_artifact"),
         requires_session_data=True,
         kind="builtin",

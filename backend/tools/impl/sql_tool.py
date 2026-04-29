@@ -127,7 +127,8 @@ class SQLTool(BaseTool):
             text = (
                 f"✅ Выполнен sql_tool: {item_names}. "
                 f"Результаты доступны как Python-переменные: {vars_hint}. "
-                f"Используй эти имена напрямую в plotly_tool/pandas_tool."
+                f"Используй эти имена напрямую в pandas_tool, plotly_tool и value_tool. "
+                f"Не выполняй повторное чтение из БД, если нужный датафрейм уже создан."
             )
         else:
             text = f"✅ Выполнен sql_tool: {item_names}"

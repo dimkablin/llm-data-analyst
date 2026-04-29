@@ -9,7 +9,6 @@ from backend.agent.prompts import plotly_tool_prompt
 from backend.artifacts.artifact_meta import build_chart_recipe_step, normalize_recipe_steps
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.base_tool import BaseExecTool
-from backend.tools.impl.db_helpers import DBAnalyticsHelper, DemoDBConnectionView
 
 # Cohesive palette + dark layout aligned with frontend `ArtifactSurface` iframe (#09090b).
 _CHART_COLORWAY: tuple[str, ...] = (
@@ -195,10 +194,4 @@ class PlotlyTool(BaseExecTool):
         scope: dict[str, Any] = {
             "chart": ChartArtifactHelper(tool_name=self.name),
         }
-        if self._db_runtime_config is not None:
-            scope["db_connection"] = DemoDBConnectionView(runtime=self._db_runtime_config)
-            scope["db"] = DBAnalyticsHelper(
-                runtime=self._db_runtime_config,
-                timeout_sec=min(15.0, self.execution_timeout_sec),
-            )
         return scope

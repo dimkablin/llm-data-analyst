@@ -129,7 +129,7 @@ def _is_llm_transport_failure(exc: BaseException) -> bool:
             return False
         visited.add(eid)
 
-        if isinstance(err, (TimeoutError, ConnectionError, BrokenPipeError)):
+        if isinstance(err, TimeoutError | ConnectionError | BrokenPipeError):
             return True
         if isinstance(err, OSError) and err.errno is not None:
             _transport_errno = {
@@ -153,13 +153,7 @@ def _is_llm_transport_failure(exc: BaseException) -> bool:
 
             if isinstance(
                 err,
-                (
-                    httpx.ConnectError,
-                    httpx.ConnectTimeout,
-                    httpx.ReadTimeout,
-                    httpx.WriteTimeout,
-                    httpx.PoolTimeout,
-                ),
+                httpx.ConnectError | httpx.ConnectTimeout | httpx.ReadTimeout | httpx.WriteTimeout | httpx.PoolTimeout,  # noqa: E501
             ):
                 return True
         except ImportError:
@@ -168,7 +162,7 @@ def _is_llm_transport_failure(exc: BaseException) -> bool:
         try:
             from openai import APIConnectionError, APITimeoutError
 
-            if isinstance(err, (APIConnectionError, APITimeoutError)):
+            if isinstance(err, APIConnectionError | APITimeoutError):
                 return True
         except ImportError:
             pass
@@ -533,6 +527,17 @@ class AgentRunner:
 
     # ── Utility: LLM / data context ──────────────────────────────────────────
 
+    @staticmethod
+    def _tool_data_flow_policy_block() -> str:
+        return (
+            "═══ Политика доступа к данным ═══\n"
+            "- Для первичного получения табличных данных из БД используй только `sql_tool`.\n"
+            "- `database_tool` используй только для структуры БД: таблицы, схемы, колонки, preview.\n"
+            "- `pandas_tool`, `plotly_tool` и `value_tool` не должны ходить в БД напрямую.\n"
+            "- Эти инструменты работают только с dataframe-переменными, уже существующими в sandbox.\n"
+            "- Если нужный датафрейм ещё не создан, сначала вызови `sql_tool`.\n"
+            "- Если нужный датафрейм уже есть в sandbox, используй его напрямую по имени и не делай повторный SQL."  # noqa: E501
+        )
 
     @staticmethod
     def _db_session_prompt_block(
@@ -543,32 +548,36 @@ class AgentRunner:
     ) -> str:
         if runtime is None:
             return ""
-        has_tabular = df is not None and len(df.columns) > 0
+
         lines = [
             "═══ Источник данных (сессия) ═══",
             "Тип: подключение к базе данных.",
             f"Имя подключения: {runtime.name}",
             f"Тип СУБД: {runtime.db_type}",
         ]
+
         if runtime.database:
             lines.append(f"База/каталог: {runtime.database}")
+
         configured_schema = runtime.options.get("schema")
         if isinstance(configured_schema, str) and configured_schema.strip():
             lines.append(f"Схема по умолчанию: {configured_schema.strip()}.")
-        lines.append(f"Идентификатор подключения: {runtime.connection_id}")
-        if isinstance(session_source, dict):
-            label = str(session_source.get("source_label") or "").strip()
-            if label:
-                lines.append(f"Метка в интерфейсе: {label}")
-        if not has_tabular:
-            lines.append(
-                "Переменная `df` пустая — НЕ используй `df` для получения данных. "
-                "Для выборок из таблиц БД вызывай инструмент `sql_tool` с параметром `question` "
-                "(формулировка на естественном языке). "
-                "Для визуализации используй `plotly_tool` с `db.query_dataframe(sql)` внутри. "
-                "Если пользователь спрашивает только о том, с какой базой данных ведётся работа, "
-                "ответь по полям выше обычным текстом — для этого tool не обязателен."
-            )
+
+        lines.append(
+            "Для первичного получения табличных данных из БД используй только `sql_tool`. "
+            "Всегда передавай оба аргумента: `question` и `artifact_name`."
+        )
+
+        lines.append(
+            "`question` — это естественно-языковой запрос о том, какие данные нужно получить из БД. "
+            "`artifact_name` — имя результата в snake_case."
+        )
+
+        lines.append(
+            "После выполнения `sql_tool` результат будет доступен в sandbox по имени `artifact_name`, "
+            "и его можно напрямую использовать в `pandas_tool`, `plotly_tool` и `value_tool`."
+        )
+
         return "\n".join(lines)
 
     def _build_llm(
@@ -1427,6 +1436,7 @@ class AgentRunner:
             if sandbox_block:
                 sections.append(sandbox_block)
 
+        sections.append(self._tool_data_flow_policy_block())
         # Tool skills: brief list with deferred full instructions via get_tool_instructions().
         tool_skills_block = self.skill_registry.build_tool_skills_brief_block(set(available_tools))
         if tool_skills_block:
@@ -1443,9 +1453,16 @@ class AgentRunner:
 
         # User-selected skills (explicitly attached to this request).
         if selected_skill_ids:
-            skills_block = self.skill_registry.build_prompt_block(selected_skill_ids)
-            if skills_block:
-                sections.append(skills_block)
+            allowed = self.enabled_analytical_skill_ids
+            filtered_selected_skill_ids = (
+                [skill_id for skill_id in selected_skill_ids if skill_id in allowed]
+                if allowed is not None
+                else selected_skill_ids
+            )
+            if filtered_selected_skill_ids:
+                skills_block = self.skill_registry.build_prompt_block(filtered_selected_skill_ids)
+                if skills_block:
+                    sections.append(skills_block)
 
         # Data context: dataset schema + DB connection info.
         data_context_parts: list[str] = []
@@ -1736,9 +1753,9 @@ class AgentRunner:
             row_count = value_payload.get("row_count")
             column_count = value_payload.get("column_count")
             if asks_direct_answer and "сколько" in normalized:
-                if isinstance(row_count, (int, float)) and ("строк" in normalized or "запис" in normalized):
+                if isinstance(row_count, int | float) and ("строк" in normalized or "запис" in normalized):
                     direct_answer = f"В датасете {int(row_count)} строк."
-                elif isinstance(column_count, (int, float)) and (
+                elif isinstance(column_count, int | float) and (
                     "столбц" in normalized or "колонк" in normalized
                 ):
                     direct_answer = f"В датасете {int(column_count)} столбцов."
@@ -1746,7 +1763,7 @@ class AgentRunner:
             if not direct_answer and (
                 "датасет" in normalized or "данн" in normalized or "расскажи" in normalized
             ):
-                if isinstance(row_count, (int, float)) and isinstance(column_count, (int, float)):
+                if isinstance(row_count, int | float) and isinstance(column_count, int | float):
                     direct_answer = f"В датасете {int(row_count)} строк и {int(column_count)} столбцов."
 
         # Use full base_text as the main answer when available and not a plan/trace
@@ -2231,9 +2248,30 @@ class AgentRunner:
         prompt: str,
         *,
         has_data: bool = False,
-    ) -> Literal["chat", "summary"] | None:
-        """Lightweight keyword pre-check for bypass routes. No LLM call."""
+    ) -> Literal["chat", "summary", "report"] | None:
         normalized = prompt.strip().lower()
+
+        _report_markers = (
+            "сформируй отчет",
+            "сформируй отчёт",
+            "сделай отчет",
+            "сделай отчёт",
+            "подготовь отчет",
+            "подготовь отчёт",
+            "выгрузи отчет",
+            "выгрузи отчёт",
+            "отчет в word",
+            "отчёт в word",
+            "отчет в docx",
+            "отчёт в docx",
+            "generate report",
+            "export report",
+            "word report",
+            "docx report",
+        )
+        if any(m in normalized for m in _report_markers):
+            return "report"
+
         _summary_markers = (
             "управленческ", "итоги анализа",
             "резюмируй", "подведи итог", "executive summary", "сделай отчёт",
@@ -2241,8 +2279,10 @@ class AgentRunner:
         )
         if any(m in normalized for m in _summary_markers):
             return "summary"
+
         if AgentRunner._is_chat_message(normalized, has_data=has_data):
             return "chat"
+
         return None
 
     @staticmethod
@@ -2287,6 +2327,38 @@ class AgentRunner:
         )
 
         quick = AgentRunner._quick_route(prompt, has_data=has_data)
+
+        if quick == "report":
+            runner._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Формирование Word-отчета",
+                content="",
+                step_index=0,
+                max_steps=1,
+                status="streaming",
+            )
+            runner._emit_progress_event(
+                callbacks,
+                phase="act",
+                title="Собираю Word-отчет",
+                details="Генерирую текст отчета по чату и артефактам, затем собираю DOCX.",
+                step_index=0,
+                max_steps=1,
+            )
+            response = runner._build_report_export(
+                trace_context=trace_context,
+            )
+            runner._emit_phase_event(
+                callbacks,
+                phase="act",
+                title="Формирование Word-отчета",
+                content="Word-отчет сформирован." if response.final_text.startswith("[Скачать отчет](") else response.final_text,  # noqa: E501
+                step_index=0,
+                max_steps=1,
+                status="done" if response.final_text.startswith("[Скачать отчет](") else "error",
+            )
+            return {"response": response, "done": True, "stop_reason": "report_route"}
 
         # ── Chat bypass ──────────────────────────────────────────────────────
         if quick == "chat":
@@ -2349,6 +2421,7 @@ class AgentRunner:
         _ctx = ToolBuildContext(
             settings=runner.settings,
             allowed_tool_keys=runner.allowed_tool_keys,
+            allowed_skill_ids=runner.enabled_analytical_skill_ids,
             df=tool_df,
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
@@ -2900,3 +2973,82 @@ class AgentRunner:
         except Exception:
             # Warmup is best-effort; backend stays available even if model is cold.
             return
+
+    def _build_report_export(
+        self,
+        *,
+        trace_context: dict[str, Any] | None = None,
+    ) -> AgentResponse:
+        from pathlib import Path
+
+        from backend.services.report_export import build_report_docx
+        from backend.sessions.session_store import SessionStore
+
+        session_id = str((trace_context or {}).get("session_id") or "").strip()
+        if not session_id:
+            return AgentResponse(
+                final_text="Не удалось сформировать отчет: отсутствует session_id.",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
+
+        store = SessionStore(self.settings.storage_dir, self.settings.session_ttl_days)
+        state = store.load_session(session_id)
+        if state is None:
+            return AgentResponse(
+                final_text="Не удалось сформировать отчет: сессия не найдена.",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
+
+        if not state.chat_history:
+            return AgentResponse(
+                final_text="Не удалось сформировать отчет: история чата пуста.",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
+
+        if not state.artifacts:
+            return AgentResponse(
+                final_text="Не удалось сформировать отчет: в сессии нет артефактов.",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
+
+        try:
+            result = build_report_docx(
+                session_id=session_id,
+                chat_history=state.chat_history,
+                artifacts=state.artifacts,
+                output_dir=Path(self.settings.storage_dir) / "report_exports",
+                base_download_url="reports/download/",
+            )
+            return AgentResponse(
+                final_text=f"[Скачать отчет]({result.download_url})",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
+        except Exception as exc:
+            return AgentResponse(
+                final_text=f"Не удалось сформировать отчет: {exc}",
+                reasoning=None,
+                artifacts=[],
+                route="report",
+                tool_calls=0,
+                tool_names=[],
+            )
