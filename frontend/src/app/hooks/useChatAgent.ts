@@ -741,6 +741,7 @@ export function useChatAgent({
 
               const intentText = pendingIntentText.trim();
               pendingIntentText = "";
+              setStreamDraft("");
               if (intentText) {
                 collectedBlocks.push({
                   type: "text",
