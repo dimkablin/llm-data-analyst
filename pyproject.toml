@@ -10,6 +10,9 @@ description = ""
 authors = ["Kirill Tushin <KATushin@inno.tech>"]
 readme = "README.md"
 # package-mode = false
+packages = [
+    { include = "backend" }
+]
 
 [tool.poetry.dependencies]
 plotly = "^6.1.2"
@@ -96,6 +99,10 @@ extend-immutable-calls = ["Depends", "Security", "Query", "Header", "Cookie", "B
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live: requires a running local/external LLM endpoint or service",
+    "e2e: end-to-end tests; opt-in because they require a running local LLM",
+]
 
 [build-system]
 requires = ["poetry-core"]
