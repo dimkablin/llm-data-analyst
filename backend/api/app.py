@@ -17,7 +17,7 @@ from backend.agent.callbacks import (
     TokenStreamCallbackHandler,
     ToolCollector,
 )
-from backend.agent.runner import AgentRunner
+from backend.agent_graph.adapter import AgentGraphQueryRunner
 from backend.api import deps
 from backend.api.models import ToolAvailabilityResponse
 from backend.api.routes import (
@@ -160,7 +160,7 @@ search_integration_service = SearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env(settings=settings)
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env(settings=settings)
 rag_service = RAGService.from_env()
-runner = AgentRunner(
+runner = AgentGraphQueryRunner(
     settings,
     db_runtime_service=db_runtime_service,
     search_service=search_integration_service,
@@ -250,7 +250,7 @@ def _configure_routes() -> None:
         ToolCollector=ToolCollector,
         PhaseCollector=PhaseCollector,
         TokenStreamCallbackHandler=TokenStreamCallbackHandler,
-        AgentRunner=AgentRunner,
+        AgentQueryRunner=AgentGraphQueryRunner,
         effective_enabled_tool_keys_fn=effective_enabled_tool_keys,
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,

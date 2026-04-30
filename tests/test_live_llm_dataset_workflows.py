@@ -29,7 +29,8 @@ def _build_live_runner():
     import backend.core.config as config_module
 
     config_module = importlib.reload(config_module)
-    from backend.agent import AgentRunner, ToolCollector
+    from backend.agent.callbacks import ToolCollector
+    from backend.agent_graph.adapter import AgentGraphQueryRunner
 
     settings = replace(
         config_module.Settings(),
@@ -40,7 +41,7 @@ def _build_live_runner():
         agent_step_timeout_sec=60,
         agent_inner_recursion_limit=12,
     )
-    runner = AgentRunner(settings)
+    runner = AgentGraphQueryRunner(settings)
     return runner, ToolCollector
 
 

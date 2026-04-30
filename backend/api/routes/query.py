@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
 from backend.agent.reasoning import MAX_REASONING_STEPS, ReasoningStep
-from backend.agent.runner import is_chat_query
+from backend.agent_graph.routing import is_chat_query
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
@@ -50,7 +50,7 @@ _LLMTextCollector = None  # type: ignore
 _ToolCollector = None  # type: ignore
 _PhaseCollector = None  # type: ignore
 _TokenStreamCallbackHandler = None  # type: ignore
-_AgentRunner = None  # type: ignore
+_AgentQueryRunner = None  # type: ignore
 
 _effective_enabled_tool_keys_fn = None  # type: ignore
 _build_tool_catalog_fn = None  # type: ignore
@@ -76,7 +76,7 @@ def setup(
     ToolCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
-    AgentRunner,
+    AgentQueryRunner,
     effective_enabled_tool_keys_fn,
     build_tool_catalog_fn,
     known_tool_keys,
@@ -89,7 +89,7 @@ def setup(
     global _build_trace_context_fn, _query_trace_context_fn, _settings
     global _LLMTextCollector, _ToolCollector
     global _PhaseCollector, _TokenStreamCallbackHandler
-    global _AgentRunner, _effective_enabled_tool_keys_fn
+    global _AgentQueryRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
 
     _auth_db = auth_db
@@ -108,7 +108,7 @@ def setup(
     _ToolCollector = ToolCollector
     _PhaseCollector = PhaseCollector
     _TokenStreamCallbackHandler = TokenStreamCallbackHandler
-    _AgentRunner = AgentRunner
+    _AgentQueryRunner = AgentQueryRunner
     _effective_enabled_tool_keys_fn = effective_enabled_tool_keys_fn
     _build_tool_catalog_fn = build_tool_catalog_fn
     _known_tool_keys = known_tool_keys
@@ -445,6 +445,22 @@ def _persist_fallback_response(
     auth_db.update_session_after_reply(session_id, error_text, auto_title=auto_title)
 
 
+def _process_agent_post_run_effects(runtime_runner, session_id: str, user_id: int) -> None:
+    report = runtime_runner.process_post_run_effects(
+        user_id=user_id,
+        session_id=session_id,
+        user_memory_service=_user_memory_service,
+        session_store=_store,
+    )
+    if report.has_failures:
+        logger.debug(
+            "agent post-run effects completed with failed steps session_id=%s user_id=%s steps=%s",
+            session_id,
+            user_id,
+            ",".join(report.failed_steps),
+        )
+
+
 def _build_reasoning_trace(
     *,
     response_text: str,
@@ -670,11 +686,11 @@ async def _execute_query(
     enabled_analytical_skill_ids = _enabled_analytical_skill_ids_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
     session_memory = _store.get_structured_memory(session_id)
-    # TODO(perf): A new AgentRunner (and a new compiled LangGraph) is built on every
+    # TODO(perf): A new query runner (and a new compiled LangGraph) is built on every
     # request because node functions are bound methods that capture `self`.  Fix:
     # move all per-request data into AgentGraphState so nodes can be static and the
     # compiled graph can be shared at class level.
-    runtime_runner = _AgentRunner(
+    runtime_runner = _AgentQueryRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
         search_service=_search_integration_service,
@@ -751,34 +767,7 @@ async def _execute_query(
             )
         return fallback
 
-    try:
-        if runtime_runner._user_memory_buffer:  # noqa: SLF001
-            _mem_llm = runtime_runner._build_llm(  # noqa: SLF001
-                role="chat", include_reasoning=False, max_tokens_override=800
-            )
-            _user_memory_service.schedule_consolidation(
-                current_user.id,
-                list(runtime_runner._user_memory_buffer),  # noqa: SLF001
-                _mem_llm.invoke,
-            )
-    except Exception:
-        pass
-
-    try:
-        if runtime_runner._session_memory_buffer:  # noqa: SLF001
-            for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
-                _store.append_session_memory(session_id, note)
-                # Also merge into structured memory so set_structured_memory won't clobber it
-                existing = runtime_runner.session_memory.notes or ""
-                runtime_runner.session_memory.notes = (existing + "\n" + note).strip() if existing else note
-    except Exception:
-        pass
-
-    # Persist structured session memory (artifact index + key findings)
-    try:
-        _store.set_structured_memory(session_id, runtime_runner.session_memory)
-    except Exception:
-        pass
+    _process_agent_post_run_effects(runtime_runner, session_id, current_user.id)
 
     from backend.artifacts.bridge import execution_to_api_payload
     artifacts = [execution_to_api_payload(a) for a in response.artifacts]
@@ -907,7 +896,7 @@ async def query_stream(
     user_memory = _user_memory_service.load(current_user.id)
     session_memory = _store.get_structured_memory(session_id)
     # TODO(perf): See same comment in query endpoint — graph recompilation per request.
-    runtime_runner = _AgentRunner(
+    runtime_runner = _AgentQueryRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
         search_service=_search_integration_service,
@@ -948,36 +937,7 @@ async def query_stream(
                         session_source,
                         selected_skill_ids,
                     )
-            try:
-                if runtime_runner._user_memory_buffer:  # noqa: SLF001
-                    _mem_llm = runtime_runner._build_llm(  # noqa: SLF001
-                role="chat", include_reasoning=False, max_tokens_override=800
-            )
-                    _user_memory_service.schedule_consolidation(
-                        current_user.id,
-                        list(runtime_runner._user_memory_buffer),  # noqa: SLF001
-                        _mem_llm.invoke,
-                    )
-            except Exception:
-                pass
-
-            try:
-                if runtime_runner._session_memory_buffer:  # noqa: SLF001
-                    for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
-                        _store.append_session_memory(session_id, note)
-                        # Also merge into structured memory so set_structured_memory won't clobber it
-                        existing = runtime_runner.session_memory.notes or ""
-                        runtime_runner.session_memory.notes = (
-                            (existing + "\n" + note).strip() if existing else note
-                        )
-            except Exception:
-                pass
-
-            # Persist structured session memory (artifact index + key findings)
-            try:
-                _store.set_structured_memory(session_id, runtime_runner.session_memory)
-            except Exception:
-                pass
+            _process_agent_post_run_effects(runtime_runner, session_id, current_user.id)
 
             duration_ms = int((time.perf_counter() - started_at) * 1000)
             streamed_reasoning = token_collector.collected_reasoning()
