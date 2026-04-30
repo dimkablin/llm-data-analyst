@@ -3,7 +3,6 @@ services:
   # ─── SearXNG metasearch engine ──────────────────────────────────────────────
   searxng:
     image: searxng/searxng:latest
-    container_name: searxng
     volumes:
       - ./.search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
     environment:
@@ -47,7 +46,6 @@ services:
   # From backend container (same compose): host postgres_examples, port 5432, db examples.
   postgres_examples:
     image: postgres:16-alpine
-    container_name: llm-analyst-postgres-examples
     environment:
       POSTGRES_USER: ${POSTGRES_EXAMPLES_USER:-analyst}
       POSTGRES_PASSWORD: ${POSTGRES_EXAMPLES_PASSWORD:-analyst}
