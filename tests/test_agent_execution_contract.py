@@ -30,16 +30,6 @@ from backend.tools.policy import (
 )
 from backend.tools.sandbox import SAFE_BUILTINS, SessionSandbox
 
-# Depth profile constants — public contract values, reproduced here so the test
-# doesn't drag in langchain.  These MUST match what runner.DEPTH_PROFILES contains.
-# If they diverge → update runner.py, not this file.
-EXPECTED_DEPTH_PROFILES = {
-    "light": {"inner_recursion_limit": 4},
-    "medium": {"inner_recursion_limit": 8},
-    "deep": {"inner_recursion_limit": 15},
-}
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures
 # ─────────────────────────────────────────────────────────────────────────────

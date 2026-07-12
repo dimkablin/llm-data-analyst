@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import plotly.express as px
@@ -9,7 +9,6 @@ from backend.agent.prompts import plotly_tool_prompt
 from backend.artifacts.artifact_meta import build_chart_recipe_step, normalize_recipe_steps
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.base_tool import BaseExecTool
-from backend.tools.impl.db_helpers import DBAnalyticsHelper, DemoDBConnectionView
 
 # Cohesive palette + dark layout aligned with frontend `ArtifactSurface` iframe (#09090b).
 _CHART_COLORWAY: tuple[str, ...] = (
@@ -152,8 +151,12 @@ class PlotlyTool(BaseExecTool):
     artifact_name: str = "plot"
     human_name: str = "графиков"
     description: str = plotly_tool_prompt
-    allowed_libs: set[str] = {"plotly", "pandas", "numpy"}
+    allowed_libs: set[str] = {
+        "plotly", "pandas", "numpy",
+        "datetime", "math", "statistics", "calendar", "collections", "itertools", "re",
+    }
     allowed_artifact_types: tuple = (go.Figure,)
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False  # deterministic, temp=0
 
     def __init__(
         self,
@@ -167,6 +170,7 @@ class PlotlyTool(BaseExecTool):
         llm_api_key: str | None = None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         code_fix_max_retries: int = 3,
     ) -> None:
         _ = (px, go)  # imports остаются для явной зависимости инструмента
@@ -182,6 +186,7 @@ class PlotlyTool(BaseExecTool):
             llm_api_key=llm_api_key,
             llm_enable_thinking=llm_enable_thinking,
             llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            llm_provider=llm_provider,
             code_fix_max_retries=code_fix_max_retries,
         )
 
@@ -189,11 +194,4 @@ class PlotlyTool(BaseExecTool):
         scope: dict[str, Any] = {
             "chart": ChartArtifactHelper(tool_name=self.name),
         }
-        if self._db_runtime_config is not None:
-            scope["db_connection"] = DemoDBConnectionView(runtime=self._db_runtime_config)
-            scope["db"] = DBAnalyticsHelper(
-                runtime=self._db_runtime_config,
-                timeout_sec=min(15.0, self.execution_timeout_sec),
-            )
         return scope
-

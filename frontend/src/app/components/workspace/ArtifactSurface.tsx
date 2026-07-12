@@ -24,8 +24,13 @@ function ValueArtifact({ artifact }: { artifact: ArtifactPayload }) {
   return (
     <dl className="grid gap-2">
       {Object.entries(values).map(([key, value]) => (
-        <div key={`${artifact.id}-${key}`} className="grid grid-cols-[1fr_auto] gap-3 rounded-xl border border-border/40 bg-background/30 px-3 py-2">
-          <dt className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">{key}</dt>
+        <div
+          key={`${artifact.id}-${key}`}
+          className="grid grid-cols-[1fr_auto] gap-3 rounded-xl border border-border/40 bg-background/30 px-3 py-2"
+        >
+          <dt className="truncate text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            {key}
+          </dt>
           <dd className="text-sm font-bold">{formatCellValue(value)}</dd>
         </div>
       ))}
@@ -44,9 +49,14 @@ function TableArtifact({ artifact }: { artifact: ArtifactPayload }) {
       <table className="w-full min-w-[480px] border-collapse text-left text-sm">
         <thead className="bg-secondary/30">
           <tr>
-            <th className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">#</th>
+            <th className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              #
+            </th>
             {columns.map((column) => (
-              <th key={column} className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              <th
+                key={column}
+                className="px-3 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground"
+              >
                 {column}
               </th>
             ))}
@@ -55,7 +65,9 @@ function TableArtifact({ artifact }: { artifact: ArtifactPayload }) {
         <tbody className="divide-y divide-border/30">
           {rows.map((row, rowIdx) => (
             <tr key={`${artifact.id}-${rowIdx}`}>
-              <td className="px-3 py-2 text-muted-foreground">{formatCellValue(index[rowIdx] ?? rowIdx)}</td>
+              <td className="px-3 py-2 text-muted-foreground">
+                {formatCellValue(index[rowIdx] ?? rowIdx)}
+              </td>
               {row.map((cell, cellIdx) => (
                 <td key={`${artifact.id}-${rowIdx}-${cellIdx}`} className="px-3 py-2">
                   {formatCellValue(cell)}
@@ -73,9 +85,9 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
   const data = artifact.data.data as Record<string, unknown>;
   const answer = typeof data?.answer === "string" ? data.answer.trim() : null;
   const query = typeof data?.query === "string" ? data.query.trim() : null;
-  const results = Array.isArray(data?.results) ? data.results as Array<Record<string, unknown>> : null;
-  const references = Array.isArray(data?.references) ? data.references as string[] : null;
-  const sources = Array.isArray(data?.sources) ? data.sources as string[] : null;
+  const results = Array.isArray(data?.results) ? (data.results as Array<Record<string, unknown>>) : null;
+  const references = Array.isArray(data?.references) ? (data.references as string[]) : null;
+  const sources = Array.isArray(data?.sources) ? (data.sources as string[]) : null;
 
   const isSearchResult = results !== null;
   const isRagResult = references !== null && !isSearchResult;
@@ -85,7 +97,8 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
       <div className="space-y-3">
         {query && (
           <p className="text-xs text-muted-foreground">
-            <span className="font-semibold uppercase tracking-wider">Запрос: </span>{query}
+            <span className="font-semibold uppercase tracking-wider">Запрос: </span>
+            {query}
           </p>
         )}
         {answer && (
@@ -96,7 +109,10 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
         {results && results.length > 0 && (
           <ol className="space-y-2">
             {results.slice(0, 8).map((r, i) => (
-              <li key={i} className="rounded-xl border border-border/30 bg-background/20 px-3 py-2 text-sm">
+              <li
+                key={i}
+                className="rounded-xl border border-border/30 bg-background/20 px-3 py-2 text-sm"
+              >
                 <a
                   href={typeof r.url === "string" ? r.url : undefined}
                   target="_blank"
@@ -117,7 +133,9 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
         )}
         {(references ?? sources ?? []).length > 0 && (
           <div className="space-y-1">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Источники</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Источники
+            </p>
             <ul className="space-y-1">
               {(references ?? sources ?? []).map((ref, i) => (
                 <li key={i} className="text-xs">
@@ -146,10 +164,10 @@ function JsonArtifact({ artifact }: { artifact: ArtifactPayload }) {
 }
 
 const PLOTLY_COLORWAY = [
-  "#2563eb",  // blue
-  "#7c3aed",  // violet
-  "#0f766e",  // teal
-  "#ea580c",  // orange
+  "#2563eb", // blue
+  "#7c3aed", // violet
+  "#0f766e", // teal
+  "#ea580c", // orange
 ] as const;
 
 type PlotlyTraceLike = Record<string, unknown> & {
@@ -248,6 +266,7 @@ function normalizePlotlyTraces(traces: unknown[], isDark: boolean): Plotly.Data[
 function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
   const { resolvedTheme } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
+  const plotlyRef = useRef<any>(null);
   const isDark = resolvedTheme === "dark";
 
   useEffect(() => {
@@ -260,13 +279,10 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
       config?: Record<string, unknown>;
     };
 
-    const traces = normalizePlotlyTraces(
-      Array.isArray(payload.data) ? payload.data : [],
-      isDark,
-    );
+    const traces = normalizePlotlyTraces(Array.isArray(payload.data) ? payload.data : [], isDark);
 
     const frameBg = isDark ? "#09090b" : "#ffffff";
-    const plotBg = frameBg
+    const plotBg = frameBg;
     const text = isDark ? "#fafafa" : "#18181b";
     const muted = isDark ? "#a1a1aa" : "#717182";
     const grid = isDark ? "rgba(63,63,70,0.5)" : "rgba(0,0,0,0.10)";
@@ -275,6 +291,8 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
     const baseLayout = (payload.layout || {}) as Record<string, unknown>;
     const layout = {
       ...baseLayout,
+      width: undefined,
+      height: undefined,
       colorway: [...PLOTLY_COLORWAY],
       paper_bgcolor: frameBg,
       plot_bgcolor: plotBg,
@@ -301,13 +319,15 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
         title: {
           ...((((baseLayout.legend as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
           font: {
-            ...((((((baseLayout.legend as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            ...((((((baseLayout.legend as Record<string, unknown>)?.title as Record<string, unknown>) || {})
+              .font as object) || {})),
             color: muted,
           },
         },
       },
       xaxis: {
         ...((baseLayout.xaxis as object) || {}),
+        automargin: true,
         gridcolor: grid,
         zerolinecolor: zero,
         tickfont: {
@@ -317,13 +337,15 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
         title: {
           ...((((baseLayout.xaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
           font: {
-            ...((((((baseLayout.xaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            ...((((((baseLayout.xaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})
+              .font as object) || {})),
             color: text,
           },
         },
       },
       yaxis: {
         ...((baseLayout.yaxis as object) || {}),
+        automargin: true,
         gridcolor: grid,
         zerolinecolor: zero,
         tickfont: {
@@ -333,53 +355,71 @@ function PlotArtifact({ artifact }: { artifact: ArtifactPayload }) {
         title: {
           ...((((baseLayout.yaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})),
           font: {
-            ...((((((baseLayout.yaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {}).font as object) || {})),
+            ...((((((baseLayout.yaxis as Record<string, unknown>)?.title as Record<string, unknown>) || {})
+              .font as object) || {})),
             color: text,
           },
         },
       },
       annotations: Array.isArray((baseLayout as Record<string, unknown>).annotations)
-        ? ((baseLayout as Record<string, unknown>).annotations as Array<Record<string, unknown>>).map((ann) => ({
-            ...ann,
-            font: {
-              ...((ann.font as object) || {}),
-              color: text,
-            },
-          }))
+        ? ((baseLayout as Record<string, unknown>).annotations as Array<Record<string, unknown>>).map(
+            (ann) => ({
+              ...ann,
+              font: {
+                ...((ann.font as object) || {}),
+                color: text,
+              },
+            }),
+          )
         : (baseLayout as Record<string, unknown>).annotations,
       autosize: true,
-      margin: { l: 44, r: 28, t: 44, b: 44 },
+      margin: { l: 44, r: 28, t: 44, b: 44, ...(baseLayout.margin as object || {}) },
     };
 
     let cancelled = false;
+    let resizeObserver: ResizeObserver | null = null;
+
     import("plotly.js-dist-min").then((Plotly) => {
       if (cancelled || !containerRef.current) return;
-      Plotly.newPlot(
-        container,
-        traces,
-        layout as Partial<Plotly.Layout>,
-        {
-          responsive: true,
-          displaylogo: false,
-          scrollZoom: true,
-          ...(payload.config || {}),
-        },
-      );
+
+      plotlyRef.current = Plotly;
+
+      Plotly.newPlot(container, traces, layout as Partial<Plotly.Layout>, {
+        responsive: true,
+        displaylogo: false,
+        scrollZoom: true,
+        ...(payload.config || {}),
+      }).then(() => {
+        if (cancelled || !containerRef.current || !plotlyRef.current) return;
+
+        resizeObserver = new ResizeObserver(() => {
+          if (!containerRef.current || !plotlyRef.current) return;
+          plotlyRef.current.Plots.resize(containerRef.current);
+        });
+
+        resizeObserver.observe(containerRef.current);
+        plotlyRef.current.Plots.resize(containerRef.current);
+      });
     });
 
     return () => {
       cancelled = true;
-      import("plotly.js-dist-min").then((Plotly) => Plotly.purge(container));
+      resizeObserver?.disconnect();
+
+      if (containerRef.current && plotlyRef.current) {
+        plotlyRef.current.purge(containerRef.current);
+      }
     };
   }, [artifact.id, isDark]);
 
   return (
     <div
       ref={containerRef}
-      className="h-[400px] w-full rounded-2xl border border-border/40"
+      className="h-[400px] w-full min-w-0 overflow-hidden rounded-2xl border border-border/40"
     />
   );
 }
+
 export function ArtifactSurface({
   artifact,
   showCode = false,
@@ -390,18 +430,28 @@ export function ArtifactSurface({
   const code = typeof artifact.meta?.code === "string" ? artifact.meta.code : "";
 
   return (
-    <article className="rounded-3xl border border-border/50 bg-card p-5 shadow-sm">
+    <article className="overflow-hidden rounded-3xl border border-border/50 bg-card p-5 shadow-sm">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
           <h4 className="text-base font-bold tracking-tight">{artifact.text || artifact.type}</h4>
-          <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">{artifact.type}</p>
+          <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+            {artifact.type}
+          </p>
         </div>
       </div>
 
-      {artifact.type === "plot" && artifact.data.format === "plotly-json" ? <PlotArtifact artifact={artifact} /> : null}
-      {artifact.type === "table" && artifact.data.format === "split" ? <TableArtifact artifact={artifact} /> : null}
-      {artifact.type === "value" && artifact.data.format === "value" ? <ValueArtifact artifact={artifact} /> : null}
-      {artifact.type === "json" && artifact.data.format === "json" ? <JsonArtifact artifact={artifact} /> : null}
+      {artifact.type === "plot" && artifact.data.format === "plotly-json" ? (
+        <PlotArtifact artifact={artifact} />
+      ) : null}
+      {artifact.type === "table" && artifact.data.format === "split" ? (
+        <TableArtifact artifact={artifact} />
+      ) : null}
+      {artifact.type === "value" && artifact.data.format === "value" ? (
+        <ValueArtifact artifact={artifact} />
+      ) : null}
+      {artifact.type === "json" && artifact.data.format === "json" ? (
+        <JsonArtifact artifact={artifact} />
+      ) : null}
       {!(
         (artifact.type === "plot" && artifact.data.format === "plotly-json") ||
         (artifact.type === "table" && artifact.data.format === "split") ||

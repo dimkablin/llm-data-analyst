@@ -4,6 +4,7 @@ import { motion } from "motion/react";
 import type { StreamToolCall } from "../../lib/backend-types";
 import { MarkdownBlock } from "../MarkdownBlock";
 import { SpinnerDisplay } from "../SpinnerDisplay";
+import { ThinkingBlock } from "./blocks/ThinkingBlock";
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
 
@@ -159,11 +160,17 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
           {call.output_preview ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/35 select-none">
-                Output
+                {call.status === "error" ? "Error" : "Output"}
               </span>
-              <div className="overflow-x-auto rounded border border-border/25 bg-muted/20 px-3 py-2 text-muted-foreground/65 tool-output-markdown">
-                <MarkdownBlock content={call.output_preview} />
-              </div>
+              {call.status === "error" ? (
+                <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
+                  {call.output_preview}
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-border/25 bg-muted/20 px-3 py-2 text-muted-foreground/65 tool-output-markdown">
+                  <MarkdownBlock content={call.output_preview} />
+                </div>
+              )}
             </div>
           ) : call.artifact_keys?.length ? (
             <div className="flex flex-col gap-0.5">
@@ -207,7 +214,7 @@ export function ToolCallList({
         const isLast = idx === tools.length - 1;
         return (
           <React.Fragment key={call.id}>
-            {call.pre_reasoning ? <ReasoningText text={call.pre_reasoning} /> : null}
+            {call.pre_reasoning ? <ThinkingBlock content={call.pre_reasoning} defaultCollapsed /> : null}
             <ToolRow call={call} isLast={isLast && !liveReasoning} />
           </React.Fragment>
         );

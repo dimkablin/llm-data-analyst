@@ -17,7 +17,6 @@ import {
   getRuntimeModelProfile,
   getSession,
   listSessions,
-  listSkills,
   uploadCsv,
 } from "../lib/backend-api";
 import { exportChatHistory } from "../lib/chat-export";
@@ -26,7 +25,6 @@ import type {
   RuntimeModelProfile,
   SessionSourceState,
   SessionState,
-  Skill,
 } from "../lib/backend-types";
 import { summarizeError } from "../lib/format";
 
@@ -48,8 +46,6 @@ export function Workspace() {
   const [pinnedArtifactIds, setPinnedArtifactIds] = useState<string[]>([]);
   const [modelProfile, setModelProfile] = useState<RuntimeModelProfile | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [availableSkills, setAvailableSkills] = useState<Skill[]>([]);
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
 
   const {
     bindChatAgent,
@@ -81,29 +77,15 @@ export function Workspace() {
   }, []);
 
   useEffect(() => {
-    listSkills()
-      .then(setAvailableSkills)
-      .catch(() => {/* skills unavailable — не блокируем UI */});
-  }, []);
-
-  const handleToggleSkill = useCallback((skillId: string) => {
-    setSelectedSkillIds((prev) =>
-      prev.includes(skillId) ? prev.filter((id) => id !== skillId) : [...prev, skillId],
-    );
-  }, []);
-
-  useEffect(() => {
     bindChatAgent({
       sessionId,
       includeReasoning: settings.default_include_reasoning,
       useHistory: true,
       analysisDepth: settings.analysis_depth,
-      selectedSkillIds,
     });
   }, [
     bindChatAgent,
     sessionId,
-    selectedSkillIds,
     settings.analysis_depth,
     settings.default_include_reasoning,
   ]);
@@ -337,9 +319,7 @@ return (
                 }}
                 onExportChat={handleExportChat}
                 onPinArtifact={handlePinArtifact}
-                availableSkills={availableSkills}
-                selectedSkillIds={selectedSkillIds}
-                onToggleSkill={handleToggleSkill}
+                settings={settings}
               />
 
               <AnimatePresence>

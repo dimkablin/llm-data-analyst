@@ -11,6 +11,16 @@ triggers: поиск, найди, поищи, погугли, загугли, н
 Вход: Python-код. Выполняется в **sandbox сессии** — переменные сохраняются между вызовами.
 Доступен helper `search`, а также `pd`, `np` и все переменные из предыдущих tool-вызовов.
 
+### API
+```python
+search.search("query")                                    # dict: query, answer, results, sources
+search.search_result("query", artifact_name="results")   # готовый артефакт
+search.fetch(urls)                                        # полный текст страниц
+```
+
+### Final result protocol
+Последняя строка — `tool_result`.
+
 ### Примеры запросов пользователя
 
 Вызывай этот инструмент, когда пользователь просит:

@@ -3,13 +3,17 @@
 import json
 import os
 import shutil
+import tempfile
 import threading
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from backend.sessions.session_memory import StructuredSessionMemory
 
 import pandas as pd
 
@@ -37,6 +41,9 @@ class SessionState:
     csv_table_names: list[str] | None = None
     csv_expires_at: int | None = None
     session_memory: str = ""
+    artifact_index_json: str = ""
+    key_findings: list[str] = field(default_factory=list)
+    session_turn_count: int = 0
 
 
 class SessionStore:
@@ -76,7 +83,7 @@ class SessionStore:
             if not state_path.exists():
                 continue
             try:
-                state = json.loads(state_path.read_text())
+                state = json.loads(state_path.read_text(encoding="utf-8"))
                 last_access = datetime.fromisoformat(state.get("last_access"))
                 if last_access.tzinfo is None:
                     last_access = last_access.replace(tzinfo=UTC)
@@ -117,7 +124,7 @@ class SessionStore:
         state_path = self._state_path(session_id)
         if not state_path.exists():
             return None
-        raw = json.loads(state_path.read_text())
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
         return SessionState(
             session_id=raw["session_id"],
             created_at=raw["created_at"],
@@ -136,6 +143,9 @@ class SessionStore:
             csv_table_names=list(raw.get("csv_table_names") or []),
             csv_expires_at=raw.get("csv_expires_at"),
             session_memory=str(raw.get("session_memory", "")),
+            artifact_index_json=str(raw.get("artifact_index_json", "")),
+            key_findings=list(raw.get("key_findings", []) or []),
+            session_turn_count=int(raw.get("session_turn_count", 0) or 0),
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -166,10 +176,26 @@ class SessionStore:
             "csv_table_names": list(state.csv_table_names or []),
             "csv_expires_at": state.csv_expires_at,
             "session_memory": state.session_memory or "",
+            "artifact_index_json": state.artifact_index_json or "",
+            "key_findings": list(state.key_findings or []),
+            "session_turn_count": int(state.session_turn_count or 0),
         }
-        self._state_path(state.session_id).write_text(
-            json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
-        )
+        # Atomic write: flush to a temp file in the same directory, then rename.
+        # This prevents a truncated/empty state file if the process is interrupted
+        # mid-write (crash or SIGKILL).
+        target = self._state_path(state.session_id)
+        content = json.dumps(payload, ensure_ascii=False, cls=_NumpyEncoder)
+        fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            os.replace(tmp_path, target)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def save_dataframe(self, session_id: str, df: pd.DataFrame) -> None:
         data_path = self._data_path(session_id)
@@ -292,6 +318,7 @@ class SessionStore:
         *,
         artifacts: list[dict[str, Any]] | None = None,
         reasoning: str | None = None,
+        reasoning_steps: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._get_session_lock(session_id):
@@ -308,6 +335,8 @@ class SessionStore:
                 payload["artifacts"] = artifacts
             if reasoning:
                 payload["reasoning"] = reasoning
+            if reasoning_steps:
+                payload["reasoning_steps"] = reasoning_steps
             if tools:
                 payload["tools"] = tools
             state.chat_history.append(payload)
@@ -362,6 +391,62 @@ class SessionStore:
                 return
             existing = state.session_memory or ""
             state.session_memory = (existing + "\n- " + note.strip()).lstrip()
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def get_structured_memory(self, session_id: str) -> StructuredSessionMemory:
+        """Load StructuredSessionMemory from session state. Returns empty if session not found."""
+        import json as _json
+
+        from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
+        state = self._load_state(session_id)
+        if state is None:
+            return StructuredSessionMemory()
+
+        artifact_index: list[SessionArtifactRef] = []
+        if state.artifact_index_json:
+            try:
+                raw_list = _json.loads(state.artifact_index_json)
+                for item in raw_list:
+                    if isinstance(item, dict):
+                        try:
+                            artifact_index.append(SessionArtifactRef(**item))
+                        except Exception:
+                            pass  # skip malformed entries
+            except Exception:
+                pass  # malformed JSON — start fresh
+
+        return StructuredSessionMemory(
+            notes=state.session_memory or "",
+            artifact_index=artifact_index,
+            key_findings=list(state.key_findings or []),
+            turn_count=int(state.session_turn_count or 0),
+        )
+
+    def set_structured_memory(self, session_id: str, memory: StructuredSessionMemory) -> None:
+        """Persist StructuredSessionMemory to session state."""
+        import json as _json
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.session_memory = memory.notes.strip()
+            # Serialize artifact_index to JSON
+            refs_as_dicts = [
+                {
+                    "id": ref.id,
+                    "name": ref.name,
+                    "type": ref.type,
+                    "turn_index": ref.turn_index,
+                    "schema": ref.schema,
+                    "row_count": ref.row_count,
+                    "summary": ref.summary,
+                }
+                for ref in memory.artifact_index
+            ]
+            state.artifact_index_json = _json.dumps(refs_as_dicts, ensure_ascii=False)
+            state.key_findings = list(memory.key_findings)
+            state.session_turn_count = int(memory.turn_count)
             state.last_access = self._now_iso()
             self._save_state(state)
 

@@ -61,7 +61,7 @@ SAFE_BUILTINS: dict[str, Any] = {
 # Union of all libs any tool may need.
 _ALL_ALLOWED_LIBS: frozenset[str] = frozenset({
     "pandas", "numpy", "plotly", "json", "re", "math", "datetime",
-    "collections", "itertools", "functools", "statistics",
+    "collections", "itertools", "functools", "statistics", "time",
 })
 
 # Result-extraction priority (same logic as the old _execute_tool_code).
@@ -154,9 +154,6 @@ class SessionSandbox:
 
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
         self._scope.update({"__builtins__": safe, "pd": _pd, "np": _np, "df": df_entry})
-        if self._bound_db_config is not None:
-            self._scope["db_connection"] = self._bound_db_config
-            self._scope["db_runtime"] = self._bound_db_config
 
         # _globals is kept as an alias so callers that reference it still work.
         self._globals = self._scope
@@ -186,8 +183,6 @@ class SessionSandbox:
             self._bound_df = df
             self._bound_db_config = db_runtime_config
             self._scope["df"] = df
-            self._scope["db_connection"] = db_runtime_config
-            self._scope["db_runtime"] = db_runtime_config
 
             new_shape = df.shape
             if not is_first_load and old_shape != new_shape:
@@ -517,9 +512,9 @@ def _describe_value(val: Any) -> str:
         return f"ndarray {val.shape}"
     if isinstance(val, dict):
         return f"dict ({len(val)} keys)"
-    if isinstance(val, (list, tuple)):
+    if isinstance(val, list | tuple):
         return f"{type(val).__name__} (len={len(val)})"
-    if isinstance(val, (int, float, bool, str)):
+    if isinstance(val, int | float | bool | str):
         r = repr(val)
         return r[:80] if len(r) > 80 else r
     return type(val).__name__

@@ -7,6 +7,7 @@ numpy==2.3.5
 plotly==6.4.0
 langchain==1.0.0
 langchain-openai==1.0.1
+langchain-ollama==1.1.0
 langgraph==1.0.1
 pydantic==2.12.5
 python-dotenv==1.2.1
@@ -19,3 +20,5 @@ openinference-instrumentation-langchain==0.1.61
 cryptography==46.0.3
 psycopg[binary]==3.2.12
 duckdb==1.5.1
+python-docx==1.1.2
+kaleido==0.2.1

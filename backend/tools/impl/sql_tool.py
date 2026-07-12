@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool
@@ -17,13 +18,22 @@ class SQLToolArgs(BaseModel):
         ...,
         description="Естественно-языковой аналитический вопрос по доступным таблицам.",
     )
+    artifact_name: str | None = Field(
+        default=None,
+        description=(
+            "Необязательное желаемое имя Python-переменной для результата "
+            "в snake_case, например women_by_district или monthly_sales."
+        ),
+    )
 
 
 class SQLTool(BaseTool):
     name: str = "sql_tool"
     description: str = (
         "Основной инструмент табличной аналитики по БД и/или CSV в DuckDB-сессии. "
-        "Выбирает таблицу, генерирует безопасный SELECT и возвращает результат как табличный артефакт."
+        "Выбирает таблицу, генерирует безопасный SELECT и возвращает результат как табличный артефакт. "
+        "Можно передать artifact_name — желаемое имя результата для дальнейшего использования "
+        "в plotly_tool/pandas_tool."
     )
     args_schema: type[BaseModel] = SQLToolArgs
     response_format: str = "content_and_artifact"
@@ -39,6 +49,7 @@ class SQLTool(BaseTool):
         llm_api_key: str | None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
@@ -52,6 +63,7 @@ class SQLTool(BaseTool):
             llm_api_key=llm_api_key,
             llm_enable_thinking=llm_enable_thinking,
             llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            llm_provider=llm_provider,
             db_runtime_config=db_runtime_config,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
@@ -59,17 +71,46 @@ class SQLTool(BaseTool):
         )
         self._sandbox = sandbox
 
-    def _run(self, question: str) -> tuple[str, dict[str, object]]:
+    def _sanitize_artifact_name(self, value: str | None) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+
+        text = re.sub(r"\W+", "_", text, flags=re.UNICODE)
+        text = re.sub(r"_+", "_", text).strip("_")
+
+        if not text:
+            return None
+
+        if text[0].isdigit():
+            text = f"result_{text}"
+
+        return text[:80]
+
+    def _run(
+        self,
+        question: str,
+        artifact_name: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
         try:
-            return self._run_query(question)
+            return self._run_query(question, artifact_name=artifact_name)
         except Exception as exc:
             error_text = f"❌ Ошибка sql_tool: {exc}"
             return error_text, {"text": error_text}
 
-    def _run_query(self, question: str) -> tuple[str, dict[str, object]]:
+    def _run_query(
+        self,
+        question: str,
+        artifact_name: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
         import pandas as pd
 
-        payload = self._service.build_table_artifact(question)
+        clean_artifact_name = self._sanitize_artifact_name(artifact_name)
+
+        payload = self._service.build_table_artifact(
+            question,
+            artifact_name=clean_artifact_name,
+        )
         item_names = ", ".join(payload["items"].keys())
 
         # Inject result DataFrames into sandbox scope so subsequent tools
@@ -86,7 +127,8 @@ class SQLTool(BaseTool):
             text = (
                 f"✅ Выполнен sql_tool: {item_names}. "
                 f"Результаты доступны как Python-переменные: {vars_hint}. "
-                f"Используй эти имена напрямую в plotly_tool/pandas_tool."
+                f"Используй эти имена напрямую в pandas_tool, plotly_tool и value_tool. "
+                f"Не выполняй повторное чтение из БД, если нужный датафрейм уже создан."
             )
         else:
             text = f"✅ Выполнен sql_tool: {item_names}"

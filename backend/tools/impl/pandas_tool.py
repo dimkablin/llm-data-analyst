@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pandas as pd
 
@@ -31,6 +31,7 @@ class PandasTool(BaseExecTool):
     description: str = pandas_tool_prompt
     allowed_libs: set[str] = {"pandas", "numpy"}
     allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False  # deterministic, temp=0
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class PandasTool(BaseExecTool):
         llm_api_key: str | None = None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__(
@@ -58,6 +60,7 @@ class PandasTool(BaseExecTool):
             llm_api_key=llm_api_key,
             llm_enable_thinking=llm_enable_thinking,
             llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            llm_provider=llm_provider,
             code_fix_max_retries=code_fix_max_retries,
         )
 

@@ -4,7 +4,7 @@ import hashlib
 import logging
 import re
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -12,9 +12,8 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import extract_artifact_hints
-from backend.core.config import settings
 from backend.core.redaction import sanitize_error_text
 
 if TYPE_CHECKING:
@@ -34,6 +33,10 @@ class ToolResultEnvelope(BaseModel):
     items: dict[str, object]
 
 
+class _CodeInput(BaseModel):
+    code: str = Field(description="Валидный Python-код для выполнения в sandbox-окружении.")
+
+
 class BaseExecTool(BaseTool):
     """
     Базовый инструмент для анализа данных.
@@ -41,6 +44,7 @@ class BaseExecTool(BaseTool):
     """
 
     name: str = "base_tool"
+    args_schema: type[BaseModel] = _CodeInput
     artifact_name: str = "base"
     human_name: str = "артефактов"
     description: str = ""
@@ -81,6 +85,11 @@ class BaseExecTool(BaseTool):
     artifact_name_max_len: int = 48
     tool_cache_size: int = 48
     code_fix_max_retries: int = 3
+
+    # Subclass thinking default for internal LLM calls.
+    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
+    # _fix_with_llm() always uses enable_thinking=False regardless of this flag.
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False
     _df: pd.DataFrame = PrivateAttr()
     _include_plotly: bool = PrivateAttr(default=False)
     _tool_cache: OrderedDict[str, tuple[str, dict[str, object]]] = PrivateAttr(
@@ -94,6 +103,7 @@ class BaseExecTool(BaseTool):
     _llm_api_key: str | None = PrivateAttr(default=None)
     _llm_enable_thinking: bool = PrivateAttr(default=False)
     _llm_chat_template_kwargs_enabled: bool = PrivateAttr(default=True)
+    _llm_provider: str = PrivateAttr(default="")
 
     def __init__(
         self,
@@ -108,6 +118,7 @@ class BaseExecTool(BaseTool):
         llm_api_key: str | None = None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__()
@@ -122,8 +133,10 @@ class BaseExecTool(BaseTool):
         self._llm_base_url = llm_base_url
         self._llm_model = llm_model
         self._llm_api_key = llm_api_key
-        self._llm_enable_thinking = llm_enable_thinking
+        # effective = global setting AND this tool class's default
+        self._llm_enable_thinking = llm_enable_thinking and type(self).TOOL_ENABLE_THINKING
         self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
+        self._llm_provider = str(llm_provider or "").strip().lower()
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
@@ -423,7 +436,14 @@ class BaseExecTool(BaseTool):
                 f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
                 f"{', '.join(normalized_result.keys())}"
             )
-            payload: dict[str, object] = {"text": text, "code": code}
+
+            payload: dict[str, object] = {
+                "text": text,
+                "code": code,
+                "artifact_type": self.artifact_name,
+                "items": normalized_result,
+            }
+
             if artifact_hints:
                 payload.update(artifact_hints)
             payload[self.artifact_name] = normalized_result
@@ -446,19 +466,17 @@ class BaseExecTool(BaseTool):
         if not self._llm_base_url or not self._llm_model:
             return None
 
-        llm_kwargs: dict[str, Any] = {
-            "model": self._llm_model,
-            "base_url": self._llm_base_url,
-            "api_key": self._llm_api_key or "no-key",
-            "streaming": False,
-            "temperature": 0.0,
-            "timeout": 60.0,
-        }
-        if self._llm_chat_template_kwargs_enabled:
-            llm_kwargs["extra_body"] = {
-                "chat_template_kwargs": {"enable_thinking": False}
-            }
-        llm = ThinkingAwareChatOpenAI(**llm_kwargs)
+        llm = make_reasoning_llm(
+            provider=self._llm_provider,
+            model=self._llm_model,
+            base_url=self._llm_base_url,
+            api_key=self._llm_api_key or "no-key",
+            enable_thinking=False,
+            temperature=0.0,
+            max_tokens=2048,
+            streaming=False,
+            chat_template_kwargs_enabled=self._llm_chat_template_kwargs_enabled,
+        )
 
         # Extract the first ~400 chars of the tool description to give the LLM scope context.
         scope_hint = (self.description or "")[:400].strip()
@@ -478,7 +496,7 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
 
         try:
             resp = llm.invoke([
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),  # noqa: E501
+                SystemMessage(content="Fix code. Return Python only."),
                 HumanMessage(content=prompt),
             ])
             fixed = strip_thinking(str(resp.content or "")).strip()

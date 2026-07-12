@@ -152,6 +152,7 @@ class SQLToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
             db_runtime_config=ctx.tool_db_runtime,
             csv_loaded=ctx.csv_loaded,
             csv_session_id=ctx.csv_session_id,
@@ -201,6 +202,7 @@ class PlotlyToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
@@ -208,7 +210,13 @@ class PandasToolFactory:
     key = "pandas_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.df is not None and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> PandasTool:
         return PandasTool(
@@ -222,6 +230,7 @@ class PandasToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
@@ -229,7 +238,13 @@ class ValueToolFactory:
     key = "value_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return ctx.df is not None and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        if not is_tool_allowed(self.key, ctx.allowed_tool_keys):
+            return False
+        if ctx.tool_db_runtime is not None:
+            return True
+        if ctx.df is not None:
+            return True
+        return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> ValueTool:
         return ValueTool(
@@ -243,6 +258,7 @@ class ValueToolFactory:
             llm_api_key=ctx.settings.llm_api_key,
             llm_enable_thinking=ctx.settings.llm_enable_thinking,
             llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+            llm_provider=ctx.settings.llm_provider,
         )
 
 
@@ -259,6 +275,8 @@ class PlannerToolFactory:
             llm_model=ctx.settings.llm_model,
             llm_base_url=ctx.settings.llm_base_url,
             llm_api_key=ctx.settings.llm_api_key,
+            llm_provider=ctx.settings.llm_provider,
+            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
         )
 
 
@@ -275,6 +293,8 @@ class ReviewToolFactory:
             llm_model=ctx.settings.llm_model,
             llm_base_url=ctx.settings.llm_base_url,
             llm_api_key=ctx.settings.llm_api_key,
+            llm_provider=ctx.settings.llm_provider,
+            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
         )
 
 
@@ -290,7 +310,10 @@ class GetToolInstructionsToolFactory:
         return True
 
     def build(self, ctx: ToolBuildContext) -> GetToolInstructionsTool:
-        return GetToolInstructionsTool(self._skill_registry)
+        return GetToolInstructionsTool(
+            self._skill_registry,
+            allowed_skill_ids=ctx.allowed_skill_ids,
+        )
 
 
 class MemoryToolFactory:

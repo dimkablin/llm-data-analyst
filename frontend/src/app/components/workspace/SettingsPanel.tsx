@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Eye, Info, Loader2, Radio, RefreshCw, Settings, Sliders, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
 import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
@@ -78,15 +79,6 @@ return (
 
         <SectionCard title="Профиль ответа" icon={<Brain className="h-3.5 w-3.5" />}>
           <div className="grid gap-4">
-            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
-              <span className="text-sm">Показывать reasoning по умолчанию</span>
-              <input
-                type="checkbox"
-                checked={draft.default_include_reasoning}
-                onChange={(event) => setDraft((prev) => ({ ...prev, default_include_reasoning: event.target.checked }))}
-                className="h-4 w-4 accent-primary"
-              />
-            </label>
             <label className="grid gap-2">
               <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Стиль ответа</span>
               <Select
@@ -153,6 +145,70 @@ return (
                 className="h-4 w-4 accent-primary ml-3 shrink-0"
               />
             </label>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Thinking и стриминг" icon={<Eye className="h-3.5 w-3.5" />}>
+          <div className="grid gap-3">
+            {/* Does the LLM think at all? */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Brain className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Включить extended thinking</span>
+              </div>
+              <Switch
+                checked={draft.default_include_reasoning}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, default_include_reasoning: checked }))}
+                className="ml-3"
+              />
+            </div>
+
+            {/* Transport: stream tokens or return all at once */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Radio className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Потоковая передача ответа</span>
+              </div>
+              <Switch
+                checked={draft.llm_streaming}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, llm_streaming: checked }))}
+                className="ml-3"
+              />
+            </div>
+
+            {/* UI: show/hide thinking blocks */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <span className="text-sm">Показывать блоки thinking в чате</span>
+              <Switch
+                checked={draft.show_thinking}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, show_thinking: checked }))}
+                className="ml-3"
+              />
+            </div>
+
+            {/* Per-kind sub-switches — disabled when master is off */}
+            <div className={`ml-4 grid gap-2 transition-opacity ${draft.show_thinking ? "opacity-100" : "opacity-40"}`}>
+              {(
+                [
+                  { key: "show_think_planning" as const, label: "Планирование" },
+                  { key: "show_think_tool" as const,     label: "Синтез инструментов" },
+                  { key: "show_think_final" as const,    label: "Финальный вывод" },
+                ]
+              ).map(({ key, label }) => (
+                <div
+                  key={key}
+                  className="inline-flex items-center justify-between rounded-xl border border-border/30 bg-background/15 px-4 py-2.5"
+                >
+                  <span className="text-[13px] text-muted-foreground">{label}</span>
+                  <Switch
+                    checked={draft[key]}
+                    disabled={!draft.show_thinking}
+                    onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, [key]: checked }))}
+                    className="ml-3"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         </SectionCard>
 

@@ -4,18 +4,18 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
-from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import (
+    IDENTIFIER_RE,
     MAX_RESULT_CELLS,
     DBAnalyticsHelper,
     _assert_read_only_sql,
@@ -168,6 +168,10 @@ def _shrink_for_cell_budget(
 
 
 class SQLTableService:
+    # Thinking default for SQL generation LLM calls.
+    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False
+
     def __init__(
         self,
         *,
@@ -176,6 +180,7 @@ class SQLTableService:
         llm_api_key: str | None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
@@ -189,19 +194,35 @@ class SQLTableService:
         self._cached_db_helper: DBAnalyticsHelper | None = None
         self._cached_candidates: list[TableCandidate] | None = None
 
-        llm_kwargs: dict[str, Any] = {
-            "model": llm_model,
-            "base_url": llm_base_url,
-            "api_key": llm_api_key,
-            "streaming": False,
-            "temperature": 0.0,
-            "timeout": 120.0,
-        }
-        if llm_chat_template_kwargs_enabled:
-            llm_kwargs["extra_body"] = {
-                "chat_template_kwargs": {"enable_thinking": llm_enable_thinking}
-            }
-        self.llm = ThinkingAwareChatOpenAI(**llm_kwargs)
+        self.llm = make_reasoning_llm(
+            provider=llm_provider,
+            model=llm_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+            enable_thinking=llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING,
+            temperature=0.0,
+            max_tokens=2048,
+            streaming=False,
+            timeout=120.0,
+            chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+        )
+
+    @staticmethod
+    def _sanitize_artifact_name(value: str | None) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+
+        text = re.sub(r"\W+", "_", text, flags=re.UNICODE)
+        text = re.sub(r"_+", "_", text).strip("_")
+
+        if not text:
+            return None
+
+        if text[0].isdigit():
+            text = f"result_{text}"
+
+        return text[:80]
 
     def _db_helper(self) -> DBAnalyticsHelper:
         if self.db_runtime_config is None:
@@ -404,7 +425,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только валидный JSON.".strip()),
+                SystemMessage(content="Верни только валидный JSON."),
                 HumanMessage(content=prompt),
             ]
         )
@@ -444,9 +465,34 @@ CANDIDATES:
         except Exception as exc:
             return None, str(exc)
 
+    def _safe_sample_sql(self, candidate: TableCandidate) -> str:
+        """Build a safe LIMIT-5 sample query with properly quoted identifiers.
+
+        Never interpolate ``qualified_name`` directly — it originates from the
+        database catalog and could contain unexpected characters.
+        """
+        if candidate.source_kind == "db":
+            helper = self._db_helper()
+            schema = candidate.schema
+            table = candidate.table_name
+            quoted_table = helper._quote_identifier(table)  # noqa: SLF001
+            if schema:
+                quoted_schema = helper._quote_identifier(schema)  # noqa: SLF001
+                qualified = f"{quoted_schema}.{quoted_table}"
+            else:
+                qualified = quoted_table
+        else:
+            # DuckDB / CSV session — table names come from our own catalog.
+            table = candidate.table_name
+            if not IDENTIFIER_RE.match(table):
+                raise ValueError(f"Unsafe CSV table identifier: {table!r}")
+            qualified = f'"{table}"'
+        return f"SELECT * FROM {qualified} LIMIT 5"
+
     def _table_sample(self, candidate: TableCandidate) -> dict[str, Any]:
         try:
-            sample_sql = f"SELECT * FROM {candidate.qualified_name} LIMIT 5"
+            sample_sql = self._safe_sample_sql(candidate)
+            _assert_read_only_sql(sample_sql)
             if candidate.source_kind == "db":
                 rows = self._db_helper().query_dataframe(sample_sql)
             else:
@@ -534,9 +580,7 @@ CANDIDATES:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(
-                    content=f"{settings.llm_no_think_prefix} Ты SQL-генератор. Верни только SQL SELECT/WITH.".strip()  # noqa: E501
-                ),
+                SystemMessage(content="Ты SQL-генератор. Верни только SQL SELECT/WITH."),
                 HumanMessage(content=user_prompt),
             ]
         )
@@ -591,7 +635,7 @@ SAMPLE_RESULT:
 
         resp = self.llm.invoke(
             [
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Верни только JSON.".strip()),
+                SystemMessage(content="Верни только JSON."),
                 HumanMessage(content=prompt),
             ]
         )
@@ -766,15 +810,18 @@ SAMPLE_RESULT:
         question: str,
         candidate: TableCandidate,
         sql: str,
+        artifact_name: str | None = None,
     ) -> dict[str, Any]:
-        artifact_name = f"sql_{candidate.table_name}"
+        clean_artifact_name = self._sanitize_artifact_name(artifact_name)
+        fallback_artifact_name = self._sanitize_artifact_name(f"sql_{candidate.table_name}") or "sql_result"
+        final_artifact_name = clean_artifact_name or fallback_artifact_name
 
         if candidate.source_kind == "db":
             payload = self._db_helper().execute_analytic_query(
                 sql,
                 purpose=question,
                 max_rows=self.max_rows,
-                artifact_name=artifact_name,
+                artifact_name=final_artifact_name,
             )
             meta = dict(payload.get("meta") or {})
             meta["table_selection"] = {
@@ -791,10 +838,14 @@ SAMPLE_RESULT:
             candidate=candidate,
             question=question,
             sql=sql,
-            artifact_name=artifact_name,
+            artifact_name=final_artifact_name,
         )
 
-    def build_table_artifact(self, question: str) -> dict[str, Any]:
+    def build_table_artifact(
+        self,
+        question: str,
+        artifact_name: str | None = None,
+    ) -> dict[str, Any]:
         if self._wants_catalog_table_list(question):
             return self._build_catalog_table_list_artifact()
         candidate = self.resolve_table(question)
@@ -805,6 +856,7 @@ SAMPLE_RESULT:
             question=question,
             candidate=candidate,
             sql=str(gen["sql"]),
+            artifact_name=artifact_name,
         )
 
 

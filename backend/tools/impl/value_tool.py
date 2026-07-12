@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,7 @@ class ValueTool(BaseExecTool):
     allowed_artifact_types: tuple = (float, int, str, bool, np.generic)
     allowed_libs: set[str] = {"pandas", "numpy"}
     max_string_value_len: int = 160
+    TOOL_ENABLE_THINKING: ClassVar[bool] = False  # deterministic, temp=0
 
     def __init__(
         self,
@@ -48,6 +49,7 @@ class ValueTool(BaseExecTool):
         llm_api_key: str | None = None,
         llm_enable_thinking: bool = False,
         llm_chat_template_kwargs_enabled: bool = True,
+        llm_provider: str = "",
         code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__(
@@ -62,6 +64,7 @@ class ValueTool(BaseExecTool):
             llm_api_key=llm_api_key,
             llm_enable_thinking=llm_enable_thinking,
             llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
+            llm_provider=llm_provider,
             code_fix_max_retries=code_fix_max_retries,
         )
 

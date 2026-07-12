@@ -156,6 +156,16 @@ export async function listSkills(): Promise<Skill[]> {
   return (await response.json()) as Skill[];
 }
 
+export async function updateSkillEnabled(skillId: string, enabled: boolean): Promise<Skill> {
+  const response = await authFetch(`/skills/${encodeURIComponent(skillId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  await assertOk(response);
+  return (await response.json()) as Skill;
+}
+
 export async function getUserTools(): Promise<ToolAvailability[]> {
   const response = await authFetch("/auth/tools");
   await assertOk(response);
@@ -562,4 +572,49 @@ export async function streamQuery(
     }
     consumeSseLine(line, state, handlers);
   }
+}
+
+export async function downloadReportFile(href: string): Promise<void> {
+  const headers = new Headers();
+  const token = getStoredToken();
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const cleanHref = href.trim();
+
+  let url: string;
+  if (/^https?:\/\//i.test(cleanHref)) {
+    url = cleanHref;
+  } else {
+    const cleanPath = cleanHref.startsWith("/")
+      ? cleanHref
+      : `/${cleanHref}`;
+    url = `${API_BASE}${cleanPath}`;
+  }
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+  });
+
+  await assertOk(response);
+
+  const blob = await response.blob();
+
+  const contentDisposition = response.headers.get("content-disposition") ?? "";
+  const fileNameMatch = contentDisposition.match(/filename="?([^"]+)"?/i);
+  const fileName = fileNameMatch?.[1] || cleanHref.split("/").pop() || "report.docx";
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = objectUrl;
+  link.download = decodeURIComponent(fileName);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.URL.revokeObjectURL(objectUrl);
 }

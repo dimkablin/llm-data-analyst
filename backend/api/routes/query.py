@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from dataclasses import replace
 from typing import Annotated, Any
@@ -14,6 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
+from backend.agent.reasoning import MAX_REASONING_STEPS, ReasoningStep
+from backend.agent.runner import is_chat_query
 from backend.api.deps import get_current_user
 from backend.api.models import (
     QueryMetrics,
@@ -28,11 +29,6 @@ from backend.sessions.session_store import SessionState, SessionStore
 from backend.skills import SkillSelectionError
 
 router = APIRouter(tags=["Запросы и агент"])
-
-CHAT_FALLBACK_RE = re.compile(
-    r"^(привет|здравствуй|здравствуйте|добрый|как дела|что нового|кто ты|помоги|hello|hi)\b",
-    re.IGNORECASE,
-)
 
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore
@@ -52,7 +48,6 @@ _csv_runtime: CSVSessionRuntime = None  # type: ignore
 # Callback classes set during startup
 _LLMTextCollector = None  # type: ignore
 _ToolCollector = None  # type: ignore
-_AgentProgressCollector = None  # type: ignore
 _PhaseCollector = None  # type: ignore
 _TokenStreamCallbackHandler = None  # type: ignore
 _AgentRunner = None  # type: ignore
@@ -79,7 +74,6 @@ def setup(
     app_settings,
     LLMTextCollector,
     ToolCollector,
-    AgentProgressCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
     AgentRunner,
@@ -93,7 +87,7 @@ def setup(
     global _anomaly_planfact_integration_service, _rag_service
     global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
-    global _LLMTextCollector, _ToolCollector, _AgentProgressCollector
+    global _LLMTextCollector, _ToolCollector
     global _PhaseCollector, _TokenStreamCallbackHandler
     global _AgentRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
@@ -112,7 +106,6 @@ def setup(
     _settings = app_settings
     _LLMTextCollector = LLMTextCollector
     _ToolCollector = ToolCollector
-    _AgentProgressCollector = AgentProgressCollector
     _PhaseCollector = PhaseCollector
     _TokenStreamCallbackHandler = TokenStreamCallbackHandler
     _AgentRunner = AgentRunner
@@ -253,6 +246,23 @@ def _effective_selected_skill_ids(
         ]
     return list(dict.fromkeys(selected_skill_ids))
 
+def _enabled_analytical_skill_ids_for_user(user_id: int) -> set[str]:
+    user_skill_settings = _auth_db.list_user_skill_settings(user_id)
+    return {
+        skill.skill_id
+        for skill in _runner.skill_registry.list_skills()
+        if skill.kind == "analytical"
+        and user_skill_settings.get(skill.skill_id, True)
+    }
+
+
+def _filter_selected_skill_ids_for_user(
+    user_id: int,
+    selected_skill_ids: list[str],
+) -> list[str]:
+    allowed_skill_ids = _enabled_analytical_skill_ids_for_user(user_id)
+    return [skill_id for skill_id in selected_skill_ids if skill_id in allowed_skill_ids]
+
 
 def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | None = None):
     user_runtime = _auth_db.get_user_settings(user_id)
@@ -268,6 +278,7 @@ def _effective_runtime_settings(user_id: int, *, analysis_depth_override: str | 
         agent_step_timeout_sec=user_runtime.agent_step_timeout_sec,
         agent_inner_recursion_limit=user_runtime.agent_inner_recursion_limit,
         agent_analysis_depth=depth,
+        llm_streaming=user_runtime.llm_streaming,
     )
 
 
@@ -278,31 +289,45 @@ def _build_stream_callbacks(
     session_source: dict[str, Any],
     exec_store: Any = None,
     include_reasoning: bool = True,
+    show_thinking: bool = True,
 ) -> tuple[list[Any], Any, Any, Any, Any, Any]:
     """Build the full callback stack for a streaming request.
 
-    Returns: (callbacks, token_collector, tool_collector, progress_collector,
-               phase_collector, graph_tracker)
+    Returns: (callbacks, token_collector, tool_collector, phase_collector, graph_tracker)
+
+    ``include_reasoning`` controls whether the model itself uses thinking (passed to LLM
+    via vLLM/Ollama kwargs through _build_llm → enable_thinking).  The same flag also
+    gates the callback so that any stray thinking blocks emitted by a non-compliant model
+    are silently discarded when the user has disabled thinking.
+
+    ``show_thinking`` is the per-user "Показывать блоки thinking в чате" preference.
+    When False the callback captures reasoning internally (for persistence / reasoning_steps)
+    but does NOT forward thinking_start / reasoning_token / thinking_end events to the SSE
+    queue, so the frontend never receives thinking blocks in the stream.
     """
     text_collector = _LLMTextCollector()
     tool_collector = _ToolCollector(
         source_context=session_source, queue=queue, loop=loop, execution_store=exec_store
     )
-    progress_collector = _AgentProgressCollector()
     phase_collector = _PhaseCollector()
     graph_tracker = ExecutionGraphTracker()
     phase_collector.graph_tracker = graph_tracker
     tool_collector.graph_tracker = graph_tracker
     tool_collector._phase_collector_ref = phase_collector  # noqa: SLF001
-    token_collector = _TokenStreamCallbackHandler(queue, loop, show_think=settings.llm_show_think)
+    token_collector = _TokenStreamCallbackHandler(
+        queue,
+        loop,
+        show_think=settings.llm_show_think and show_thinking,
+        enable_thinking=settings.llm_enable_thinking and include_reasoning,
+    )
+    tool_collector.token_callback = token_collector
     callbacks: list[Any] = [
         token_collector,
         text_collector,
         tool_collector,
-        progress_collector,
         phase_collector,
     ]
-    return callbacks, token_collector, tool_collector, progress_collector, phase_collector, graph_tracker
+    return callbacks, token_collector, tool_collector, phase_collector, graph_tracker
 
 
 def _sse_event(event: str, data: Any) -> str:
@@ -361,7 +386,7 @@ def _build_response(
 
 def _fallback_text(query: str, reason: str) -> str:  # pylint: disable=redefined-outer-name
     normalized = query.strip().lower()
-    if CHAT_FALLBACK_RE.search(normalized):
+    if is_chat_query(normalized):
         if "как дела" in normalized:
             return (
                 "Все в порядке. Сейчас сервис ограничен, но я на связи и готов помочь."
@@ -431,7 +456,7 @@ def _build_reasoning_trace(
     has_dataset: bool,
 ) -> str | None:
     normalized_route = (route or "").strip().lower()
-    if normalized_route not in {"chat", "analysis", "summary"}:
+    if normalized_route not in {"chat", "analysis", "summary", "report"}:
         normalized_route = "analysis" if has_dataset else "chat"
 
     unique_tools: list[str] = []
@@ -515,6 +540,60 @@ def _merge_reasoning_text(*parts: str | None) -> str | None:
     return "\n\n".join(normalized)
 
 
+def _build_reasoning_steps(
+    raw_steps: list[str],
+    tool_call_count: int,
+    ordered_tool_names: list[str] | None = None,
+) -> list[ReasoningStep]:
+    """Возвращает "orphan" шаги И шаги инфраструктурных тулов.
+
+    Шаги с индексом i < tool_call_count обычно уже сохранены как
+    PersistedToolCall.pre_reasoning и рендерятся inline в ToolCallList.
+    Исключение — инфраструктурные тулы (planner_tool, get_tool_instructions и др.):
+    их pre_reasoning намеренно не сохраняется, поэтому мы помещаем такие шаги
+    в reasoning_steps с tool_name, чтобы фронтенд мог восстановить их при рефреше.
+
+    Важно: использовать ОБЩЕЕ число вызовов тулов (с дублями), а не длину
+    дедуплицированного response.tool_names — иначе повторные вызовы одного
+    тула смещают маппинг и "лишние" шаги ошибочно попадают в reasoning_steps.
+
+    Для ответов без тулов (tool_call_count=0) возвращаются все шаги.
+    """
+    from backend.agent.callbacks import _INFRA_TOOL_NAMES
+
+    steps = raw_steps[:MAX_REASONING_STEPS]
+    result: list[ReasoningStep] = []
+    for i, content in enumerate(steps):
+        if not content.strip():
+            continue
+        has_tool = i < tool_call_count
+        tool_name_for_step: str | None = None
+        if has_tool:
+            tool_name_for_step = (
+                ordered_tool_names[i] if ordered_tool_names and i < len(ordered_tool_names) else None
+            )
+            is_infra = tool_name_for_step in _INFRA_TOOL_NAMES if tool_name_for_step else False
+            if not is_infra:
+                # Уже хранится в tools[i].pre_reasoning — пропускаем.
+                continue
+            # Для infra-тулов pre_reasoning пуст — сохраняем шаг с tool_name.
+        is_last = i == len(steps) - 1
+        if i == 0 and len(steps) > 1:
+            kind: str = "planning"
+        elif is_last:
+            kind = "final_synthesis"
+        else:
+            kind = "tool_synthesis"
+        step = ReasoningStep(
+            step_index=i,
+            kind=kind,  # type: ignore[arg-type]
+            content=content,
+            tool_name=tool_name_for_step,
+        ).truncated()
+        result.append(step)
+    return result
+
+
 def _extract_tool_code_preview(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -539,115 +618,6 @@ def _trim_preview(text: str, limit: int = 1200) -> str:
     return f"{clean[:limit]}..."
 
 
-def _build_live_reasoning_event(event: dict[str, Any], index: int) -> str | None:
-    phase = str(event.get("phase", "")).strip().lower()
-    tool_name = str(event.get("tool_name", "unknown")).strip() or "unknown"
-
-    # Special rendering for skill loader — compact inline message, no code block.
-    if tool_name == "get_tool_instructions":
-        skill_id = ""
-        raw_preview = str(event.get("input_preview", "")).strip()
-        try:
-            parsed = json.loads(raw_preview)
-            skill_id = str(parsed.get("tool_name", "")).strip()
-        except Exception:
-            skill_id = raw_preview.strip("'\"")
-        label = f"`{skill_id}`" if skill_id else "скил"
-        if phase == "start":
-            return f"📚 Загружаю инструкцию: {label}"
-        if phase == "end":
-            status = str(event.get("status", "ok")).strip()
-            icon = "✅" if status == "ok" else "❌"
-            return f"{icon} Инструкция {label} загружена"
-        return None
-
-    if tool_name == "planner_tool":
-        if phase == "start":
-            question = ""
-            try:
-                question = json.loads(str(event.get("input_preview", ""))).get("question", "")
-            except Exception:
-                pass
-            hint = f": {_trim_preview(question, 120)}" if question else ""
-            return f"🗂 `planner_tool` составляет план{hint}"
-        if phase == "end":
-            status = str(event.get("status", "")).strip()
-            if status == "error":
-                error_text = str(event.get("error", "")).strip()
-                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
-                return f"❌ `planner_tool` завершен с ошибкой{hint}"
-            plan = _trim_preview(str(event.get("output_preview", "")), 600)
-            if plan:
-                return f"✅ `planner_tool` план готов:\n{plan}"
-            return "✅ `planner_tool` план готов"
-        return None
-
-    if tool_name == "review_tool":
-        if phase == "start":
-            return "🔍 `review_tool` проверяет ответ"
-        if phase == "end":
-            status = str(event.get("status", "")).strip()
-            if status == "error":
-                error_text = str(event.get("error", "")).strip()
-                hint = f": {_trim_preview(error_text.splitlines()[-1], 120)}" if error_text else ""
-                return f"❌ `review_tool` завершен с ошибкой{hint}"
-            result = _trim_preview(str(event.get("output_preview", "")), 300)
-            if result:
-                return f"✅ `review_tool` проверка пройдена: {result}"
-            return "✅ `review_tool` проверка пройдена"
-        return None
-
-    if phase == "start":
-        raw_input = _extract_tool_code_preview(str(event.get("input_preview", "")))
-        if not raw_input:
-            return f"### Live Tool #{index}\n`{tool_name}` запущен."
-        return (
-            f"### Live Tool #{index}\n"
-            f"`{tool_name}` запущен.\n\n"
-            "```python\n"
-            f"{_trim_preview(raw_input, 900)}\n"
-            "```"
-        )
-
-    if phase == "end":
-        status = str(event.get("status", "ok")).strip() or "ok"
-        artifact_keys = event.get("artifact_keys")
-        artifacts = "none"
-        if isinstance(artifact_keys, list) and artifact_keys:
-            artifacts = ", ".join(str(item) for item in artifact_keys[:6])
-
-        lines = [
-            f"### Live Tool #{index}",
-            f"`{tool_name}` завершен: status=`{status}`, artifacts=`{artifacts}`.",
-        ]
-        error_text = str(event.get("error", "")).strip()
-        if error_text:
-            lines.append(f"- error: `{_trim_preview(error_text.splitlines()[-1], 220)}`")
-        code_preview = str(event.get("code_preview", "")).strip()
-        if code_preview:
-            lines.append("")
-            lines.append("```python")
-            lines.append(_trim_preview(code_preview, 900))
-            lines.append("```")
-        return "\n".join(lines)
-
-    return None
-
-
-def _build_live_agent_progress_event(event: dict[str, Any], index: int) -> str | None:
-    title = str(event.get("title", "")).strip() or f"Ход анализа #{index}"
-    details = _trim_preview(str(event.get("details", "")).strip(), 1400)
-    step_index = event.get("step_index")
-    max_steps = event.get("max_steps")
-
-    lines = [f"### {title}"]
-    if isinstance(step_index, int) and isinstance(max_steps, int) and max_steps > 0:
-        lines.append(f"Шаг: `{step_index}/{max_steps}`")
-    if details:
-        lines.append(details)
-    return "\n".join(lines)
-
-
 # ── Route handlers ────────────────────────────────────────────────────────────
 
 async def _execute_query(
@@ -661,7 +631,10 @@ async def _execute_query(
     state = _load_owned_session(session_id, current_user)
     if _session_source_type(state) == "csv":
         state = _ensure_csv_runtime_state(session_id, state)
-    selected_skill_ids = _effective_selected_skill_ids(state, payload)
+    selected_skill_ids = _filter_selected_skill_ids_for_user(
+        current_user.id,
+        _effective_selected_skill_ids(state, payload),
+    )
     df = _active_session_dataframe(state, session_id)
     session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -694,9 +667,13 @@ async def _execute_query(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    enabled_analytical_skill_ids = _enabled_analytical_skill_ids_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
-    from backend.sessions.session_memory import SessionMemory as _SessionMemory
-    session_memory = _SessionMemory(notes=state.session_memory or "")
+    session_memory = _store.get_structured_memory(session_id)
+    # TODO(perf): A new AgentRunner (and a new compiled LangGraph) is built on every
+    # request because node functions are bound methods that capture `self`.  Fix:
+    # move all per-request data into AgentGraphState so nodes can be static and the
+    # compiled graph can be shared at class level.
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -708,10 +685,10 @@ async def _execute_query(
         user_memory=user_memory,
         session_memory=session_memory,
         skill_registry=_runner.skill_registry,
+        enabled_analytical_skill_ids=enabled_analytical_skill_ids,
     )
 
     try:
-        runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
         with _query_trace_context_fn(
             session_id=session_id,
             user_id=current_user.id,
@@ -791,6 +768,15 @@ async def _execute_query(
         if runtime_runner._session_memory_buffer:  # noqa: SLF001
             for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                 _store.append_session_memory(session_id, note)
+                # Also merge into structured memory so set_structured_memory won't clobber it
+                existing = runtime_runner.session_memory.notes or ""
+                runtime_runner.session_memory.notes = (existing + "\n" + note).strip() if existing else note
+    except Exception:
+        pass
+
+    # Persist structured session memory (artifact index + key findings)
+    try:
+        _store.set_structured_memory(session_id, runtime_runner.session_memory)
     except Exception:
         pass
 
@@ -870,7 +856,10 @@ async def query_stream(
     state = _load_owned_session(session_id, current_user)
     if _session_source_type(state) == "csv":
         state = _ensure_csv_runtime_state(session_id, state)
-    selected_skill_ids = _effective_selected_skill_ids(state, payload)
+    selected_skill_ids = _filter_selected_skill_ids_for_user(
+        current_user.id,
+        _effective_selected_skill_ids(state, payload),
+    )
     df = _active_session_dataframe(state, session_id)
     session_source = _session_runtime_source_payload(state)
     session_db_connection_id = _session_db_connection_id(state)
@@ -886,12 +875,15 @@ async def query_stream(
 
     from backend.artifacts.execution import ExecutionStore
     exec_store = ExecutionStore(session_id=session_id)
-    callbacks, token_collector, tool_collector, progress_collector, phase_collector, _graph_tracker = (
+    _user_stream_settings = _auth_db.get_user_settings(current_user.id)
+    callbacks, token_collector, tool_collector, phase_collector, _graph_tracker = (
         _build_stream_callbacks(
             queue=queue,
             loop=loop,
             session_source=session_source,
             exec_store=exec_store,
+            include_reasoning=payload.include_reasoning,
+            show_thinking=_user_stream_settings.show_thinking,
         )
     )
     started_at = time.perf_counter()
@@ -911,9 +903,10 @@ async def query_stream(
         current_user.id, analysis_depth_override=payload.analysis_depth
     )
     allowed_tool_keys = _enabled_tool_keys_for_user(current_user.id)
+    enabled_analytical_skill_ids = _enabled_analytical_skill_ids_for_user(current_user.id)
     user_memory = _user_memory_service.load(current_user.id)
-    from backend.sessions.session_memory import SessionMemory as _SessionMemory
-    session_memory = _SessionMemory(notes=state.session_memory or "")
+    session_memory = _store.get_structured_memory(session_id)
+    # TODO(perf): See same comment in query endpoint — graph recompilation per request.
     runtime_runner = _AgentRunner(
         runtime_settings,
         db_runtime_service=_db_runtime_service,
@@ -925,11 +918,11 @@ async def query_stream(
         user_memory=user_memory,
         session_memory=session_memory,
         skill_registry=_runner.skill_registry,
+        enabled_analytical_skill_ids=enabled_analytical_skill_ids,
     )
 
     async def run_agent() -> None:
         try:
-            runtime_runner.skill_registry.resolve_selection(selected_skill_ids)
             with _query_trace_context_fn(
                 session_id=session_id,
                 user_id=current_user.id,
@@ -972,6 +965,17 @@ async def query_stream(
                 if runtime_runner._session_memory_buffer:  # noqa: SLF001
                     for note in runtime_runner._session_memory_buffer:  # noqa: SLF001
                         _store.append_session_memory(session_id, note)
+                        # Also merge into structured memory so set_structured_memory won't clobber it
+                        existing = runtime_runner.session_memory.notes or ""
+                        runtime_runner.session_memory.notes = (
+                            (existing + "\n" + note).strip() if existing else note
+                        )
+            except Exception:
+                pass
+
+            # Persist structured session memory (artifact index + key findings)
+            try:
+                _store.set_structured_memory(session_id, runtime_runner.session_memory)
             except Exception:
                 pass
 
@@ -980,6 +984,17 @@ async def query_stream(
             merged_reasoning = _merge_reasoning_text(
                 response.reasoning,
                 streamed_reasoning,
+            )
+            raw_steps = token_collector.all_reasoning_steps() or response.reasoning_steps
+            # Use tool_collector.tool_calls (total count with duplicates) instead of
+            # response.tool_names (deduplicated list) — same tool called twice = 2 LLM steps.
+            # ordered_start_names gives us the tool name at each reasoning step index so
+            # _build_reasoning_steps can detect infra tools whose pre_reasoning was discarded.
+            ordered_start_names = [
+                e["tool_name"] for e in tool_collector.events if e.get("phase") == "start"
+            ]
+            reasoning_steps = _build_reasoning_steps(
+                raw_steps, tool_collector.tool_calls, ordered_start_names
             )
             try:
                 from backend.artifacts.bridge import execution_to_api_payload
@@ -1002,6 +1017,7 @@ async def query_stream(
                     response.final_text,
                     artifacts=artifacts,
                     reasoning=effective_reasoning,
+                    reasoning_steps=[s.to_dict() for s in reasoning_steps] or None,
                     tools=tool_collector.to_persisted_activities() or None,
                 )
                 _store.add_artifacts(session_id, response.artifacts)
@@ -1017,6 +1033,9 @@ async def query_stream(
                 )
                 artifacts = []
                 effective_reasoning = merged_reasoning or response.reasoning
+                _persistence_failed = True
+            else:
+                _persistence_failed = False
 
             final_payload = _build_response(
                 session_id,
@@ -1028,13 +1047,15 @@ async def query_stream(
                 include_reasoning=payload.include_reasoning,
                 force_reasoning=True,
             ).model_dump()
+            if _persistence_failed:
+                final_payload["persistence_failed"] = True
             # Attach execution graph to final payload.
             gt = phase_collector.graph_tracker
             if gt is not None and gt:
                 final_payload["execution_graph"] = gt.snapshot()
             await queue.put(("final", final_payload))
         except SkillSelectionError as exc:
-            await queue.put(_sse_event("error", {"detail": str(exc)}))
+            await queue.put(("error", {"detail": str(exc)}))
             return
         except TimeoutError:
             duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -1079,11 +1100,7 @@ async def query_stream(
             agent_finished.set()
             await queue.put(("done", None))
 
-    emit_progress = payload.include_reasoning
-
     async def emit_live_reasoning() -> None:
-        emitted_progress_events = 0
-        emitted_tool_events = 0
         emitted_phase_events = 0
         emitted_graph_version = 0
         _loop_count = 0
@@ -1106,32 +1123,9 @@ async def query_stream(
                     await queue.put(("execution_graph", gt.snapshot()))
                     emitted_any = True
 
-            if emit_progress:
-                while emitted_progress_events < len(progress_collector.events):
-                    current = progress_collector.events[emitted_progress_events]
-                    emitted_progress_events += 1
-                    text = _build_live_agent_progress_event(current, emitted_progress_events)
-                    if text:
-                        await queue.put(("reasoning", text))
-                        emitted_any = True
-
-                while emitted_tool_events < len(tool_collector.events):
-                    current = tool_collector.events[emitted_tool_events]
-                    emitted_tool_events += 1
-                    text = _build_live_reasoning_event(current, emitted_tool_events)
-                    if text:
-                        await queue.put(("reasoning", text))
-                        emitted_any = True
-
             if agent_finished.is_set():
-                all_drained = emitted_phase_events >= len(phase_collector.events)
-                if emit_progress:
-                    all_drained = all_drained and (
-                        emitted_tool_events >= len(tool_collector.events)
-                        and emitted_progress_events >= len(progress_collector.events)
-                    )
-                if all_drained:
-                    logger.warning("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
+                if emitted_phase_events >= len(phase_collector.events):
+                    logger.debug("REASONING_TASK: exiting after %d loops, agent_finished=True", _loop_count)
                     break
 
             if not emitted_any:

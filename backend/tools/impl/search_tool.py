@@ -60,12 +60,12 @@ class SearchToolHelper:
         max_chars: int | None = None,
     ) -> list[dict[str, Any]]:
         """
-        Fetch the text content of one or more URLs.
+        Загружает текстовое содержимое одного или нескольких URL.
 
-        Returns a list of dicts: [{"url": ..., "content": ..., "status": "ok"|"error", "error": ...}]
+        Возвращает список dict: [{"url": ..., "content": ..., "status": "ok"|"error", "error": ...}]
 
-        Use after search() when you want to read the full text of specific pages
-        selected from the search results.
+        Используй после search(), когда нужно прочитать полный текст конкретных страниц
+        из результатов поиска.
         """
         if isinstance(urls, str):
             urls = [urls]
@@ -241,22 +241,22 @@ class SearchTool(BaseExecTool):
         lines: list[str] = []
         q = str(params.get("query") or "").strip()
         if q:
-            lines.append(f"Search completed for: {q}")
+            lines.append(f"Поиск выполнен: {q}")
         if isinstance(search_meta, dict):
             answer = str(search_meta.get("answer", "")).strip()
             if answer:
                 lines.append(answer)
             rc = search_meta.get("result_count")
             if isinstance(rc, int):
-                lines.append(f"Normalized search results: {rc}.")
+                lines.append(f"Найдено результатов: {rc}.")
             top_titles = search_meta.get("top_titles")
             if isinstance(top_titles, list) and top_titles:
                 preview = "; ".join(
                     str(item).strip() for item in top_titles[:3] if str(item).strip()
                 )
                 if preview:
-                    lines.append(f"Top hits: {preview}")
-        enriched = "\n".join(lines).strip() or f"Search completed for: {q}"
+                    lines.append(f"Топ результатов: {preview}")
+        enriched = "\n".join(lines).strip() or f"Поиск выполнен: {q}"
         payload: dict[str, object] = {
             "text": enriched,
             "code": f"search.search_result({params['query']!r})",
@@ -292,10 +292,10 @@ class SearchTool(BaseExecTool):
             try:
                 return self._run_direct(kw_params)
             except SearchIntegrationError as exc:
-                message = str(exc).strip() or "Search failed."
+                message = str(exc).strip() or "Поиск завершился ошибкой."
                 return message, {self.artifact_name: None, "text": message}
             except Exception as exc:
-                message = f"Search error: {exc}"
+                message = f"Ошибка поиска: {exc}"
                 return message, {self.artifact_name: None, "text": message}
 
         # Fallback: LLM passed a dict {query, language, ...} instead of Python code
@@ -304,16 +304,16 @@ class SearchTool(BaseExecTool):
             try:
                 return self._run_direct(dict_params)
             except SearchIntegrationError as exc:
-                message = str(exc).strip() or "Search failed."
+                message = str(exc).strip() or "Поиск завершился ошибкой."
                 return message, {self.artifact_name: None, "text": message}
             except Exception as exc:
-                message = f"Search error: {exc}"
+                message = f"Ошибка поиска: {exc}"
                 return message, {self.artifact_name: None, "text": message}
 
         try:
             text, payload = super()._run(code)
         except SearchIntegrationError as exc:
-            message = str(exc).strip() or "Search integration failed."
+            message = str(exc).strip() or "Ошибка интеграции поиска."
             return message, {self.artifact_name: None, "text": message}
 
         meta = payload.get("meta")
@@ -333,7 +333,7 @@ class SearchTool(BaseExecTool):
         if answer:
             lines.append(answer)
         if isinstance(result_count, int):
-            lines.append(f"Normalized search results: {result_count}.")
+            lines.append(f"Найдено результатов: {result_count}.")
         if isinstance(top_titles, list) and top_titles:
             preview = "; ".join(str(item).strip() for item in top_titles[:3] if str(item).strip())
             if preview:

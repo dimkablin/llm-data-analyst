@@ -50,6 +50,7 @@ export type SessionState = {
     content: string;
     timestamp: string;
     reasoning?: string | null;
+    reasoning_steps?: PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
     tools?: PersistedToolCall[];
   }>;
@@ -171,6 +172,11 @@ export type UserSettings = {
   agent_inner_recursion_limit: number;
   agent_react_enabled: boolean;
   ui_scale: number;
+  llm_streaming: boolean;
+  show_thinking: boolean;
+  show_think_planning: boolean;
+  show_think_tool: boolean;
+  show_think_final: boolean;
 };
 
 export type RuntimeModelProfile = {
@@ -249,6 +255,8 @@ export type PersistedToolCall = {
   /** ISO timestamp of tool_end. */
   finished_at?: string;
   error?: string;
+  /** Thinking text that preceded this tool call. */
+  pre_reasoning?: string;
 };
 
 export type StreamToolCall = {
@@ -274,6 +282,8 @@ export type ThinkingBlock = {
   type: "thinking";
   id: string;
   content: string;
+  /** Mirrors PersistedReasoningStep.kind — used for per-kind visibility filtering. */
+  kind?: "planning" | "tool_synthesis" | "final_synthesis" | "unknown";
 };
 
 export type TextBlock = {
@@ -313,6 +323,14 @@ export type AssistantBlock =
   | ToolUseBlock
   | ToolResultBlock;
 
+/** One LLM call's thinking block, persisted per-step for accurate reload rendering. */
+export type PersistedReasoningStep = {
+  step_index: number;
+  kind: "planning" | "tool_synthesis" | "final_synthesis" | "unknown";
+  content: string;
+  tool_name?: string | null;
+};
+
 // ─── Chat message ────────────────────────────────────────────────────────────
 
 export type ChatMessage = {
@@ -324,6 +342,8 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   reasoning?: string | null;
+  /** Per-step LLM thinking blocks for accurate multi-block rendering on reload. */
+  reasoning_steps?: PersistedReasoningStep[] | null;
   phases?: PhaseEvent[];
   /** Tool calls that happened during this message (for inline display, Claude Code style). */
   tools?: StreamToolCall[];
@@ -405,4 +425,5 @@ export type Skill = {
   name: string;
   description: string;
   triggers: string[];
+  enabled_for_user: boolean;
 };

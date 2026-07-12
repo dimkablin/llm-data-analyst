@@ -24,21 +24,26 @@ import type {
   ExecutionGraph,
   PhaseEvent,
   SessionSourceState,
-  Skill,
   StreamToolCall,
+  UserSettings,
 } from "../../lib/backend-types";
+import { filterBlocks, filterReasoningSteps } from "../../lib/think-filter";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
 import { SpinnerDisplay } from "../SpinnerDisplay";
-import { BlockTimeline } from "./blocks";
+import { BlockTimeline, ThinkingBlock } from "./blocks";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
-function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+function Tip({ label, children, side = "top" }: { label: string; children: React.ReactNode; side?: "top" | "bottom" }) {
+  const isTop = side === "top";
   return (
     <div className="group/tip relative inline-flex">
       {children}
-      <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50">
+      <div className={`pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50 ${isTop ? "bottom-full mb-2" : "top-full mt-2"}`}>
         {label}
-        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+        {isTop
+          ? <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+          : <div className="absolute left-1/2 bottom-full -translate-x-1/2 border-4 border-transparent border-b-popover" />
+        }
       </div>
     </div>
   );
@@ -75,9 +80,7 @@ type Props = {
   onUploadClick: () => void;
   onExportChat: () => void;
   onPinArtifact: (artifact: ArtifactPayload) => void;
-  availableSkills?: Skill[];
-  selectedSkillIds?: string[];
-  onToggleSkill?: (skillId: string) => void;
+  settings: Pick<UserSettings, "show_thinking" | "show_think_planning" | "show_think_tool" | "show_think_final">;
 };
 
 export function ChatPanel({
@@ -105,9 +108,7 @@ export function ChatPanel({
   onUploadClick,
   onExportChat,
   onPinArtifact,
-  availableSkills = [],
-  selectedSkillIds = [],
-  onToggleSkill,
+  settings,
 }: Props) {
   const [input, setInput] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -195,7 +196,7 @@ export function ChatPanel({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Tip label="Экспорт чата">
+          <Tip label="Экспорт чата" side="bottom">
             <button
               type="button"
               onClick={onExportChat}
@@ -205,7 +206,7 @@ export function ChatPanel({
               <Download className="h-5 w-5" />
             </button>
           </Tip>
-          <Tip label="Настройки">
+          <Tip label="Настройки" side="bottom">
             <button
               type="button"
               onClick={onSettingsClick}
@@ -219,7 +220,7 @@ export function ChatPanel({
 
       <div
         ref={scrollContainerRef}
-        className="custom-scrollbar flex-1 overflow-y-auto p-3 lg:p-4 xl:p-6"
+        className="custom-scrollbar flex-1 overflow-x-hidden overflow-y-auto p-3 lg:p-4 xl:p-6"
       >
         <div className="space-y-4 xl:space-y-6">
           {messages.length === 0 ? (
@@ -242,6 +243,7 @@ export function ChatPanel({
               isStreaming={isStreaming}
               onPinArtifact={onPinArtifact}
               onRegenerate={onRetry}
+              settings={settings}
             />
           ))}
 
@@ -260,11 +262,11 @@ export function ChatPanel({
                 {streamBlocks.length > 0 ? (
                   <BlockTimeline
                     blocks={streamBlocks}
-                    liveThinking={streamReasoning}
+                    liveThinking={settings.show_thinking ? streamReasoning : ""}
                     isLive
                   />
-                ) : streamTools.length > 0 || streamReasoning ? (
-                  <ToolCallList tools={streamTools} reasoning={streamReasoning} isLive />
+                ) : streamTools.length > 0 || (settings.show_thinking && streamReasoning) ? (
+                  <ToolCallList tools={streamTools} reasoning={settings.show_thinking ? streamReasoning : undefined} isLive />
                 ) : null}
 
                 {/* Streaming answer text */}
@@ -317,28 +319,6 @@ export function ChatPanel({
           </div>
         ) : null}
 
-        {availableSkills.length > 0 ? (
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {availableSkills.map((skill) => {
-              const active = selectedSkillIds.includes(skill.skill_id);
-              return (
-                <button
-                  key={skill.skill_id}
-                  type="button"
-                  title={skill.description}
-                  onClick={() => onToggleSkill?.(skill.skill_id)}
-                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
-                    active
-                      ? "border-primary/60 bg-primary/10 text-primary"
-                      : "border-border/50 bg-secondary/60 text-muted-foreground hover:border-border hover:text-foreground"
-                  }`}
-                >
-                  {skill.name}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
 
         <div className="group relative rounded-3xl border border-border/50 bg-card/80 backdrop-blur-sm shadow-lg shadow-black/5 transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:ring-4 focus-within:ring-primary/8">
           <textarea
@@ -466,12 +446,14 @@ function MessageBubble({
   isStreaming,
   onPinArtifact,
   onRegenerate,
+  settings,
 }: {
   message: ChatMessage;
   isLast: boolean;
   isStreaming: boolean;
   onPinArtifact: (artifact: ArtifactPayload) => void;
   onRegenerate: () => Promise<void>;
+  settings: Pick<UserSettings, "show_thinking" | "show_think_planning" | "show_think_tool" | "show_think_final">;
 }) {
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
@@ -495,12 +477,51 @@ function MessageBubble({
       </div>
 
       <div className={`flex min-w-0 max-w-[88%] flex-col gap-1.5 ${isUser ? "items-end" : ""}`}>
-        {/* Block timeline (new) or legacy tool list — Claude Code style */}
-        {!isUser && message.blocks?.length ? (
-          <BlockTimeline blocks={message.blocks} />
-        ) : !isUser && message.tools?.length ? (
-          <ToolCallList tools={message.tools} reasoning={message.reasoning ?? undefined} />
-        ) : null}
+        {/* History: BlockTimeline (thinking interleaved with tool calls).
+            Filter out thinking blocks when show_thinking is off to match live streaming behaviour. */}
+        {!isUser && message.blocks && message.blocks.length > 0 ? (
+          <BlockTimeline
+            blocks={filterBlocks(message.blocks, settings)}
+          />
+        ) : (
+          <>
+            {/* Reload: orphan reasoning steps (final synthesis, no tool call follows).
+                Tool-associated steps are already shown via pre_reasoning inside ToolCallList.
+                Filter by !tool_name for backward compat with state.json written before this fix. */}
+            {!isUser && (() => {
+              const filtered = filterReasoningSteps(
+                message.reasoning_steps?.filter((s) => !s.tool_name),
+                settings,
+              );
+              return filtered.length > 0
+                ? filtered.map((step) => (
+                    <ThinkingBlock
+                      key={`rs-${step.step_index}`}
+                      content={step.content}
+                      defaultCollapsed
+                      sourceLabel={step.kind === "planning" ? "planner" : "agent"}
+                    />
+                  ))
+                : null;
+            })()}
+            {/* Tool call list — reasoning omitted when reasoning_steps present (avoids CoT duplication) */}
+            {!isUser && message.tools?.length ? (
+              <ToolCallList
+                tools={message.tools}
+                reasoning={
+                  message.reasoning_steps?.length ? undefined : (message.reasoning ?? undefined)
+                }
+              />
+            ) : null}
+            {/* Backward compat: old messages without reasoning_steps and without tools */}
+            {!isUser &&
+              message.reasoning &&
+              !message.reasoning_steps?.length &&
+              !message.tools?.length ? (
+              <ThinkingBlock content={message.reasoning} defaultCollapsed sourceLabel="agent" />
+            ) : null}
+          </>
+        )}
 
         <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
           <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />

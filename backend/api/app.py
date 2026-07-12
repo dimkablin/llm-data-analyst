@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+import sys
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import anyio
@@ -9,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from backend.agent.callbacks import (
-    AgentProgressCollector,
     LLMTextCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
@@ -26,6 +28,7 @@ from backend.api.routes import (
     health,
     observability_route,
     query,
+    reports,
     sessions,
     skills,
     sources,
@@ -53,12 +56,50 @@ from backend.observability.service import PhoenixObservabilityService
 from backend.sessions.session_store import SessionStore
 from backend.tools.catalog import KNOWN_TOOL_KEYS, build_tool_catalog
 from backend.tools.policy import effective_enabled_tool_keys
+from backend.tools.sandbox_manager import SandboxManager
+
+_log = logging.getLogger(__name__)
+
+
+def _validate_startup_config() -> None:
+    """Abort on obviously insecure or broken configurations before serving traffic."""
+    if settings.auth_default_admin_password == "admin":
+        sys.exit(
+            "FATAL: AUTH_DEFAULT_ADMIN_PASSWORD is set to the insecure default 'admin'. "
+            "Set a strong password via the AUTH_DEFAULT_ADMIN_PASSWORD environment variable "
+            "before starting the server."
+        )
+
+    if settings.cors_allow_origins.strip() == "*":
+        _log.warning(
+            "BACKEND_CORS_ALLOW_ORIGINS='*' combined with allow_credentials=True is rejected "
+            "by browsers (Fetch standard). allow_credentials will be forced to False. "
+            "Set explicit origins in BACKEND_CORS_ALLOW_ORIGINS to enable credentialed requests."
+        )
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    _validate_startup_config()
     await anyio.to_thread.run_sync(runner.warmup)
-    yield
+
+    # Periodically evict sandboxes for sessions that have been idle for >2 h.
+    async def _sandbox_cleanup_loop() -> None:
+        while True:
+            await anyio.sleep(3600)
+            evicted = await anyio.to_thread.run_sync(
+                lambda: SandboxManager.get_instance().cleanup_expired(ttl_sec=7200)
+            )
+            if evicted:
+                _log.info("Lifespan: evicted %d idle sandbox(es)", evicted)
+
+    cleanup_task = asyncio.create_task(_sandbox_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 _OPENAPI_TAGS: list[dict[str, str]] = [
@@ -81,15 +122,18 @@ app = FastAPI(
     openapi_tags=_OPENAPI_TAGS,
 )
 
+_cors_wildcard = settings.cors_allow_origins.strip() == "*"
 origins = (
     ["*"]
-    if settings.cors_allow_origins.strip() == "*"
+    if _cors_wildcard
     else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
 )
+# allow_credentials=True is incompatible with wildcard origins per the Fetch standard.
+# When origins are explicit, credentials (cookies / Authorization header) are allowed.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -204,7 +248,6 @@ def _configure_routes() -> None:
         csv_runtime=csv_runtime,
         LLMTextCollector=LLMTextCollector,
         ToolCollector=ToolCollector,
-        AgentProgressCollector=AgentProgressCollector,
         PhaseCollector=PhaseCollector,
         TokenStreamCallbackHandler=TokenStreamCallbackHandler,
         AgentRunner=AgentRunner,
@@ -212,7 +255,7 @@ def _configure_routes() -> None:
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,
     )
-    skills.setup(runner=runner)
+    skills.setup(runner=runner, auth_db=auth_db)
     observability_route.setup(
         phoenix_observability_service=phoenix_observability_service,
     )
@@ -227,6 +270,7 @@ def _configure_routes() -> None:
     app.include_router(sources.router)
     app.include_router(query.router)
     app.include_router(db_connections.router)
+    app.include_router(reports.router)
 
 
 _configure_routes()

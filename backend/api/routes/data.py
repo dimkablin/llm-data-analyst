@@ -128,14 +128,22 @@ async def upload_data(
     )
 
 
-# for predict service
+# Used by the predict service — requires authentication and session ownership.
+# Pass the app session_id (returned by the upload endpoint); ownership is verified
+# against current_user before the CSV session is accessed.
 @router.get("/csv/schema")
 async def csv_schema(
     session_id: Annotated[str, Query()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> dict:
+    state = _load_owned_session(session_id, current_user)
+    if not state.csv_loaded or not state.csv_session_id:
+        raise HTTPException(status_code=404, detail="No CSV data in this session")
+    csv_session_id = state.csv_session_id
+
     try:
-        info = _csv_runtime.get_session_info(session_id)
-        tables = _csv_runtime.list_tables(session_id)
+        info = _csv_runtime.get_session_info(csv_session_id)
+        tables = _csv_runtime.list_tables(csv_session_id)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"CSV session not found: {exc}") from exc
 
@@ -146,7 +154,7 @@ async def csv_schema(
     if not main_table:
         raise HTTPException(status_code=500, detail="CSV session returned invalid table metadata")
 
-    columns_meta = _csv_runtime.describe_table(session_id, main_table)
+    columns_meta = _csv_runtime.describe_table(csv_session_id, main_table)
 
     return {
         "session_id": session_id,

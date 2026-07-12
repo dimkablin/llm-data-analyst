@@ -12,6 +12,12 @@ triggers: проверь, review, validate, оценка, качество от�
 
 Инструмент проверяет качество ответа и возвращает JSON с результатом: `{"pass": true/false, "issues": [...]}`.
 
+### API
+Вызывается с параметрами `question`, `answer`, `tool_calls_count`, `artifact_count` (не Python-sandbox).
+
+### Final result protocol
+Не sandbox-инструмент. Возвращает JSON — без Python-кода и без `tool_result`.
+
 ### Когда использовать
 
 - После завершения сложного анализа (3+ tool calls), перед финализацией ответа

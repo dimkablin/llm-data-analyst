@@ -72,6 +72,11 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         agent_step_timeout_sec=settings_row.agent_step_timeout_sec,
         agent_inner_recursion_limit=settings_row.agent_inner_recursion_limit,
         ui_scale=settings_row.ui_scale,
+        llm_streaming=settings_row.llm_streaming,
+        show_thinking=settings_row.show_thinking,
+        show_think_planning=settings_row.show_think_planning,
+        show_think_tool=settings_row.show_think_tool,
+        show_think_final=settings_row.show_think_final,
     )
 
 
@@ -146,6 +151,11 @@ def auth_update_settings(
             agent_step_timeout_sec=payload.agent_step_timeout_sec,
             agent_inner_recursion_limit=payload.agent_inner_recursion_limit,
             ui_scale=payload.ui_scale,
+            llm_streaming=payload.llm_streaming,
+            show_thinking=payload.show_thinking,
+            show_think_planning=payload.show_think_planning,
+            show_think_tool=payload.show_think_tool,
+            show_think_final=payload.show_think_final,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -163,6 +173,11 @@ def auth_update_settings(
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
         ui_scale=updated.ui_scale,
+        llm_streaming=updated.llm_streaming,
+        show_thinking=updated.show_thinking,
+        show_think_planning=updated.show_think_planning,
+        show_think_tool=updated.show_think_tool,
+        show_think_final=updated.show_think_final,
     )
 
 

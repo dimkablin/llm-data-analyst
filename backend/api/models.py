@@ -51,6 +51,11 @@ class UserSettingsResponse(BaseModel):
     agent_step_timeout_sec: int = Field(default=45, ge=5, le=600)
     agent_inner_recursion_limit: int = Field(default=14, ge=2, le=30)
     ui_scale: int = Field(default=100, ge=70, le=150)
+    llm_streaming: bool = True
+    show_thinking: bool = True
+    show_think_planning: bool = True
+    show_think_tool: bool = True
+    show_think_final: bool = True
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -73,6 +78,11 @@ class UserSettingsUpdateRequest(BaseModel):
     agent_step_timeout_sec: int | None = Field(default=None, ge=5, le=600)
     agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=30)
     ui_scale: int | None = Field(default=None, ge=70, le=150)
+    llm_streaming: bool | None = None
+    show_thinking: bool | None = None
+    show_think_planning: bool | None = None
+    show_think_tool: bool | None = None
+    show_think_final: bool | None = None
 
 
 class ToolEnabledUpdateRequest(BaseModel):
@@ -264,6 +274,7 @@ class QueryResponse(BaseModel):
     artifacts: list[ArtifactPayload]
     values: dict[str, Any] | None = None
     metrics: QueryMetrics
+    persistence_failed: bool = False  # True when post-processing (store/artifact persistence) failed
 
 
 class SessionSourceResponse(BaseModel):
@@ -302,6 +313,7 @@ class SkillResponse(BaseModel):
     description: str
     triggers: list[str] = Field(default_factory=list)
     source_path: str
+    enabled_for_user: bool = True
 
 
 class PhoenixOverviewStats(BaseModel):
