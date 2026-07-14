@@ -133,7 +133,7 @@ export function Auth() {
               </div>
               <div className="min-w-0">
                 <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-muted-foreground sm:text-[12px]">
-                  Access Layer
+                  Слой доступа
                 </div>
                 <div className="mt-0.5 text-[15px] font-bold tracking-tight text-foreground sm:mt-1 sm:text-lg">
                   {mode === "login" ? "Вход в систему" : "Регистрация"}
@@ -146,8 +146,8 @@ export function Auth() {
                 {mode === "login" ? "Вход в систему" : "Регистрация"}
               </h2>
               <p className="mx-auto max-w-md text-[13px] leading-relaxed text-muted-foreground sm:text-[15px] [@media(max-height:800px)]:text-[12px]">
-                Реальная backend-аутентификация уже подключена. Эта зона работает
-                как production-вход и одновременно показывает access layer продукта
+                Реальная аутентификация бэкенда уже подключена. Эта зона работает
+                как промышленный вход и одновременно показывает слой доступа продукта
                 на демо.
               </p>
             </div>
@@ -264,20 +264,20 @@ export function Auth() {
             <div className="mt-4 border-t border-border/40 pt-4 text-center 2xl:mt-8 2xl:pt-8 [@media(max-height:800px)]:mt-3 [@media(max-height:800px)]:pt-3">
               <div className="inline-flex items-center gap-2 text-[11px] font-medium text-muted-foreground sm:text-[13px]">
                 <UserCog className="h-4 w-4" />
-                Backend auth, user settings и session ownership активны
+                Аутентификация бэкенда, настройки пользователя и владение сессиями активны
               </div>
               <div className="mt-2 text-[13px] text-muted-foreground sm:mt-4 sm:text-sm">
                 После входа доступны{" "}
                 <Link to="/workspace" className="font-semibold text-primary">
-                  workspace
+                  рабочая область
                 </Link>
                 ,{" "}
                 <Link to="/sessions" className="font-semibold text-primary">
-                  sessions
+                  сессии
                 </Link>{" "}
                 и{" "}
                 <Link to="/account" className="font-semibold text-primary">
-                  account
+                  аккаунт
                 </Link>
                 .
               </div>

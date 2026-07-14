@@ -7,6 +7,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from backend.agent.services.chat_title import ChatTitleRequest, ChatTitleService
 from backend.api.deps import get_current_user
 from backend.api.models import (
     CreateSessionResponse,
@@ -17,6 +18,7 @@ from backend.api.models import (
     SessionTitleUpdateRequest,
 )
 from backend.auth.auth_db import AuthDB, AuthUser
+from backend.core.config import settings
 from backend.notebook.manifest_store import ManifestStore
 from backend.sessions.session_store import SessionState, SessionStore
 
@@ -25,7 +27,7 @@ router = APIRouter(tags=["Сессии"])
 # Singletons set during app startup
 _auth_db: AuthDB = None  # type: ignore
 _store: SessionStore = None  # type: ignore
-_runner = None  # type: ignore
+_title_service: ChatTitleService = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
 _manifest_store: ManifestStore = None  # type: ignore
@@ -34,15 +36,15 @@ _manifest_store: ManifestStore = None  # type: ignore
 def setup(
     auth_db: AuthDB,
     store: SessionStore,
-    runner,
+    title_service: ChatTitleService,
     build_trace_context_fn,
     query_trace_context_fn,
     manifest_store: ManifestStore | None = None,
 ) -> None:
-    global _auth_db, _store, _runner, _build_trace_context_fn, _query_trace_context_fn, _manifest_store
+    global _auth_db, _store, _title_service, _build_trace_context_fn, _query_trace_context_fn, _manifest_store
     _auth_db = auth_db
     _store = store
-    _runner = runner
+    _title_service = title_service
     _manifest_store = manifest_store
     _build_trace_context_fn = build_trace_context_fn
     _query_trace_context_fn = query_trace_context_fn
@@ -91,6 +93,31 @@ def _dataset_hint_for_title(
     if df is not None:
         return f"dataset {len(df)}x{len(df.columns)}"
     return None
+
+
+def _strip_thinking_from_history(
+    chat_history: list[dict],
+) -> list[dict]:
+    """Remove reasoning_steps and pre_reasoning from AI messages.
+
+    Called when settings.llm_show_think=False so that think blocks
+    are not exposed to the frontend on page refresh.
+    Data is preserved in storage — only the API response is filtered.
+    """
+    result = []
+    for message in chat_history:
+        if str(message.get("role", "")).strip().lower() not in ("ai", "assistant"):
+            result.append(message)
+            continue
+        filtered = {k: v for k, v in message.items() if k != "reasoning_steps"}
+        tools = filtered.get("tools")
+        if tools:
+            filtered["tools"] = [
+                {k: v for k, v in tool.items() if k != "pre_reasoning"}
+                for tool in tools
+            ]
+        result.append(filtered)
+    return result
 
 
 @router.get("/sessions", response_model=list[SessionSummaryResponse])
@@ -199,10 +226,12 @@ def generate_session_title(
             include_reasoning=False,
             query=title_context_query,
         ):
-            generated_title = _runner.generate_chat_title(
-                dataset_name=dataset_hint,
-                user_queries=user_queries,
-                trace_context=trace_context,
+            generated_title = _title_service.generate(
+                ChatTitleRequest(
+                    dataset_name=dataset_hint,
+                    user_queries=user_queries,
+                    trace_context=trace_context,
+                )
             )
     except Exception:
         generated_title = None
@@ -239,15 +268,20 @@ def get_session(
                 connection_id=s.connection_id,
                 connection_name=s.connection_name,
                 bound_at=s.bound_at,
+                csv_table_names=list(s.csv_table_names or []),
                 schema_hint=s.schema_hint,
             )
             for s in manifest.sources
         ]
 
+    chat_history = state.chat_history
+    if not settings.llm_show_think:
+        chat_history = _strip_thinking_from_history(chat_history)
+
     return SessionStateResponse(
         session_id=state.session_id,
         title=title,
-        chat_history=state.chat_history,
+        chat_history=chat_history,
         artifacts=state.artifacts,
         has_dataset=bool(state.df_path),
         dataset_name=state.dataset_name,
@@ -258,6 +292,7 @@ def get_session(
         selected_skill_ids=list(state.selected_skill_ids or []),
         sources=sources,
         session_memory=state.session_memory or "",
+        context_usage=state.context_usage,
     )
 
 
@@ -306,4 +341,3 @@ def get_session_notebook_cells(
     if sandbox is None:
         return []
     return sandbox.get_notebook_cells()
-

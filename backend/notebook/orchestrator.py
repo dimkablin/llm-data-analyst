@@ -96,6 +96,32 @@ class NotebookOrchestrator:
             self._store.save(session_id, notebook)
         return results
 
+    def remove_source_binding(self, session_id: str, source_alias: str) -> EditResult:
+        """Remove the source_binding cell owned by a removed SessionSource."""
+        clean_alias = str(source_alias or "").strip()
+        notebook = self._store.load(session_id)
+        if not clean_alias:
+            return EditResult(
+                ok=False,
+                notebook=notebook,
+                error="source_alias is required",
+            )
+
+        target = next(
+            (
+                cell
+                for cell in notebook.source_binding_cells
+                if cell.metadata.source_alias == clean_alias
+            ),
+            None,
+        )
+        if target is None:
+            return EditResult(ok=True, notebook=notebook, cell_id=None)
+
+        notebook.remove_cell(target.id)
+        self._store.save(session_id, notebook)
+        return EditResult(ok=True, notebook=notebook, cell_id=target.id)
+
     # ── Dispatch ─────────────────────────────────────────────────────────
 
     def _apply_to_document(

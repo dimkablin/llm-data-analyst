@@ -1,0 +1,67 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  DOCKER_BUILDKIT: "1"
+  TARGET_ENV:
+    value: "dev"
+    options:
+      - "dev"
+      - "prod"
+    description: "Deploy target for manual Run pipeline."
+  IMAGE_TAG:
+    value: ""
+    description: "Optional Docker tag. Dev defaults to dev-$CI_COMMIT_SHORT_SHA; prod defaults to git tag."
+
+build_dev:
+  stage: build
+  tags:
+    - deploy-shell
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $TARGET_ENV == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+  script:
+    - TARGET_ENV=dev bash scripts/ci/deploy.sh build
+
+build_prod:
+  stage: build
+  tags:
+    - deploy-shell
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $TARGET_ENV == "prod"'
+    - if: '$CI_COMMIT_TAG'
+  script:
+    - TARGET_ENV=prod bash scripts/ci/deploy.sh build
+
+deploy_dev:
+  stage: deploy
+  tags:
+    - deploy-shell
+  needs:
+    - build_dev
+  resource_group: llm-data-analyst-dev
+  environment:
+    name: dev
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $TARGET_ENV == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+  script:
+    - TARGET_ENV=dev bash scripts/ci/deploy.sh deploy
+
+deploy_prod:
+  stage: deploy
+  tags:
+    - deploy-shell
+  needs:
+    - build_prod
+  resource_group: llm-data-analyst-prod
+  environment:
+    name: production
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $TARGET_ENV == "prod"'
+      when: manual
+    - if: '$CI_COMMIT_TAG'
+      when: manual
+  script:
+    - TARGET_ENV=prod bash scripts/ci/deploy.sh deploy

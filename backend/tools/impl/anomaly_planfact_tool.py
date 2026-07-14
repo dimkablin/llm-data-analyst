@@ -7,7 +7,6 @@ from typing import Any
 import pandas as pd
 from pydantic import PrivateAttr
 
-from backend.agent.prompts import anomaly_planfact_tool_prompt
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.integrations.anomaly_planfact import (
     AnomalyPlanfactIntegrationError,
@@ -15,6 +14,7 @@ from backend.integrations.anomaly_planfact import (
 )
 from backend.tools.impl.base_tool import BaseExecTool
 from backend.tools.impl.db_helpers import DBAnalyticsHelper, DemoDBConnectionView
+from backend.tools.instructions import tool_description
 
 
 @dataclass
@@ -28,31 +28,7 @@ class AnomalyPlanfactToolHelper:
         self,
         question: str,
     ) -> dict[str, Any]:
-        result = self.service.run_analysis(
-            question,
-            db_runtime_config=self.db_runtime_config,
-            csv_session_id=self.csv_session_id,
-        )
-        payload = self.service.build_artifact_payload(
-            result,
-            tool_name=self.tool_name,
-        )
-
-        anomaly_meta = payload["meta"]["anomaly_planfact"]
-
-        out: dict[str, Any] = {
-            "rows": payload["rows"],
-            "source": payload["source"],
-            "recipe": payload["recipe"],
-            "meta": payload["meta"],
-            "summary": anomaly_meta.get("summary"),
-            "warnings": list(anomaly_meta.get("warnings", [])),
-        }
-
-        if "plot" in payload:
-            out["plot"] = payload["plot"]
-
-        return out
+        return self.analyze_result(question)
 
     def analyze_result(
         self,
@@ -62,7 +38,7 @@ class AnomalyPlanfactToolHelper:
         plot_artifact_name: str = "anomaly_planfact_chart",
     ) -> dict[str, Any]:
         result = self.service.run_analysis(
-            question,
+            self._prepare_question(question),
             db_runtime_config=self.db_runtime_config,
             csv_session_id=self.csv_session_id,
         )
@@ -114,12 +90,58 @@ class AnomalyPlanfactToolHelper:
 
         return artifact
 
+    def _catalog_hint(self) -> str:
+        if self.db_runtime_config is None:
+            return ""
+
+        try:
+            db = DBAnalyticsHelper(self.db_runtime_config, timeout_sec=10.0)
+            rows = db.list_tables_with_columns()
+        except Exception:
+            return ""
+
+        lines = []
+        for row in rows[:20]:
+            qname = row.get("qualified_name") or row.get("table_name")
+            cols = row.get("columns") or []
+            cols_preview = ", ".join(map(str, cols[:30]))
+            lines.append(f"- {qname}: {cols_preview}")
+
+        if not lines:
+            return ""
+
+        return "Доступные таблицы и колонки:\n" + "\n".join(lines)
+
+    def _prepare_question(self, question: str) -> str:
+        base = str(question or "").strip()
+        catalog = self._catalog_hint()
+
+        parts = [
+            base,
+            "",
+            "BACKEND INSTRUCTIONS FOR PREDICT-SERVICE:",
+            "- Choose the most relevant table from the available tables.",
+            "- If the user already named a table, use that table.",
+            "- Prepare only the input dataset for plan-vs-fact anomaly detection.",
+            "- The final SQL must return exactly three columns with exact aliases: dt, plan, fact.",
+            "- dt must be a date/datetime/timestamp column.",
+            "- plan must be a numeric planned value.",
+            "- fact must be a numeric actual value.",
+            "- Do not add delta, percent_diff, score, anomaly, or ranking columns.",
+            "- Do not filter only worst deviations in SQL.",
+        ]
+
+        if catalog:
+            parts.extend(["", catalog])
+
+        return "\n".join(parts).strip()
+
 
 class AnomalyPlanfactTool(BaseExecTool):
     name: str = "anomaly_planfact_tool"
     artifact_name: str = "table"
     human_name: str = "аномалий"
-    description: str = anomaly_planfact_tool_prompt
+    description: str = tool_description("anomaly_planfact_tool")
     allowed_libs: set[str] = {"pandas", "numpy"}
     allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
 

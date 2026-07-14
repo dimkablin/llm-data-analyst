@@ -3,26 +3,37 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import ToolMessage
 
+from backend.agent.context_window import ContextUsageSnapshot
 from backend.artifacts.artifact_meta import build_artifact_meta, extract_artifact_hints
 from backend.artifacts.execution import (
     ExecArtifactType,
     ExecutionArtifact,
     ExecutionStore,
 )
+from backend.core.redaction import compact_error_text
 
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
+
+# Infrastructure tools whose pre_reasoning is not stored — they produce generic
+# boilerplate thinking ("let me check what tool to use") that adds UI noise.
+_INFRA_TOOL_NAMES: frozenset[str] = frozenset({
+    "planner_tool",
+    "get_tool_instructions",
+    "memory_tool",
+    "session_note_tool",
+})
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _THINK_OPEN_LEN = len(_THINK_OPEN)
 _THINK_CLOSE_LEN = len(_THINK_CLOSE)
-
 
 class ThinkingOutputParser:
     """Stateful incremental parser that separates visible text from ``<think>`` blocks.
@@ -188,6 +199,9 @@ class ToolCollector(BaseCallbackHandler):
         self.tool_names: list[str] = []
         self.events: list[dict[str, Any]] = []
         self._last_tool_name: str | None = None
+        self._lock = threading.RLock()
+        self._tool_name_by_run_id: dict[str, str] = {}
+        self._tool_call_id_by_run_id: dict[str, str] = {}
         self._source_context = dict(source_context or {})
         self._queue = queue
         self._loop = loop
@@ -232,6 +246,10 @@ class ToolCollector(BaseCallbackHandler):
         return None
 
     @staticmethod
+    def _run_id_from_kwargs(kwargs: dict[str, Any]) -> str:
+        return str(kwargs.get("run_id") or "").strip()
+
+    @staticmethod
     def _extract_input_code(raw: str) -> str | None:
         """Extract the code/query string from a tool input JSON preview."""
         text = raw.strip()
@@ -246,6 +264,23 @@ class ToolCollector(BaseCallbackHandler):
                 candidate = parsed.get(key)
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip()
+        return None
+
+    @staticmethod
+    def _extract_tool_call_id(raw: str) -> str | None:
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        for key in ("tool_call_id", "id"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         return None
 
     @staticmethod
@@ -328,6 +363,15 @@ class ToolCollector(BaseCallbackHandler):
         input_str: str,
         **kwargs: Any,
     ) -> None:
+        with self._lock:
+            self._on_tool_start_locked(serialized, input_str, **kwargs)
+
+    def _on_tool_start_locked(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        **kwargs: Any,
+    ) -> None:
         tool_name = self._resolve_tool_name(
             serialized=serialized,
             kwargs=kwargs,
@@ -335,30 +379,48 @@ class ToolCollector(BaseCallbackHandler):
         if tool_name:
             self._last_tool_name = tool_name
             self.tool_names.append(tool_name)
-        input_summary = self._build_input_summary(tool_name or "unknown", input_str[:2000])
-        input_code = self._extract_input_code(input_str[:2000])
-        pre_reasoning = (
+        input_preview = input_str
+        input_summary = self._build_input_summary(tool_name or "unknown", input_preview)
+        input_code = self._extract_input_code(input_preview)
+        tool_call_id = self._extract_tool_call_id(input_preview)
+        run_id = self._run_id_from_kwargs(kwargs)
+        if run_id and tool_name:
+            self._tool_name_by_run_id[run_id] = tool_name
+        if run_id and tool_call_id:
+            self._tool_call_id_by_run_id[run_id] = tool_call_id
+        # Always consume pending thinking to keep the buffer clean,
+        # but only attach it to data/analysis tools — infrastructure tools
+        # (planner, skill loader, memory) produce generic boilerplate thinking
+        # that adds noise without analytical value.
+        raw_pre_reasoning = (
             self.token_callback.take_pending_thinking()
             if self.token_callback is not None
             else ""
         )
+        pre_reasoning = raw_pre_reasoning if tool_name not in _INFRA_TOOL_NAMES else ""
         event: dict[str, Any] = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
-            "input_preview": input_str[:360],
+            "input_preview": input_preview,
             "input_summary": input_summary,
             "timestamp": datetime.now(UTC).isoformat(),
         }
         if pre_reasoning:
             event["pre_reasoning"] = pre_reasoning
+        if input_code:
+            event["input_code"] = input_code[:4000]
+        if tool_call_id:
+            event["tool_call_id"] = tool_call_id
         self.events.append(event)
         push_data: dict[str, Any] = {
             "tool_name": event["tool_name"],
             "input_preview": event["input_preview"],
             "input_summary": input_summary,
         }
+        if tool_call_id:
+            push_data["tool_call_id"] = tool_call_id
         if input_code:
-            push_data["input_code"] = input_code[:1200]
+            push_data["input_code"] = input_code[:4000]
         self._push_event("tool_start", push_data)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_start(event["tool_name"], self._step_index)
@@ -366,47 +428,79 @@ class ToolCollector(BaseCallbackHandler):
                 self._phase_collector_ref._graph_version += 1  # noqa: SLF001
 
     def on_tool_error(self, error: BaseException | str, tool=None, **kwargs: Any) -> None:
+        with self._lock:
+            self._on_tool_error_locked(error, tool=tool, **kwargs)
+
+    def _on_tool_error_locked(self, error: BaseException | str, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
-        tool_name = self._resolve_tool_name(tool=tool, kwargs=kwargs) or self._last_tool_name
+        run_id = self._run_id_from_kwargs(kwargs)
+        tool_call_id = self._tool_call_id_by_run_id.get(run_id) if run_id else None
+        tool_name = self._resolve_tool_name(tool=tool, kwargs=kwargs)
+        if not tool_name and run_id:
+            tool_name = self._tool_name_by_run_id.get(run_id)
+        if not tool_name and not run_id and not tool_call_id:
+            tool_name = self._last_tool_name
         if tool_name:
             self.tool_names.append(tool_name)
 
-        error_text = str(error)
+        error_text = compact_error_text(str(error), limit=800)
         event_payload: dict[str, Any] = {
             "phase": "end",
             "tool_name": tool_name or "unknown",
             "status": "error",
             "error": error_text,
+            "result_summary": error_text[:300],
+            "output_preview": error_text[:800],
             "artifact_keys": [],
             "timestamp": datetime.now(UTC).isoformat(),
         }
+        if tool_call_id:
+            event_payload["tool_call_id"] = tool_call_id
         self.events.append(event_payload)
-        self._push_event("tool_end", {
+        push_payload: dict[str, Any] = {
             "tool_name": tool_name or "unknown",
             "status": "error",
             "artifact_keys": [],
             "result_summary": error_text[:300],
             "output_preview": error_text[:800],
-        })
+        }
+        if tool_call_id:
+            push_payload["tool_call_id"] = tool_call_id
+        self._push_event("tool_end", push_payload)
 
     def on_tool_end(self, output: object, tool=None, **kwargs: Any) -> None:
+        with self._lock:
+            self._on_tool_end_locked(output, tool=tool, **kwargs)
+
+    def _on_tool_end_locked(self, output: object, tool=None, **kwargs: Any) -> None:
         self.tool_calls += 1
         payload = self._normalize_output(output)
-        tool_name = self._resolve_tool_name(tool=tool, kwargs=kwargs) or self._last_tool_name
+        run_id = self._run_id_from_kwargs(kwargs)
+        tool_call_id = self._tool_call_id_by_run_id.get(run_id) if run_id else None
+        tool_name = self._resolve_tool_name(tool=tool, kwargs=kwargs)
+        if not tool_name and run_id:
+            tool_name = self._tool_name_by_run_id.get(run_id)
+        if not tool_name and not run_id and not tool_call_id:
+            tool_name = self._last_tool_name
         if tool_name:
             self.tool_names.append(tool_name)
         if not isinstance(payload, dict):
-            self.events.append(
-                {
-                    "phase": "end",
-                    "tool_name": tool_name or "unknown",
-                    "status": "empty_output",
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-            )
+            event_payload: dict[str, Any] = {
+                "phase": "end",
+                "tool_name": tool_name or "unknown",
+                "status": "empty_output",
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+            if tool_call_id:
+                event_payload["tool_call_id"] = tool_call_id
+            self.events.append(event_payload)
             return
         if "artifact" in payload and isinstance(payload["artifact"], dict):
             payload = payload["artifact"]
+        artifact_type_key = str(payload.get("artifact_type", "")).strip().lower()
+        items_payload = payload.get("items")
+        if artifact_type_key and isinstance(items_payload, dict) and artifact_type_key not in payload:
+            payload[artifact_type_key] = items_payload
         tool_code = payload.get("code") if isinstance(payload.get("code"), str) else None
         artifact_hints = extract_artifact_hints(payload)
         artifact_meta = build_artifact_meta(
@@ -422,6 +516,21 @@ class ToolCollector(BaseCallbackHandler):
             "status": "ok",
             "artifact_keys": [],
         }
+        if tool_call_id:
+            event_payload["tool_call_id"] = tool_call_id
+        observation = payload.get("observation") if isinstance(payload.get("observation"), dict) else {}
+        if payload.get("status") == "error" or observation.get("status") == "error":
+            event_payload["status"] = "error"
+            for key in (
+                "input_code",
+                "executed_code",
+                "error",
+                "contract_hint",
+                "referenced_dataframe_schemas",
+            ):
+                value = payload.get(key) if key in payload else observation.get(key)
+                if value not in (None, "", [], {}):
+                    event_payload[key] = value
         if tool_code:
             event_payload["code_preview"] = tool_code[:1200]
         source_meta = artifact_meta.get("source")
@@ -436,7 +545,7 @@ class ToolCollector(BaseCallbackHandler):
         producer = tool_name or "unknown"
 
         if "plot" in payload and isinstance(payload["plot"], dict):
-            event_payload["artifact_keys"].append("plot")
+            plot_count_before = len(self.artifacts)
             for name, fig in payload["plot"].items():
                 if fig is None:
                     continue
@@ -448,9 +557,11 @@ class ToolCollector(BaseCallbackHandler):
                     meta=dict(artifact_meta),
                 ))
                 self.artifacts.append(ea)
+            if len(self.artifacts) > plot_count_before:
+                event_payload["artifact_keys"].append("plot")
 
         if "table" in payload and isinstance(payload["table"], dict):
-            event_payload["artifact_keys"].append("table")
+            table_count_before = len(self.artifacts)
             for name, table in payload["table"].items():
                 if table is None:
                     continue
@@ -462,9 +573,10 @@ class ToolCollector(BaseCallbackHandler):
                     meta=dict(artifact_meta),
                 ))
                 self.artifacts.append(ea)
+            if len(self.artifacts) > table_count_before:
+                event_payload["artifact_keys"].append("table")
 
         if "value" in payload and isinstance(payload["value"], dict):
-            event_payload["artifact_keys"].append("value")
             clean_value_payload = {
                 key: value
                 for key, value in payload["value"].items()
@@ -481,9 +593,10 @@ class ToolCollector(BaseCallbackHandler):
                 meta=dict(artifact_meta),
             ))
             self.artifacts.append(ea)
+            event_payload["artifact_keys"].append("value")
 
         if "json" in payload and isinstance(payload["json"], dict):
-            event_payload["artifact_keys"].append("json")
+            json_count_before = len(self.artifacts)
             for name, json_data in payload["json"].items():
                 if json_data is None:
                     continue
@@ -495,35 +608,51 @@ class ToolCollector(BaseCallbackHandler):
                     meta=dict(artifact_meta),
                 ))
                 self.artifacts.append(ea)
-
-        self.events.append(event_payload)
+            if len(self.artifacts) > json_count_before:
+                event_payload["artifact_keys"].append("json")
 
         # Build a concise result summary for UI display
         result_summary = self._build_result_summary(payload, event_payload)
+        if result_summary:
+            event_payload["result_summary"] = result_summary
+        raw_text = payload.get("text") if isinstance(payload, dict) else None
+        if isinstance(raw_text, str) and raw_text.strip():
+            event_payload["output_preview"] = raw_text.strip()[:800]
+        self.events.append(event_payload)
 
         push_payload: dict[str, Any] = {
             "tool_name": event_payload["tool_name"],
             "status": event_payload["status"],
             "artifact_keys": event_payload.get("artifact_keys", []),
         }
+        if tool_call_id:
+            push_payload["tool_call_id"] = tool_call_id
         if result_summary:
             push_payload["result_summary"] = result_summary
-        raw_text = payload.get("text") if isinstance(payload, dict) else None
-        if isinstance(raw_text, str) and raw_text.strip():
-            push_payload["output_preview"] = raw_text.strip()[:800]
+        if event_payload.get("output_preview"):
+            push_payload["output_preview"] = event_payload["output_preview"]
         self._push_event("tool_end", push_payload)
 
-    def to_persisted_activities(self) -> list[dict[str, Any]]:
+    def to_persisted_activities(
+        self,
+        *,
+        unfinished_status: str = "done",
+        unfinished_error: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Merge start/end event pairs into PersistedToolCall records for storage.
 
         Returns one dict per tool invocation with a stable schema independent
         of the live streaming DTO (StreamToolCall).
         """
+        with self._lock:
+            events = [dict(event) for event in self.events]
         activities: list[dict[str, Any]] = []
-        for event in self.events:
+        activities_by_tool_call_id: dict[str, dict[str, Any]] = {}
+        for event in events:
             phase = event.get("phase")
             tool_name = str(event.get("tool_name") or "unknown")
             if phase == "start":
+                tool_call_id = str(event.get("tool_call_id") or "").strip()
                 activity: dict[str, Any] = {
                     "tool_name": tool_name,
                     "status": "done",
@@ -533,28 +662,59 @@ class ToolCollector(BaseCallbackHandler):
                     "started_at": event.get("timestamp"),
                     "finished_at": None,
                 }
+                if event.get("input_code"):
+                    activity["input_code"] = str(event["input_code"])[:4000]
+                if tool_call_id:
+                    activity["tool_call_id"] = tool_call_id
+                    activities_by_tool_call_id[tool_call_id] = activity
                 if event.get("pre_reasoning"):
                     activity["pre_reasoning"] = event["pre_reasoning"]
                 activities.append(activity)
             elif phase == "end":
-                # Pair with the last unfinished start for this tool name
-                for activity in reversed(activities):
-                    if activity["tool_name"] == tool_name and activity["finished_at"] is None:
-                        activity["status"] = "error" if event.get("status") == "error" else "done"
-                        activity["artifact_keys"] = list(event.get("artifact_keys") or [])
-                        activity["finished_at"] = event.get("timestamp")
-                        if event.get("error"):
-                            activity["error"] = str(event["error"])[:300]
-                        break
+                tool_call_id = str(event.get("tool_call_id") or "").strip()
+                activity = activities_by_tool_call_id.get(tool_call_id) if tool_call_id else None
+                if activity is None:
+                    for candidate in reversed(activities):
+                        if (
+                            candidate["tool_name"] == tool_name
+                            and candidate["finished_at"] is None
+                            and not candidate.get("tool_call_id")
+                        ):
+                            activity = candidate
+                            break
+                if activity is None or activity["finished_at"] is not None:
+                    continue
+                activity["status"] = "error" if event.get("status") == "error" else "done"
+                activity["artifact_keys"] = list(event.get("artifact_keys") or [])
+                activity["finished_at"] = event.get("timestamp")
+                if event.get("error"):
+                    activity["error"] = str(event["error"])[:300]
+                if event.get("result_summary"):
+                    activity["result_summary"] = str(event["result_summary"])[:300]
+                if event.get("output_preview"):
+                    activity["output_preview"] = str(event["output_preview"])[:800]
+                for key in ("executed_code", "contract_hint", "referenced_dataframe_schemas"):
+                    if event.get(key) not in (None, "", [], {}):
+                        activity[key] = event[key]
         # Strip unpaired/empty entries and clean None finished_at
         result = []
         for a in activities:
             if a.get("finished_at") is None:
                 a["finished_at"] = a["started_at"]
+                if unfinished_status == "error":
+                    a["status"] = "error"
+                    if unfinished_error:
+                        a["error"] = str(unfinished_error)[:300]
+                        a["result_summary"] = str(unfinished_error)[:300]
+                        a["output_preview"] = str(unfinished_error)[:800]
             result.append(a)
         return result
 
     def absorb_tool_message(self, tool_name: str, result: ToolMessage) -> None:
+        with self._lock:
+            self._absorb_tool_message_locked(tool_name, result)
+
+    def _absorb_tool_message_locked(self, tool_name: str, result: ToolMessage) -> None:
         """Extract and store artifacts from a ToolMessage returned by tool.invoke().
 
         LangChain 1.0.0 passes a ToolMessage to on_tool_end, so _normalize_output
@@ -710,6 +870,34 @@ class AgentProgressCollector(BaseCallbackHandler):
         self.events.append(payload)
 
 
+class ContextUsageCollector(BaseCallbackHandler):
+    ignore_llm = True
+    ignore_chain = True
+    ignore_agent = True
+    ignore_retriever = True
+    ignore_chat_model = True
+
+    def __init__(
+        self,
+        queue: asyncio.Queue | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        super().__init__()
+        self.snapshots: list[dict[str, Any]] = []
+        self._queue = queue
+        self._loop = loop
+
+    def add_snapshot(self, snapshot: ContextUsageSnapshot) -> None:
+        payload = snapshot.model_dump()
+        self.snapshots.append(payload)
+        if self._queue is None or self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(
+            self._queue.put_nowait,
+            ("context_usage", payload),
+        )
+
+
 class PhaseCollector(BaseCallbackHandler):
     """Collects structured ReAct phase events (think / act / evaluate / finalize)."""
 
@@ -771,10 +959,12 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         loop: asyncio.AbstractEventLoop,
         *,
         show_think: bool = True,
+        enable_thinking: bool = True,
     ) -> None:
         self.queue = queue
         self.loop = loop
         self._show_think = show_think
+        self._enable_thinking = enable_thinking
         # Per-call parser (reset after each on_llm_end).
         self._stream_parser: ThinkingOutputParser = ThinkingOutputParser()
         self.reasoning_tokens_emitted = 0
@@ -782,6 +972,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self.reasoning_chunks: list[str] = []
         # Cumulative across all LLM calls (for collected_reasoning())
         self._all_reasoning: list[str] = []
+        self._all_visible: list[str] = []
         self._thinking_started_this_call: bool = False
         # Last completed thinking block — consumed by ToolCollector on tool_start
         self._pending_thinking: str = ""
@@ -807,26 +998,32 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
 
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         # Ollama streams reasoning in ChatGenerationChunk.message.additional_kwargs["reasoning"].
-        chunk = kwargs.get("chunk")
-        if chunk is not None:
-            msg = getattr(chunk, "message", None)
-            chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
-            if chunk_reasoning:
-                self._emit_reasoning(chunk_reasoning)
+        # Only capture when thinking is enabled — Ollama emits this field unconditionally
+        # even when enable_thinking=False was requested via chat_template_kwargs.
+        if self._enable_thinking:
+            chunk = kwargs.get("chunk")
+            if chunk is not None:
+                msg = getattr(chunk, "message", None)
+                chunk_reasoning = (getattr(msg, "additional_kwargs", {}) or {}).get("reasoning", "")
+                if chunk_reasoning:
+                    self._emit_reasoning(chunk_reasoning)
         if not token:
             return
         visible, reasoning = self._stream_parser.feed(token)
         if visible:
+            self._all_visible.append(visible)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
-        if reasoning:
+        # Only emit reasoning from <think> tags when thinking is enabled.
+        if reasoning and self._enable_thinking:
             self._emit_reasoning(reasoning)
 
     def on_llm_end(self, response: object, **kwargs: Any) -> None:
         # Flush any buffered partial tag text; unclosed <think> is discarded (no leak).
         visible, reasoning = self._stream_parser.flush()
-        if reasoning:
+        if reasoning and self._enable_thinking:
             self._emit_reasoning(reasoning)
         if visible:
+            self._all_visible.append(visible)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
 
         # Reset per-call parser so the next LLM call starts clean.
@@ -835,7 +1032,9 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         # Ollama + Qwen3 returns thinking in the `reasoning` field of the message
         # (OpenAI-compatible API), not as <think> tags in the token stream.
         # If no reasoning was captured via tag parsing, extract it from the response.
-        if not self.reasoning_chunks:
+        # Only do this when thinking is enabled — Ollama always returns reasoning even
+        # when enable_thinking=False was requested, so we must explicitly ignore it.
+        if not self.reasoning_chunks and self._enable_thinking:
             try:
                 gen = response.generations[0][0]  # type: ignore[union-attr]
                 ak = getattr(gen.message, "additional_kwargs", {})
@@ -861,6 +1060,11 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
     def collected_reasoning(self) -> str | None:
         """Return all reasoning collected across every LLM call."""
         merged = "".join(self._all_reasoning).strip()
+        return merged or None
+
+    def collected_visible(self) -> str | None:
+        """Return all visible text collected across every LLM call."""
+        merged = "".join(self._all_visible).strip()
         return merged or None
 
     def all_reasoning_steps(self) -> list[str]:

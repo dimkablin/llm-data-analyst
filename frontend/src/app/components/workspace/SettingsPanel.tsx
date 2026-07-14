@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Brain, Cpu, Info, Loader2, RefreshCw, Settings, Sliders, X } from "lucide-react";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
+import { BookOpen, Brain, Cpu, Database, Eye, HelpCircle, Info, Loader2, Radio, RefreshCw, Settings, Sliders, X } from "lucide-react";
+import { Switch } from "../ui/switch";
+import {
+  getSession,
+  getSessionNotebookCells,
+  type NotebookCell,
+} from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
@@ -10,6 +14,7 @@ import {
   type UserSettings,
 } from "../../lib/backend-types";
 import { MarkdownBlock } from "../MarkdownBlock";
+import { SemanticCatalogBlock } from "./SemanticCatalogBlock";
 
 type Props = {
   onClose: () => void;
@@ -18,11 +23,22 @@ type Props = {
   datasetName: string;
   settings: UserSettings;
   modelProfile: RuntimeModelProfile | null;
+  isAdmin?: boolean;
   onSave: (payload: Partial<UserSettings>) => Promise<void>;
   isStreaming?: boolean;
 };
 
-export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, settings, modelProfile, onSave, isStreaming }: Props) {
+export function SettingsPanel({
+  onClose,
+  sessionId,
+  sessionTitle,
+  datasetName,
+  settings,
+  modelProfile,
+  isAdmin = false,
+  onSave,
+  isStreaming,
+}: Props) {
   const [draft, setDraft] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -36,7 +52,7 @@ export function SettingsPanel({ onClose, sessionId, sessionTitle, datasetName, s
     setSaveMessage(null);
     try {
       await onSave(draft);
-      setSaveMessage("Настройки сохранены на backend.");
+      setSaveMessage("Настройки сохранены на бэкенде.");
     } catch (error) {
       setSaveMessage(String(error));
     } finally {
@@ -53,7 +69,7 @@ return (
             <h3 className="text-[14px] font-bold uppercase tracking-[0.12em]">Настройки</h3>
           </div>
           <p className="mt-1 text-[12px] text-muted-foreground">
-            Runtime-параметры с сохранением в backend.
+            Параметры среды с сохранением в бэкенде.
           </p>
         </div>
         <button onClick={onClose} className="rounded-lg border border-border/40 bg-secondary/80 p-2 transition-all hover:bg-muted">
@@ -68,45 +84,28 @@ return (
             Контекст сессии
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
-            <MetaRow label="Session ID" value={sessionId || "n/a"} />
+            {isAdmin ? <MetaRow label="Session ID" value={sessionId || "n/a"} /> : null}
             <MetaRow label="Сессия" value={sessionTitle || "Новый чат"} />
             <MetaRow label="Датасет" value={datasetName || "Не загружен"} />
-            <MetaRow label="Провайдер" value={modelProfile?.provider || "backend"} />
-            <MetaRow label="Модель" value={modelProfile?.model || "n/a"} />
+            {isAdmin ? (
+              <>
+                <MetaRow label="Провайдер" value={modelProfile?.provider || "бэкенд"} />
+                <MetaRow label="Модель" value={modelProfile?.model || "n/a"} />
+              </>
+            ) : null}
           </div>
         </section>
 
+        <SectionCard
+          title="Метаданные / Семантический слой"
+          icon={<Database className="h-3.5 w-3.5" />}
+          help="Семантический слой связывает бизнес-термины, метрики и связи с реальными таблицами источника. Для одного и того же файла или БД он сохраняется и переиспользуется между сессиями."
+        >
+          <SemanticCatalogBlock sessionId={sessionId} />
+        </SectionCard>
+
         <SectionCard title="Профиль ответа" icon={<Brain className="h-3.5 w-3.5" />}>
           <div className="grid gap-4">
-            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
-              <span className="text-sm">Показывать reasoning по умолчанию</span>
-              <input
-                type="checkbox"
-                checked={draft.default_include_reasoning}
-                onChange={(event) => setDraft((prev) => ({ ...prev, default_include_reasoning: event.target.checked }))}
-                className="h-4 w-4 accent-primary"
-              />
-            </label>
-            <label className="grid gap-2">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">Стиль ответа</span>
-              <Select
-                value={draft.default_answer_style}
-                onValueChange={(value) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    default_answer_style: value === "concise" ? "concise" : "detailed",
-                  }))
-                }
-              >
-                <SelectTrigger className="h-11 rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="detailed">Развернутый</SelectItem>
-                  <SelectItem value="concise">Краткий</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
             <DepthButtons
               value={draft.analysis_depth}
               onChange={(value) =>
@@ -120,13 +119,13 @@ return (
           </div>
         </SectionCard>
 
-        <SectionCard title="Runtime агента" icon={<Cpu className="h-3.5 w-3.5" />}>
+        <SectionCard title="Среда агента" icon={<Cpu className="h-3.5 w-3.5" />}>
           <div className="grid grid-cols-2 gap-3">
             <NumberField label="Темп. чата" value={draft.llm_temperature_chat} step={0.05} onChange={(value) => setDraft((prev) => ({ ...prev, llm_temperature_chat: value }))} />
             <NumberField label="Темп. инструментов" value={draft.llm_temperature_tool} step={0.05} onChange={(value) => setDraft((prev) => ({ ...prev, llm_temperature_tool: value }))} />
             <NumberField label="Макс. токенов" value={draft.llm_max_tokens_default} step={128} onChange={(value) => setDraft((prev) => ({ ...prev, llm_max_tokens_default: Math.round(value) }))} />
-            <NumberField label="Токены reasoning" value={draft.llm_max_tokens_reasoning} step={128} onChange={(value) => setDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
-            <NumberField label="Таймаут backend, сек" value={draft.backend_query_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
+            <NumberField label="Токены рассуждения" value={draft.llm_max_tokens_reasoning} step={128} onChange={(value) => setDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
+            <NumberField label="Таймаут бэкенда, сек" value={draft.backend_query_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
             <NumberField
               label="Макс. шагов"
               value={draft.agent_max_steps}
@@ -142,17 +141,70 @@ return (
             />
             <NumberField label="Таймаут шага, сек" value={draft.agent_step_timeout_sec} step={5} onChange={(value) => setDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
             <NumberField label="Внутр. рекурсия" value={draft.agent_inner_recursion_limit} step={1} onChange={(value) => setDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
-            <label className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
-              <div>
-                <span className="text-sm">Режим ReAct</span>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Рассуждение и поток" icon={<Eye className="h-3.5 w-3.5" />}>
+          <div className="grid gap-3">
+            {/* Управляет тем, формирует ли LLM рассуждение. */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Brain className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Включить расширенное рассуждение</span>
               </div>
-              <input
-                type="checkbox"
-                checked={draft.agent_react_enabled ?? false}
-                onChange={(e) => setDraft((prev) => ({ ...prev, agent_react_enabled: e.target.checked }))}
-                className="h-4 w-4 accent-primary ml-3 shrink-0"
+              <Switch
+                checked={draft.default_include_reasoning}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, default_include_reasoning: checked }))}
+                className="ml-3"
               />
-            </label>
+            </div>
+
+            {/* Транспорт: потоковая передача токенов или цельный ответ. */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Radio className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Потоковая передача ответа</span>
+              </div>
+              <Switch
+                checked={draft.llm_streaming}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, llm_streaming: checked }))}
+                className="ml-3"
+              />
+            </div>
+
+            {/* UI: показать или скрыть блоки рассуждения. */}
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <span className="text-sm">Показывать блоки рассуждения в чате</span>
+              <Switch
+                checked={draft.show_thinking}
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, show_thinking: checked }))}
+                className="ml-3"
+              />
+            </div>
+
+            {/* Переключатели видов выключены, когда основной режим отключен. */}
+            <div className={`ml-4 grid gap-2 transition-opacity ${draft.show_thinking ? "opacity-100" : "opacity-40"}`}>
+              {(
+                [
+                  { key: "show_think_planning" as const, label: "Планирование" },
+                  { key: "show_think_tool" as const,     label: "Синтез инструментов" },
+                  { key: "show_think_final" as const,    label: "Финальный вывод" },
+                ]
+              ).map(({ key, label }) => (
+                <div
+                  key={key}
+                  className="inline-flex items-center justify-between rounded-xl border border-border/30 bg-background/15 px-4 py-2.5"
+                >
+                  <span className="text-[13px] text-muted-foreground">{label}</span>
+                  <Switch
+                    checked={draft[key]}
+                    disabled={!draft.show_thinking}
+                    onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, [key]: checked }))}
+                    className="ml-3"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
         </SectionCard>
 
@@ -160,7 +212,7 @@ return (
           <SessionMemoryBlock sessionId={sessionId} />
         </SectionCard>
 
-        <SectionCard title="Notebook сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
+        <SectionCard title="Блокнот сессии" icon={<BookOpen className="h-3.5 w-3.5" />}>
           <SessionNotebookBlock sessionId={sessionId} isStreaming={isStreaming} />
         </SectionCard>
       </div>
@@ -268,11 +320,11 @@ function NotebookCellView({ cell }: { cell: NotebookCell }) {
 
   return (
     <div className="rounded-lg border border-border/40 bg-background/20 overflow-hidden">
-      {/* Cell header */}
+      {/* Заголовок ячейки. */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-muted/30 border-b border-border/30">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-muted-foreground/50">In [{cell.index}]</span>
-          <span className="text-[11px] font-medium text-foreground/70">{cell.tool_name || "code"}</span>
+          <span className="text-[10px] font-mono text-muted-foreground/50">Вход [{cell.index}]</span>
+          <span className="text-[11px] font-medium text-foreground/70">{cell.tool_name || "код"}</span>
           {cell.language === "sql" && (
             <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400/80 font-medium">SQL</span>
           )}
@@ -280,24 +332,24 @@ function NotebookCellView({ cell }: { cell: NotebookCell }) {
         <span className="text-[10px] text-muted-foreground/50">{cell.timestamp}</span>
       </div>
 
-      {/* Question (only for sql_tool) */}
+      {/* Вопрос показывается только для sql_tool. */}
       {cell.question && (
         <div className="px-3 pt-2 pb-1 text-[11px] italic text-muted-foreground/70 border-b border-border/20">
-          Q: {cell.question}
+          Вопрос: {cell.question}
         </div>
       )}
 
-      {/* Code block */}
+      {/* Блок кода. */}
       {cell.code && (
         <pre className="px-3 py-2 text-[11px] font-mono text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all leading-relaxed bg-transparent m-0">
           <code>{cell.code}</code>
         </pre>
       )}
 
-      {/* Output */}
+      {/* Результат. */}
       {cell.result_summary && (
         <div className="flex items-start gap-2 px-3 py-1.5 border-t border-border/30 bg-emerald-500/5">
-          <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">Out[{cell.index}]</span>
+          <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">Выход[{cell.index}]</span>
           <span className="text-[11px] text-emerald-400/80">{cell.result_summary}</span>
         </div>
       )}
@@ -316,7 +368,7 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
     void load();
   }, []);
 
-  // Reload when agent finishes streaming
+  // Перезагрузка после завершения потокового ответа агента.
   useEffect(() => {
     if (prevStreamingRef.current === true && isStreaming === false) {
       void load();
@@ -332,7 +384,7 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
       setCells(data);
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch {
-      setError("Не удалось загрузить notebook сессии");
+      setError("Не удалось загрузить блокнот сессии");
     } finally {
       setIsLoading(false);
     }
@@ -350,7 +402,7 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
   return (
     <div className="space-y-3">
       <p className="text-[12px] text-muted-foreground leading-relaxed">
-        Лог выполнений sandbox — код, результаты и смены источников данных за текущую сессию.
+        Лог выполнений песочницы: код, результаты и смены источников данных за текущую сессию.
       </p>
 
       {error && (
@@ -359,7 +411,7 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
 
       <div className="relative min-h-[80px] max-h-[480px] overflow-y-auto space-y-2 pr-0.5">
         {cells.length === 0 ? (
-          <p className="text-[13px] italic text-muted-foreground py-2">Notebook пуст — записи появятся после первого запроса с данными.</p>
+          <p className="text-[13px] italic text-muted-foreground py-2">Блокнот пуст: записи появятся после первого запроса с данными.</p>
         ) : (
           cells.map((cell) => <NotebookCellView key={cell.index} cell={cell} />)
         )}
@@ -380,15 +432,35 @@ function SessionNotebookBlock({ sessionId, isStreaming }: { sessionId: string; i
   );
 }
 
-function SectionCard({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+function SectionCard({ title, icon, help, children }: { title: string; icon: ReactNode; help?: string; children: ReactNode }) {
   return (
     <section className="rounded-2xl border border-border/50 bg-secondary/20 p-4">
       <div className="mb-4 flex items-start gap-3">
         <div className="rounded-lg bg-primary/10 p-1.5 text-primary">{icon}</div>
-        <h4 className="text-[13px] font-bold uppercase tracking-[0.12em]">{title}</h4>
+        <h4 className="flex items-center gap-2 text-[13px] font-bold uppercase tracking-[0.12em]">
+          {title}
+          {help ? <InfoHint text={help} /> : null}
+        </h4>
       </div>
       {children}
     </section>
+  );
+}
+
+function InfoHint({ text }: { text: string }) {
+  return (
+    <span className="group relative inline-flex">
+      <span
+        tabIndex={0}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-border/50 bg-secondary/70 text-muted-foreground outline-none transition-all hover:border-primary/50 hover:bg-primary/10 hover:text-primary focus:border-primary/50 focus:bg-primary/10 focus:text-primary"
+        aria-label={text}
+      >
+        <HelpCircle className="h-3.5 w-3.5" />
+      </span>
+      <span className="pointer-events-none absolute left-1/2 top-7 z-50 w-72 -translate-x-1/2 rounded-xl border border-border/60 bg-popover/95 px-3 py-2 text-left text-[12px] font-medium normal-case leading-relaxed tracking-normal text-popover-foreground opacity-0 shadow-2xl shadow-black/20 backdrop-blur-xl transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        {text}
+      </span>
+    </span>
   );
 }
 
@@ -443,9 +515,9 @@ function DepthButtons({
   onChange: (value: AnalysisDepth) => void;
 }) {
   const options: Array<{ id: AnalysisDepth; label: string; desc: string }> = [
-    { id: "light", label: "Легкий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.light} шагов max` },
-    { id: "medium", label: "Средний", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.medium} шагов max` },
-    { id: "deep", label: "Глубокий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.deep} шагов max` },
+    { id: "light", label: "Легкий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.light} шагов макс.` },
+    { id: "medium", label: "Средний", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.medium} шагов макс.` },
+    { id: "deep", label: "Глубокий", desc: `До ${ANALYSIS_DEPTH_STEP_CEILING.deep} шагов макс.` },
   ];
   return (
     <div className="space-y-2">

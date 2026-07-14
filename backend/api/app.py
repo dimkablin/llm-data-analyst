@@ -12,37 +12,51 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 
 from backend.agent.callbacks import (
-    AgentProgressCollector,
+    ContextUsageCollector,
     LLMTextCollector,
     PhaseCollector,
     TokenStreamCallbackHandler,
     ToolCollector,
 )
 from backend.agent.runner import AgentRunner
+from backend.agent.services.chat_title import ChatTitleService
 from backend.api import deps
 from backend.api.models import ToolAvailabilityResponse
 from backend.api.routes import (
     admin,
+    admin_skills,
     auth,
     data,
     db_connections,
     health,
+    mcp_servers,
     observability_route,
     query,
+    rag_documents,
+    reports,
+    semantic_catalog,
     sessions,
     skills,
     sources,
 )
 from backend.auth.auth_db import AuthDB
 from backend.auth.user_memory import UserMemoryService
+from backend.auth.user_settings_defaults import user_settings_defaults_from_runtime
 from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_connections_service import DBConnectionsService
 from backend.data_access.db_runtime_service import DBRuntimeService
+from backend.data_access.semantic_catalog_service import SemanticCatalogService
+from backend.data_access.semantic_catalog_store import semantic_catalog_store_from_settings
+from backend.data_access.semantic_context import SemanticContextBuilder
+from backend.data_access.semantic_generation_service import SemanticCatalogGenerationService
+from backend.data_access.semantic_vector_store import SemanticVectorStore
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
+from backend.integrations.openproject import OpenProjectSyncService
 from backend.integrations.rag import RAGService
 from backend.integrations.search import SearchIntegrationService
+from backend.mcp.service import MCPServerService
 from backend.notebook.kernel_manager import KernelManager
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
@@ -54,6 +68,8 @@ from backend.observability.phoenix import (
 )
 from backend.observability.service import PhoenixObservabilityService
 from backend.sessions.session_store import SessionStore
+from backend.skills.override_store import SkillOverrideStore
+from backend.skills.registry import SkillRegistry
 from backend.tools.catalog import KNOWN_TOOL_KEYS, build_tool_catalog
 from backend.tools.policy import effective_enabled_tool_keys
 from backend.tools.sandbox_manager import SandboxManager
@@ -139,15 +155,42 @@ app.add_middleware(
 )
 
 store = SessionStore(settings.storage_dir, settings.session_ttl_days)
-auth_db = AuthDB(settings.auth_db_path, settings.auth_token_ttl_days)
+auth_db = AuthDB(
+    settings.auth_db_path,
+    settings.auth_token_ttl_days,
+    user_settings_defaults=user_settings_defaults_from_runtime(settings),
+)
 auth_db.ensure_default_admin(
     settings.auth_default_admin_username,
     settings.auth_default_admin_password,
 )
+override_store = SkillOverrideStore(settings.auth_db_path)
+skill_registry = SkillRegistry.from_path(settings.skills_dir)
+skill_registry.override_store = override_store
 user_memory_service = UserMemoryService(auth_db)
 db_connections_service = DBConnectionsService(auth_db, settings)
 db_runtime_service = DBRuntimeService(db_connections_service)
 csv_runtime = CSVSessionRuntime(default_ttl_sec=settings.csv_session_ttl_sec)
+semantic_catalog_store = semantic_catalog_store_from_settings(settings, store.root_dir)
+semantic_vector_store = SemanticVectorStore.from_settings(settings)
+semantic_catalog_service = SemanticCatalogService(
+    store=store,
+    vector_store=semantic_vector_store if settings.semantic_layer_enabled else None,
+    settings=settings,
+    semantic_store=semantic_catalog_store,
+)
+semantic_generation_service = SemanticCatalogGenerationService(
+    store=store,
+    catalog_service=semantic_catalog_service,
+    db_runtime_service=db_runtime_service,
+    settings=settings,
+)
+semantic_context_builder = SemanticContextBuilder(
+    store=store,
+    vector_store=semantic_vector_store if settings.semantic_layer_enabled else None,
+    catalog_service=semantic_catalog_service,
+    top_k=settings.semantic_top_k,
+)
 notebook_store = NotebookStore(settings.storage_dir)
 manifest_store = ManifestStore(settings.storage_dir)
 notebook_orchestrator = NotebookOrchestrator(notebook_store)
@@ -159,7 +202,12 @@ kernel_manager = KernelManager(
 search_integration_service = SearchIntegrationService.from_env()
 forecast_integration_service = ForecastIntegrationService.from_env(settings=settings)
 anomaly_planfact_integration_service = AnomalyPlanfactIntegrationService.from_env(settings=settings)
+openproject_sync_service = OpenProjectSyncService.from_settings(
+    settings=settings,
+    db_connections_service=db_connections_service,
+)
 rag_service = RAGService.from_env()
+mcp_service = MCPServerService(auth_db=auth_db)
 runner = AgentRunner(
     settings,
     db_runtime_service=db_runtime_service,
@@ -167,7 +215,10 @@ runner = AgentRunner(
     forecast_service=forecast_integration_service,
     anomaly_planfact_service=anomaly_planfact_integration_service,
     rag_service=rag_service,
+    skill_registry=skill_registry,
+    override_store=override_store,
 )
+chat_title_service = ChatTitleService(settings=settings)
 phoenix_observability_service = PhoenixObservabilityService(settings)
 initialize_phoenix()
 
@@ -178,6 +229,7 @@ def _integration_source_descriptors() -> list[dict[str, Any]]:
         rag_service.source_descriptor(),
         forecast_integration_service.source_descriptor(),
         anomaly_planfact_integration_service.source_descriptor(),
+        openproject_sync_service.source_descriptor(),
     ]
 
 
@@ -203,10 +255,16 @@ def _configure_routes() -> None:
         known_tool_keys=KNOWN_TOOL_KEYS,
     )
     admin.setup(auth_db=auth_db)
+    mcp_servers.setup(auth_db=auth_db, mcp_service=mcp_service)
+    admin_skills.setup(
+        skill_registry=skill_registry,
+        auth_db=auth_db,
+        override_store=override_store,
+    )
     sessions.setup(
         auth_db=auth_db,
         store=store,
-        runner=runner,
+        title_service=chat_title_service,
         build_trace_context_fn=build_trace_context,
         query_trace_context_fn=query_trace_context,
         manifest_store=manifest_store,
@@ -217,8 +275,11 @@ def _configure_routes() -> None:
         csv_runtime=csv_runtime,
         manifest_store=manifest_store,
         notebook_orchestrator=notebook_orchestrator,
+        storage_dir=settings.storage_dir,
+        semantic_catalog_service=semantic_catalog_service,
     )
     sources.setup(
+        db_runtime_service=db_runtime_service,
         auth_db=auth_db,
         store=store,
         db_connections_service=db_connections_service,
@@ -226,6 +287,20 @@ def _configure_routes() -> None:
         csv_runtime=csv_runtime,
         manifest_store=manifest_store,
         notebook_orchestrator=notebook_orchestrator,
+        storage_dir=settings.storage_dir,
+        openproject_sync_service=openproject_sync_service,
+        semantic_catalog_service=semantic_catalog_service,
+    )
+    semantic_catalog.setup(
+        auth_db=auth_db,
+        store=store,
+        semantic_catalog_service=semantic_catalog_service,
+        semantic_generation_service=semantic_generation_service,
+    )
+    rag_documents.setup(
+        auth_db=auth_db,
+        store=store,
+        rag_service=rag_service,
     )
     db_connections.setup(
         auth_db=auth_db,
@@ -235,7 +310,7 @@ def _configure_routes() -> None:
     query.setup(
         auth_db=auth_db,
         store=store,
-        runner=runner,
+        skill_registry=skill_registry,
         db_runtime_service=db_runtime_service,
         search_integration_service=search_integration_service,
         forecast_integration_service=forecast_integration_service,
@@ -246,17 +321,21 @@ def _configure_routes() -> None:
         query_trace_context_fn=query_trace_context,
         app_settings=settings,
         csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        storage_dir=settings.storage_dir,
         LLMTextCollector=LLMTextCollector,
         ToolCollector=ToolCollector,
-        AgentProgressCollector=AgentProgressCollector,
         PhaseCollector=PhaseCollector,
         TokenStreamCallbackHandler=TokenStreamCallbackHandler,
+        ContextUsageCollector=ContextUsageCollector,
         AgentRunner=AgentRunner,
         effective_enabled_tool_keys_fn=effective_enabled_tool_keys,
         build_tool_catalog_fn=build_tool_catalog,
         known_tool_keys=KNOWN_TOOL_KEYS,
+        mcp_service=mcp_service,
+        semantic_context_builder=semantic_context_builder,
     )
-    skills.setup(runner=runner, auth_db=auth_db)
+    skills.setup(skill_registry=skill_registry, auth_db=auth_db)
     observability_route.setup(
         phoenix_observability_service=phoenix_observability_service,
     )
@@ -265,12 +344,17 @@ def _configure_routes() -> None:
     app.include_router(observability_route.router)
     app.include_router(auth.router)
     app.include_router(admin.router)
+    app.include_router(mcp_servers.router)
+    app.include_router(admin_skills.router)
     app.include_router(sessions.router)
     app.include_router(skills.router)
     app.include_router(data.router)
     app.include_router(sources.router)
+    app.include_router(semantic_catalog.router)
+    app.include_router(rag_documents.router)
     app.include_router(query.router)
     app.include_router(db_connections.router)
+    app.include_router(reports.router)
 
 
 _configure_routes()

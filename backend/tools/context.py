@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -9,6 +9,7 @@ from backend.core.config import Settings
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 
 if TYPE_CHECKING:
+    from backend.data_access.source_inventory import SourceInventory
     from backend.tools.sandbox import SessionSandbox
 
 
@@ -18,11 +19,19 @@ class ToolBuildContext:
 
     settings: Settings
     allowed_tool_keys: set[str] | None = None
+    allowed_skill_ids: set[str] | None = None
     df: pd.DataFrame | None = None
     tool_db_runtime: RuntimeDBConnectionConfig | None = None
     csv_loaded: bool = False
     csv_session_id: str | None = None
     sandbox: SessionSandbox | None = None
+    candidates_cache_key: str | None = None
+    source_inventory: SourceInventory | None = None
+    semantic_context_prompt: str = ""
+    semantic_hints: dict[str, Any] = field(default_factory=dict)
+    history: list[dict[str, Any]] = field(default_factory=list)
+    session_notes: str = ""
+    trace_context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def has_data(self) -> bool:
@@ -37,5 +46,3 @@ class ToolBuildContext:
     def tool_df(self) -> pd.DataFrame:
         """Normalised DataFrame (never None) safe to pass to tool constructors."""
         return self.df if self.df is not None else pd.DataFrame()
-
-

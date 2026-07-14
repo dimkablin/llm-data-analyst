@@ -12,3 +12,6 @@
 | [diagram_06_tool_parsing.md](diagram_06_tool_parsing.md) | Парсинг тул-вызовов |
 | [diagram_07_planner_flow.md](diagram_07_planner_flow.md) | Флоу планировщика |
 | [diagram_08_tool_streaming.md](diagram_08_tool_streaming.md) | Стриминг тул-вызовов на фронтенд |
+| [diagram_09_thinking_stream.md](diagram_09_thinking_stream.md) | LLM-вызовы и поток мышления агента |
+| [domain_extension_runtime.md](domain_extension_runtime.md) | Граница runtime/domain extensions и правила для новых доменных возможностей |
+| [testing.md](testing.md) | Canonical offline CI baseline, config check, and lint commands |

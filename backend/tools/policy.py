@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from typing import Any
 
 DATAFRAME_BASE_TOOL_KEYS: frozenset[str] = frozenset(
-    {"pandas_tool", "value_tool", "plotly_tool"}
+    {"pandas_tool", "plotly_tool"}
 )
 DB_BASE_TOOL_KEYS: frozenset[str] = frozenset({"sql_tool", "database_tool"})
 ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset({"search_tool", "memory"})
@@ -51,7 +51,7 @@ def detect_data_access_mode(
     source_type = ""
     if isinstance(session_source, dict):
         source_type = str(session_source.get("source_type", "")).strip().lower()
-    if source_type == "db_connection":
+    if source_type in {"db_connection", "openproject"}:
         return "db"
     if has_dataframe:
         return "dataset"
@@ -87,5 +87,4 @@ def has_enabled_data_tools(
     if not required:
         return True
     return any(is_tool_allowed(tool_key, allowed_tool_keys) for tool_key in required)
-
 

@@ -52,6 +52,9 @@ class SessionSource:
     bound_at: str = field(default_factory=utcnow_iso)
     schema_hint: dict[str, str] = field(default_factory=dict)
     """column_name → dtype string, populated after first load."""
+    preprocessing_summary: dict[str, Any] = field(default_factory=dict)
+    row_count: int | None = None
+    column_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -77,6 +80,12 @@ class SessionSource:
             d["csv_expires_at"] = self.csv_expires_at
         if self.schema_hint:
             d["schema_hint"] = self.schema_hint
+        if self.preprocessing_summary:
+            d["preprocessing_summary"] = self.preprocessing_summary
+        if self.row_count is not None:
+            d["row_count"] = self.row_count
+        if self.column_count is not None:
+            d["column_count"] = self.column_count
         return d
 
     @classmethod
@@ -95,6 +104,9 @@ class SessionSource:
             csv_expires_at=raw.get("csv_expires_at"),
             bound_at=raw.get("bound_at", ""),
             schema_hint=raw.get("schema_hint", {}),
+            preprocessing_summary=raw.get("preprocessing_summary", {}),
+            row_count=raw.get("row_count"),
+            column_count=raw.get("column_count"),
         )
 
 

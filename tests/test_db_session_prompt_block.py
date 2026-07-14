@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from backend.agent import AgentRunner
+from backend.agent.services.message_builder import db_session_prompt_block
 from backend.data_access import RuntimeDBConnectionConfig
 
 
@@ -18,9 +18,9 @@ def test_db_session_prompt_block_includes_connection_and_sql_hint_when_no_csv() 
         port=5432,
         database="analytics",
         username="u",
-        password="p",
+        password="secret-password",
     )
-    text = AgentRunner._db_session_prompt_block(
+    text = db_session_prompt_block(
         session_source={"source_label": "Моя БД"},
         runtime=rt,
         df=None,
@@ -28,14 +28,14 @@ def test_db_session_prompt_block_includes_connection_and_sql_hint_when_no_csv() 
     assert "Prod PG" in text
     assert "postgresql" in text
     assert "analytics" in text
-    assert "c1" in text
-    assert "Моя БД" in text
+    assert "c1" not in text
+    assert "secret-password" not in text
     assert "sql_tool" in text
 
 
 def test_db_session_prompt_block_empty_without_runtime() -> None:
     assert (
-        AgentRunner._db_session_prompt_block(
+        db_session_prompt_block(
             session_source={},
             runtime=None,
             df=None,
@@ -44,7 +44,7 @@ def test_db_session_prompt_block_empty_without_runtime() -> None:
     )
 
 
-def test_db_session_prompt_block_omits_sql_paragraph_when_csv_loaded() -> None:
+def test_db_session_prompt_block_keeps_sql_paragraph_when_db_runtime_is_loaded() -> None:
     rt = RuntimeDBConnectionConfig(
         connection_id="c1",
         user_id=1,
@@ -57,10 +57,10 @@ def test_db_session_prompt_block_omits_sql_paragraph_when_csv_loaded() -> None:
         password=None,
     )
     df = pd.DataFrame({"a": [1]})
-    text = AgentRunner._db_session_prompt_block(
+    text = db_session_prompt_block(
         session_source=None,
         runtime=rt,
         df=df,
     )
     assert "DB" in text
-    assert "sql_tool" not in text
+    assert "sql_tool" in text

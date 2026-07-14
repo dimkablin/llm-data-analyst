@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 
-import { deleteLastMessages, getSession, streamQuery } from "../lib/backend-api";
+import {
+  deleteLastMessages,
+  getSession,
+  streamQuery,
+} from "../lib/backend-api";
+import { finalizeInterruptedAssistantState } from "../lib/stream-abort";
 import type {
   ArtifactPayload,
   AssistantBlock,
   ChatMessage,
+  ContextUsageSnapshot,
   ExecutionGraph,
   PersistedToolCall,
   PhaseEvent,
@@ -14,10 +20,18 @@ import type {
   StreamToolCall,
 } from "../lib/backend-types";
 
-const META_TOOLS = new Set(["get_tool_instructions"]);
+const META_TOOLS = new Set<string>();
 
 function parseInputSummary(toolName: string, raw: string): string {
   if (META_TOOLS.has(toolName)) return "";
+  if (toolName === "get_tool_instructions") {
+    try {
+      const parsed = JSON.parse(raw.trim()) as Record<string, unknown>;
+      return typeof parsed.tool_name === "string" ? parsed.tool_name : raw.trim().slice(0, 40);
+    } catch {
+      return raw.trim().slice(0, 40);
+    }
+  }
   const trimmed = raw.trim();
   if (!trimmed) return "";
   try {
@@ -174,16 +188,134 @@ function applyLiveReasoningSnapshot(
 
 function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCall {
   return {
-    id: `hist-${p.tool_name}-${idx}`,
+    id: `hist-${p.tool_call_id || p.tool_name}-${idx}`,
+    tool_call_id: p.tool_call_id,
     tool_name: p.tool_name,
     input_summary: p.input_summary ?? p.tool_name,
     input_preview: p.input_preview,
+    input_code: p.input_code,
     status: p.status === "error" ? "error" : "done",
     artifact_keys: p.artifact_keys,
     started_at: p.started_at ? Date.parse(p.started_at) : 0,
-    output_preview: p.error ? `Error: ${p.error}` : undefined,
+    output_preview: p.output_preview ?? (p.error ? `Error: ${p.error}` : undefined),
+    result_summary: p.result_summary,
     pre_reasoning: p.pre_reasoning || undefined,
   };
+}
+
+/**
+ * Reconstruct an ordered AssistantBlock[] from persisted history so reload
+ * renders thinking interleaved with tool calls exactly as it did live.
+ *
+ * Order rule (mirrors backend `_build_reasoning_steps` + live stream order):
+ *   pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
+ *   followed by unique orphan reasoning_steps not already captured as pre_reasoning.
+ *
+ * Deduplication: the backend `_build_reasoning_steps` uses index-based mapping
+ * between raw thinking blocks and tool calls. When internal LLM calls (e.g. inside
+ * planner_tool) produce extra thinking blocks, the index mapping drifts and some
+ * reasoning_steps end up containing content identical to a tool's pre_reasoning.
+ * We deduplicate by content so thinking blocks do not appear twice.
+ *
+ * Returns undefined if there are no blocks to render (no tools & no orphan steps).
+ */
+function buildBlocksFromHistory(
+  tools: StreamToolCall[] | undefined,
+  reasoningSteps: import("../lib/backend-types").PersistedReasoningStep[] | null | undefined,
+): AssistantBlock[] | undefined {
+  const blocks: AssistantBlock[] = [];
+  let counter = 0;
+  const nextId = (prefix: string): string => `hist-blk-${prefix}-${counter++}`;
+
+  // Collect trimmed pre_reasoning content for deduplication of orphan steps.
+  const preReasoningSet = new Set<string>();
+
+  // Index infra-tool reasoning steps by tool_name for inline fallback rendering.
+  // These steps have tool_name set because pre_reasoning was discarded for infra tools
+  // but the backend still persists them in reasoning_steps so reload can show them.
+  const infraStepsByToolName = new Map<string, import("../lib/backend-types").PersistedReasoningStep[]>();
+  if (reasoningSteps) {
+    for (const step of reasoningSteps) {
+      if (step.tool_name) {
+        const arr = infraStepsByToolName.get(step.tool_name) ?? [];
+        arr.push(step);
+        infraStepsByToolName.set(step.tool_name, arr);
+      }
+    }
+  }
+
+  if (tools && tools.length > 0) {
+    for (const tool of tools) {
+      const trimmedPre = tool.pre_reasoning?.trim();
+      if (trimmedPre) {
+        preReasoningSet.add(trimmedPre);
+        blocks.push({
+          type: "thinking",
+          id: nextId("think"),
+          content: tool.pre_reasoning!,
+          kind: "tool_synthesis",
+        });
+      } else {
+        // Infra tool fallback: pre_reasoning was discarded on backend; use the
+        // reasoning_step that was saved with this tool_name instead.
+        const stepsForTool = infraStepsByToolName.get(tool.tool_name) ?? [];
+        for (const step of stepsForTool) {
+          const content = step.content?.trim();
+          if (content && !preReasoningSet.has(content)) {
+            preReasoningSet.add(content);
+            blocks.push({
+              type: "thinking",
+              id: nextId(`rs-${step.step_index}`),
+              content: step.content,
+              kind: step.kind ?? "tool_synthesis",
+            });
+          }
+        }
+      }
+      const toolUseId = nextId("tool");
+      blocks.push({
+        type: "tool_use",
+        id: toolUseId,
+        tool_name: tool.tool_name,
+        input_summary: tool.input_summary,
+        input_preview: tool.input_preview,
+        status: tool.status,
+        started_at: tool.started_at,
+        result_summary: tool.result_summary,
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+      blocks.push({
+        type: "tool_result",
+        id: nextId("res"),
+        tool_use_id: toolUseId,
+        tool_name: tool.tool_name,
+        status: tool.status === "error" ? "error" : "ok",
+        result_summary: tool.result_summary ?? "",
+        output_preview: tool.output_preview,
+        artifact_keys: tool.artifact_keys,
+      });
+    }
+  }
+
+  // Orphan reasoning steps (final_synthesis etc.) appear AFTER tool calls.
+  // Skip any step already placed inline (either via pre_reasoning or infra fallback).
+  if (reasoningSteps && reasoningSteps.length > 0) {
+    for (const step of reasoningSteps) {
+      const content = step.content?.trim();
+      if (!content) continue;
+      if (preReasoningSet.has(content)) continue; // already shown inline
+      if (step.tool_name) continue; // infra step — already placed inline above
+      blocks.push({
+        type: "thinking",
+        id: nextId(`rs-${step.step_index}`),
+        content: step.content,
+        kind: step.kind ?? "unknown",
+      });
+    }
+  }
+
+  return blocks.length > 0 ? blocks : undefined;
 }
 
 function toChatMessages(
@@ -199,17 +331,32 @@ function toChatMessages(
     tools?: PersistedToolCall[];
   }>,
 ): ChatMessage[] {
-  const messages = history.map((item, index) => ({
-    id: item.id ?? `${item.timestamp}-${index}`,
-    backendId: item.id,
-    timestamp: item.timestamp,
-    role: item.role === "user" ? "user" : ("assistant" as const),
-    content: item.content,
-    reasoning: item.reasoning ?? null,
-    reasoning_steps: item.reasoning_steps ?? null,
-    artifacts: item.artifacts ?? [],
-    tools: item.tools?.length ? item.tools.map(persistedToolToStream) : undefined,
-  }));
+  const messages = history.map((item, index) => {
+    // Filter META_TOOLS (e.g. get_tool_instructions) to match live streaming behavior.
+    // Backend persists all tool calls; frontend hides meta tools from the UI.
+    const filteredPersistedTools = item.tools?.filter(
+      (t) => !META_TOOLS.has(t.tool_name),
+    );
+    const tools = filteredPersistedTools?.length
+      ? filteredPersistedTools.map(persistedToolToStream)
+      : undefined;
+    const blocks =
+      item.role === "assistant" || item.role === "ai"
+        ? buildBlocksFromHistory(tools, item.reasoning_steps ?? null)
+        : undefined;
+    return {
+      id: item.id ?? `${item.timestamp}-${index}`,
+      backendId: item.id,
+      timestamp: item.timestamp,
+      role: item.role === "user" ? "user" : ("assistant" as const),
+      content: item.content,
+      reasoning: item.reasoning ?? null,
+      reasoning_steps: item.reasoning_steps ?? null,
+      artifacts: item.artifacts ?? [],
+      tools,
+      blocks,
+    };
+  });
   return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
 }
 
@@ -263,11 +410,12 @@ type UseChatAgentResult = {
   streamTools: StreamToolCall[];
   streamBlocks: AssistantBlock[];
   streamGraph: ExecutionGraph | null;
+  contextUsage: ContextUsageSnapshot | null;
   error: string | null;
   lastQuery: string | null;
   hydrate: (
     session: SessionState,
-    options?: { preserveStreamingForSessionId?: string | null },
+    options?: { preserveStreamingForSessionId?: string | null; suppressRestoredArtifactsMessage?: boolean },
   ) => void;
   sendQuery: (query: string) => Promise<void>;
   retryLast: () => Promise<void>;
@@ -296,6 +444,7 @@ export function useChatAgent({
   const [streamTools, setStreamTools] = useState<StreamToolCall[]>([]);
   const [streamBlocks, setStreamBlocks] = useState<AssistantBlock[]>([]);
   const [streamGraph, setStreamGraph] = useState<ExecutionGraph | null>(null);
+  const [contextUsage, setContextUsage] = useState<ContextUsageSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -373,7 +522,7 @@ export function useChatAgent({
 
   const hydrate = useCallback((
     session: SessionState,
-    options?: { preserveStreamingForSessionId?: string | null },
+    options?: { preserveStreamingForSessionId?: string | null; suppressRestoredArtifactsMessage?: boolean },
   ) => {
     const sid = session.session_id;
     // Should we keep the live messages for this session (it's currently streaming)?
@@ -384,7 +533,7 @@ export function useChatAgent({
 
     const hydratedMessages = toChatMessages(sid, session.chat_history);
     const hasArtifactMessages = hydratedMessages.some((item) => (item.artifacts?.length ?? 0) > 0);
-    if (!hasArtifactMessages && session.artifacts.length > 0) {
+    if (!options?.suppressRestoredArtifactsMessage && !hasArtifactMessages && session.artifacts.length > 0) {
       hydratedMessages.push({
         id: `restored-${Date.now()}`,
         timestamp: new Date().toISOString(),
@@ -414,6 +563,7 @@ export function useChatAgent({
     });
 
     setDisplayedSessionId(sid);
+    setContextUsage(session.context_usage ?? null);
     setError(null);
 
     // Clear streaming display state only when switching to a non-streaming session.
@@ -454,6 +604,8 @@ export function useChatAgent({
     setStreamPhases([]);
     setStreamTools([]);
     setStreamBlocks([]);
+    setStreamGraph(null);
+    setContextUsage(null);
     setError(null);
     setLastQuery(null);
   }, []);
@@ -479,6 +631,7 @@ export function useChatAgent({
       setStreamTools([]);
       setStreamBlocks([]);
       setStreamGraph(null);
+      setContextUsage(null);
       setIsStreaming(true);
       setStreamingSessionId(capturedSessionId);
 
@@ -526,10 +679,17 @@ export function useChatAgent({
             onFinal: (payload) => {
               streamState.finalPayload = payload;
             },
+            onContextUsage: (snapshot) => {
+              if (capturedSessionId === displayedSessionIdRef.current) {
+                setContextUsage(snapshot);
+              }
+            },
             onReasoning: (reasoningChunk, mode) => {
               if (!includeReasoning || !reasoningChunk) return;
               if (mode === "token") {
                 setStreamReasoning((prev) => prev + reasoningChunk);
+              } else if (mode === "chunk") {
+                setStreamReasoning(reasoningChunk);
               }
             },
             onThinkingStart: () => {
@@ -597,7 +757,6 @@ export function useChatAgent({
               if (META_TOOLS.has(event.tool_name)) return;
               const callId = `tool-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
               const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
-              const preReasoning = pendingThinkingBlock;
               pendingThinkingBlock = "";
 
               const intentText = pendingIntentText.trim();
@@ -613,17 +772,19 @@ export function useChatAgent({
               const toolBlockId = nextBlockId();
               const entry: StreamToolCall = {
                 id: callId,
+                tool_call_id: event.tool_call_id,
                 tool_name: event.tool_name,
                 input_summary: inputSummary,
                 input_preview: event.input_preview || undefined,
+                input_code: event.input_code || undefined,
                 status: "running",
                 started_at: Date.now(),
-                pre_reasoning: preReasoning || undefined,
               };
               collectedTools.push(entry);
               collectedBlocks.push({
                 type: "tool_use",
                 id: toolBlockId,
+                tool_call_id: event.tool_call_id,
                 tool_name: event.tool_name,
                 input_summary: inputSummary,
                 input_code: event.input_code || undefined,
@@ -647,7 +808,12 @@ export function useChatAgent({
                 ...(event.output_preview ? { output_preview: event.output_preview } : {}),
               };
               for (let i = collectedTools.length - 1; i >= 0; i--) {
-                if (collectedTools[i]!.tool_name === event.tool_name && collectedTools[i]!.status === "running") {
+                if (
+                  collectedTools[i]!.status === "running" &&
+                  (event.tool_call_id
+                    ? collectedTools[i]!.tool_call_id === event.tool_call_id
+                    : collectedTools[i]!.tool_name === event.tool_name)
+                ) {
                   collectedTools[i] = { ...collectedTools[i]!, ...endPatch };
                   break;
                 }
@@ -655,7 +821,13 @@ export function useChatAgent({
 
               for (let i = collectedBlocks.length - 1; i >= 0; i--) {
                 const blk = collectedBlocks[i]!;
-                if (blk.type === "tool_use" && blk.tool_name === event.tool_name && blk.status === "running") {
+                if (
+                  blk.type === "tool_use" &&
+                  blk.status === "running" &&
+                  (event.tool_call_id
+                    ? blk.tool_call_id === event.tool_call_id
+                    : blk.tool_name === event.tool_name)
+                ) {
                   collectedBlocks[i] = {
                     ...blk,
                     status: event.status === "ok" ? "done" : "error",
@@ -682,7 +854,12 @@ export function useChatAgent({
               setStreamTools((prev) => {
                 const copy = [...prev];
                 for (let i = copy.length - 1; i >= 0; i--) {
-                  if (copy[i]!.tool_name === event.tool_name && copy[i]!.status === "running") {
+                  if (
+                    copy[i]!.status === "running" &&
+                    (event.tool_call_id
+                      ? copy[i]!.tool_call_id === event.tool_call_id
+                      : copy[i]!.tool_name === event.tool_name)
+                  ) {
                     copy[i] = { ...copy[i]!, ...endPatch };
                     break;
                   }
@@ -718,22 +895,51 @@ export function useChatAgent({
         setStreamBlocks([]);
       }
 
+      // Assign kind to thinking blocks to match backend's _build_reasoning_steps logic.
+      // During streaming, onThinkingEnd pushes thinking blocks without kind. After streaming
+      // ends, filterBlocks() defaults kind=undefined to "tool_synthesis", which may differ
+      // from the kind the backend assigns (e.g. first block → "planning"). This causes
+      // thinking blocks to disappear until page reload restores them via reasoning_steps.
+      // Fix: replicate backend's position-based kind assignment before saving the message.
+      {
+        const thinkingIndices: number[] = [];
+        for (let i = 0; i < collectedBlocks.length; i++) {
+          const b = collectedBlocks[i]!;
+          if (b.type === "thinking" && !b.kind) thinkingIndices.push(i);
+        }
+        const n = thinkingIndices.length;
+        if (n === 1) {
+          (collectedBlocks[thinkingIndices[0]!] as import("../lib/backend-types").ThinkingBlock).kind = "final_synthesis";
+        } else if (n > 1) {
+          for (let pos = 0; pos < n; pos++) {
+            const kind: import("../lib/backend-types").ThinkingBlock["kind"] =
+              pos === 0 ? "planning" : pos === n - 1 ? "final_synthesis" : "tool_synthesis";
+            (collectedBlocks[thinkingIndices[pos]!] as import("../lib/backend-types").ThinkingBlock).kind = kind;
+          }
+        }
+      }
+
       if (aborted) {
         const partialReasoning = buildStreamingReasoning(collectedReasoning);
-        if (streamState.streamedText.trim() || partialReasoning) {
+        const interrupted = finalizeInterruptedAssistantState({
+          text: streamState.streamedText,
+          reasoning: partialReasoning,
+          phases: collectedPhases,
+          tools: collectedTools,
+          blocks: collectedBlocks,
+        });
+        if (interrupted.shouldAppend) {
           patchSlotMessages(capturedSessionId, (prev) => [
             ...prev,
             {
               id: `a-aborted-${Date.now()}`,
               timestamp: new Date().toISOString(),
               role: "assistant",
-              content:
-                streamState.streamedText.trim() ||
-                "_Генерация остановлена пользователем до появления итогового текста._",
-              reasoning: partialReasoning,
-              phases: collectedPhases.length > 0 ? [...collectedPhases] : undefined,
-              tools: collectedTools.length > 0 ? [...collectedTools] : undefined,
-              blocks: collectedBlocks.length > 0 ? [...collectedBlocks] : undefined,
+              content: interrupted.content,
+              reasoning: interrupted.reasoning,
+              phases: interrupted.phases,
+              tools: interrupted.tools,
+              blocks: interrupted.blocks,
             },
           ]);
         }
@@ -842,7 +1048,17 @@ export function useChatAgent({
         },
       ]);
     },
-    [analysisDepth, appendSlotArtifacts, includeReasoning, isStreaming, patchSlotMessages, replaceSlot, sessionId, useHistory],
+    [
+      analysisDepth,
+      appendSlotArtifacts,
+      includeReasoning,
+      isStreaming,
+      patchSlotMessages,
+      replaceSlot,
+      selectedSkillIds,
+      sessionId,
+      useHistory,
+    ],
   );
 
   const retryLast = useCallback(async () => {
@@ -861,9 +1077,25 @@ export function useChatAgent({
     if (!query) {
       return;
     }
-    if (lastUserMsg?.backendId) {
+    let backendMsgId = lastUserMsg?.backendId;
+    if (!backendMsgId) {
+      // Message was added during the current stream and never hydrated, so its
+      // backend ID is unknown. Fetch the session to find the last user message.
       try {
-        await deleteLastMessages(sessionId, lastUserMsg.backendId);
+        const session = await getSession(sessionId);
+        for (let i = session.chat_history.length - 1; i >= 0; i -= 1) {
+          if (session.chat_history[i]!.role === "user") {
+            backendMsgId = session.chat_history[i]!.id;
+            break;
+          }
+        }
+      } catch {
+        // Best-effort.
+      }
+    }
+    if (backendMsgId) {
+      try {
+        await deleteLastMessages(sessionId, backendMsgId);
       } catch {
         // Best-effort: continue even if the message wasn't persisted yet.
       }
@@ -896,6 +1128,7 @@ export function useChatAgent({
     streamTools,
     streamBlocks,
     streamGraph,
+    contextUsage,
     error,
     lastQuery,
     hydrate,

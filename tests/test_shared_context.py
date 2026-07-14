@@ -16,7 +16,7 @@ class SandboxScopePersistenceTests(unittest.TestCase):
         sb.bind_dataframe(pd.DataFrame({"a": [1, 2, 3]}))
 
         sb.execute("x = df['a'].sum()", tool_name="pandas_tool")
-        result = sb.execute("tool_result = {'v': {'total': x}}", tool_name="value_tool")
+        result = sb.execute("tool_result = {'v': {'total': x}}", tool_name="pandas_tool")
 
         assert isinstance(result, dict)
         assert result["v"]["total"] == 6
@@ -26,7 +26,7 @@ class SandboxScopePersistenceTests(unittest.TestCase):
         df = pd.DataFrame({"col": [10, 20, 30]})
         sb.bind_dataframe(df, source_label="test.csv")
 
-        result = sb.execute("tool_result = {'v': {'rows': len(df)}}", tool_name="value_tool")
+        result = sb.execute("tool_result = {'v': {'rows': len(df)}}", tool_name="pandas_tool")
         assert result["v"]["rows"] == 3
 
     def test_plotly_available_when_include_plotly(self) -> None:
@@ -162,31 +162,25 @@ class SkillsIntegrationTests(unittest.TestCase):
         skills = registry.list_skills()
 
         skill_ids = {s.skill_id for s in skills}
-        assert "plotly_tool" in skill_ids
-        assert "sql_tool" in skill_ids
+        assert "general_analytics" in skill_ids
+        assert "plotly_tool" not in skill_ids
+        assert "sql_tool" not in skill_ids
 
-    def test_sql_tool_skill_describes_data_flow(self) -> None:
-        from pathlib import Path
+    def test_sql_tool_instructions_describe_data_flow(self) -> None:
+        from backend.tools.instructions import get_default_tool_instruction_registry
 
-        from backend.skills import SkillRegistry
+        document = get_default_tool_instruction_registry().get("sql_tool")
 
-        skills_dir = Path(__file__).parent.parent / "skills"
-        registry = SkillRegistry.from_path(skills_dir)
-        skill = registry.get("sql_tool")
+        assert "mode" in document.body
+        assert "artifact name" in document.body
 
-        assert "db.query_dataframe" in skill.instructions_markdown
+    def test_tool_prompt_block_includes_plotly_instructions(self) -> None:
+        from backend.tools.instructions import get_default_tool_instruction_registry
 
-    def test_tool_skills_prompt_block_includes_plotly_instructions(self) -> None:
-        from pathlib import Path
+        block = get_default_tool_instruction_registry().build_brief_block(
+            {"plotly_tool", "sql_tool"}
+        )
 
-        from backend.skills import SkillRegistry
-
-        skills_dir = Path(__file__).parent.parent / "skills"
-        registry = SkillRegistry.from_path(skills_dir)
-        block = registry.build_tool_skills_prompt_block({"plotly_tool", "sql_tool"})
-
-        assert "db.query_dataframe" in block
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert "get_tool_instructions" in block
+        assert "plotly_tool" in block
+        assert "sql_tool" in block

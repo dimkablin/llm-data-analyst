@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.skills.contracts import SkillExecutionContract
+
 
 class SkillError(Exception):
     """Base error for skill loading and selection."""
@@ -28,13 +30,25 @@ class Skill:
     skill_id: str
     name: str
     description: str
-    instructions_markdown: str
+    core_markdown: str
+    details_markdown: str | None
     source_path: str
     triggers: tuple[str, ...] = ()
     python_examples: tuple[SkillExample, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     kind: str = "analytical"
     tool_key: str | None = None
+    enabled_by_default: bool = True
+    execution_contract: SkillExecutionContract = field(default_factory=SkillExecutionContract)
+
+    @property
+    def instructions_markdown(self) -> str:
+        """Backward-compat alias → core_markdown."""
+        return self.core_markdown
+
+    @property
+    def has_details(self) -> bool:
+        return self.details_markdown is not None
 
     @property
     def source_name(self) -> str:
@@ -48,6 +62,7 @@ class SkillSummary:
     description: str
     triggers: tuple[str, ...]
     source_path: str
+    enabled_by_default: bool = True
 
 
 @dataclass(frozen=True)

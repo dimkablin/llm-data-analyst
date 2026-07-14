@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-import pandas as pd
-
 from backend.artifacts import build_artifact_meta
 from backend.integrations import SearchIntegrationConfig, SearchIntegrationService
+from backend.tools.impl.base_tool import BaseExecTool
 from backend.tools.impl.search_tool import SearchTool
 
 
@@ -228,7 +227,7 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
         )
 
     def test_run_direct_uses_json_key_not_items_envelope(self) -> None:
-        tool = SearchTool(pd.DataFrame(), search_service=self._make_service())
+        tool = SearchTool(search_service=self._make_service())
         _text, payload = tool._run_direct({"query": "q"})
 
         # Artifact key must be 'json' (search_tool.artifact_name), not 'table'
@@ -245,7 +244,7 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
 
     def test_run_accepts_query_kwarg_like_langchain(self) -> None:
         """Structured tool calls pass query=... as kwargs; _run must not raise TypeError."""
-        tool = SearchTool(pd.DataFrame(), search_service=self._make_service())
+        tool = SearchTool(search_service=self._make_service())
         _text, payload = tool._run(query="capital of France", run_manager=None)
 
         self.assertIn("json", payload)
@@ -273,11 +272,49 @@ class SearchToolRunDirectPayloadTests(unittest.TestCase):
             ),
             transport=fake_transport,
         )
-        tool = SearchTool(pd.DataFrame(), search_service=service)
+        tool = SearchTool(search_service=service)
         _text, payload = tool._run(queries=["one", "two"], run_manager=None)
 
         self.assertIn("json", payload)
 
+    def test_search_tool_is_not_exec_tool_and_is_parallel_safe(self) -> None:
+        tool = SearchTool(search_service=self._make_service())
 
-if __name__ == "__main__":
-    unittest.main()
+        self.assertNotIsInstance(tool, BaseExecTool)
+        self.assertTrue(tool.parallel_safe)
+        self.assertEqual(tool.name, "search_tool")
+        self.assertEqual(tool.response_format, "content_and_artifact")
+
+    def test_search_tool_constructor_does_not_need_dataframe(self) -> None:
+        tool = SearchTool(search_service=self._make_service())
+        _text, payload = tool._run(query="capital of France", run_manager=None)
+
+        self.assertIn("json", payload)
+        self.assertNotIn("items", payload)
+
+    def test_search_tool_passes_fetch_top_n_and_engines(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_transport(url: str, payload: dict[str, object], timeout_sec: float) -> dict[str, object]:
+            del url, timeout_sec
+            captured.update(payload)
+            return {"answer": "Synth", "results": []}
+
+        service = SearchIntegrationService(
+            SearchIntegrationConfig(
+                enabled=True,
+                base_url="https://search.example",
+                search_endpoint="/api/v1/search/",
+                fetch_endpoint="/api/v1/fetch/",
+                timeout_sec=9.0,
+                max_results_default=5,
+                fetch_top_n_default=0,
+            ),
+            transport=fake_transport,
+        )
+        tool = SearchTool(search_service=service)
+
+        tool._run(query="q", fetch_top_n=3, engines=["web"])
+
+        self.assertEqual(captured["fetch_top_n"], 3)
+        self.assertEqual(captured["engines"], "web")

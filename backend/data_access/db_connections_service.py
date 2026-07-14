@@ -71,6 +71,12 @@ class DBConnectionsService:
             return clean
 
         lowered = clean.lower()
+        openproject_pg_host = str(
+            getattr(self.settings, "openproject_pg_host", "") or ""
+        ).strip().lower()
+        if openproject_pg_host and lowered == openproject_pg_host:
+            return clean
+
         if lowered in {"localhost", "localhost.localdomain"}:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -343,4 +349,3 @@ class DBConnectionsService:
         if updated is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found.")
         return updated
-

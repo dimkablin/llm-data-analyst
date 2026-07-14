@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from backend.agent.prompts import pandas_tool_prompt
 from backend.tools.impl.base_tool import BaseExecTool
+from backend.tools.instructions import tool_description
 
 if TYPE_CHECKING:
     from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
@@ -28,11 +28,9 @@ class PandasTool(BaseExecTool):
     name: str = "pandas_tool"
     artifact_name: str = "table"
     human_name: str = "таблиц"
-    description: str = pandas_tool_prompt
-    allowed_libs: set[str] = {"pandas", "numpy"}
+    description: str = tool_description("pandas_tool")
+    allowed_libs: set[str] = {"pandas", "numpy", "re", "datetime"}
     allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
-    TOOL_ENABLE_THINKING: ClassVar[bool] = False  # deterministic, temp=0
-
     def __init__(
         self,
         df: pd.DataFrame,
@@ -40,13 +38,6 @@ class PandasTool(BaseExecTool):
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         sandbox: object | None = None,
-        llm_base_url: str | None = None,
-        llm_model: str | None = None,
-        llm_api_key: str | None = None,
-        llm_enable_thinking: bool = False,
-        llm_chat_template_kwargs_enabled: bool = True,
-        llm_provider: str = "",
-        code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__(
             df,
@@ -55,13 +46,6 @@ class PandasTool(BaseExecTool):
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
             sandbox=sandbox,
-            llm_base_url=llm_base_url,
-            llm_model=llm_model,
-            llm_api_key=llm_api_key,
-            llm_enable_thinking=llm_enable_thinking,
-            llm_chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
-            llm_provider=llm_provider,
-            code_fix_max_retries=code_fix_max_retries,
         )
 
     @staticmethod
@@ -78,10 +62,30 @@ class PandasTool(BaseExecTool):
             rounded.loc[:, numeric_columns] = rounded.loc[:, numeric_columns].round(4)
         return rounded
 
+    def _validate_tool_contract(
+        self,
+        tool_result: object,
+    ) -> tuple[dict[str, object] | None, str]:
+        if isinstance(tool_result, str) and tool_result.strip():
+            return {"output": pd.DataFrame({"output": tool_result.splitlines()})}, ""
+        return super()._validate_tool_contract(tool_result)
+
     def post_process_tool_result(self, tool_result: dict[str, object]) -> dict[str, object]:
         base = super().post_process_tool_result(tool_result)
         processed: dict[str, object] = {}
         for name, value in base.items():
+            # Normalize common LLM payload slips into tabular objects accepted by pandas_tool.
+            if isinstance(value, list):
+                if all(isinstance(item, dict) for item in value):
+                    value = pd.DataFrame(value)
+                elif len(value) == 0:
+                    value = pd.DataFrame()
+            elif isinstance(value, dict):
+                try:
+                    value = pd.DataFrame([value])
+                except Exception:
+                    # Keep original value; validator will report precise type mismatch.
+                    pass
             if isinstance(value, (pd.DataFrame, pd.Series)):
                 processed[name] = self._round_numeric_table(value)
             else:

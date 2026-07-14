@@ -17,14 +17,14 @@ class MemoryToolTests(unittest.TestCase):
         result = tool._run("User prefers monthly aggregations")
         self.assertEqual(len(collected), 1)
         self.assertEqual(collected[0], "User prefers monthly aggregations")
-        self.assertIn("Saved to user memory", result)
+        self.assertIn("User prefers monthly aggregations", result)
 
     def test_empty_note_not_saved(self) -> None:
         collected: list[str] = []
         tool = MemoryTool(on_note=collected.append)
         result = tool._run("   ")
         self.assertEqual(len(collected), 0)
-        self.assertIn("empty", result)
+        self.assertTrue(result.strip())
 
     def test_note_stripped_before_callback(self) -> None:
         collected: list[str] = []
@@ -38,8 +38,9 @@ class MemoryToolTests(unittest.TestCase):
         long_note = "x" * 200
         result = tool._run(long_note)
         self.assertEqual(len(collected[0]), 200)
-        self.assertTrue(result.startswith("Saved to user memory: "))
-        self.assertLess(len(result), len("Saved to user memory: ") + 130)
+        self.assertIn("x" * 120, result)
+        self.assertNotIn("x" * 121, result)
+        self.assertLess(len(result), len(long_note))
 
     def test_multiple_calls_all_collected(self) -> None:
         collected: list[str] = []
@@ -107,7 +108,3 @@ class MemoryToolRegistryTests(unittest.TestCase):
         mem_tool = next(t for t in tools if t.name == "memory")
         mem_tool._run("registry callback test")
         self.assertIn("registry callback test", collected)
-
-
-if __name__ == "__main__":
-    unittest.main()

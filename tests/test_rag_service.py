@@ -162,6 +162,208 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(result.answer, "Chunk A\n-----\nChunk B")
         self.assertEqual(result.references, [])
 
+    def test_upload_document_uses_lightrag_multipart_endpoint(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_upload_transport(
+            url: str,
+            file_name: str,
+            content: bytes,
+            content_type: str,
+            timeout_sec: float,
+            verify_ssl: bool,
+        ) -> dict[str, object]:
+            captured["url"] = url
+            captured["file_name"] = file_name
+            captured["content"] = content
+            captured["content_type"] = content_type
+            captured["timeout_sec"] = timeout_sec
+            captured["verify_ssl"] = verify_ssl
+            return {
+                "status": "success",
+                "message": "uploaded",
+                "track_id": "upload_123",
+            }
+
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            upload_transport=fake_upload_transport,
+        )
+
+        result = service.upload_document(
+            file_name="policy.txt",
+            content=b"policy text",
+            content_type="text/plain",
+        )
+
+        self.assertEqual(captured["url"], "https://rag.example/documents/upload")
+        self.assertEqual(captured["file_name"], "policy.txt")
+        self.assertEqual(captured["content"], b"policy text")
+        self.assertEqual(captured["content_type"], "text/plain")
+        self.assertEqual(captured["timeout_sec"], 10.0)
+        self.assertFalse(captured["verify_ssl"])
+        self.assertEqual(result["track_id"], "upload_123")
+
+    def test_track_status_normalizes_lightrag_document_status(self) -> None:
+        def fake_get_transport(
+            url: str,
+            timeout_sec: float,
+            verify_ssl: bool,
+        ) -> dict[str, object]:
+            self.assertEqual(
+                url,
+                "https://rag.example/documents/track_status/upload_123",
+            )
+            self.assertEqual(timeout_sec, 10.0)
+            self.assertFalse(verify_ssl)
+            return {
+                "track_id": "upload_123",
+                "status_summary": {"DocStatus.PROCESSED": 1},
+                "documents": [
+                    {
+                        "id": "doc-1",
+                        "file_path": "policy.txt",
+                        "status": "processed",
+                        "chunks_count": 2,
+                    }
+                ],
+            }
+
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            get_transport=fake_get_transport,
+        )
+
+        result = service.get_track_status("upload_123")
+
+        self.assertEqual(result["track_id"], "upload_123")
+        self.assertEqual(result["status_summary"], {"processed": 1})
+        self.assertEqual(result["documents"][0]["status"], "processed")
+        self.assertEqual(result["documents"][0]["file_path"], "policy.txt")
+
+    def test_list_documents_flattens_lightrag_status_buckets(self) -> None:
+        def fake_get_transport(
+            url: str,
+            timeout_sec: float,
+            verify_ssl: bool,
+        ) -> dict[str, object]:
+            self.assertEqual(url, "https://rag.example/documents")
+            _ = (timeout_sec, verify_ssl)
+            return {
+                "statuses": {
+                    "processed": [
+                        {"id": "doc-1", "file_path": "a.txt", "status": "processed"}
+                    ],
+                    "failed": [
+                        {"id": "doc-2", "file_path": "b.txt", "error_msg": "boom"}
+                    ],
+                }
+            }
+
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            get_transport=fake_get_transport,
+        )
+
+        result = service.list_documents()
+
+        self.assertEqual(len(result["documents"]), 2)
+        self.assertEqual(result["documents"][0]["status"], "processed")
+        self.assertEqual(result["documents"][1]["status"], "failed")
+
+    def test_delete_document_uses_lightrag_delete_endpoint(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_delete_transport(
+            url: str,
+            payload: dict[str, object],
+            timeout_sec: float,
+            verify_ssl: bool,
+        ) -> dict[str, object]:
+            captured["url"] = url
+            captured["payload"] = dict(payload)
+            captured["timeout_sec"] = timeout_sec
+            captured["verify_ssl"] = verify_ssl
+            return {
+                "status": "deletion_started",
+                "message": "Document deletion started",
+                "doc_id": "doc-123",
+            }
+
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+            delete_transport=fake_delete_transport,
+        )
+
+        result = service.delete_document("doc-123")
+
+        self.assertEqual(captured["url"], "https://rag.example/documents/delete_document")
+        self.assertEqual(
+            captured["payload"],
+            {
+                "doc_ids": ["doc-123"],
+                "delete_file": False,
+                "delete_llm_cache": False,
+            },
+        )
+        self.assertEqual(captured["timeout_sec"], 10.0)
+        self.assertFalse(captured["verify_ssl"])
+        self.assertEqual(result["status"], "deletion_started")
+        self.assertEqual(result["document_id"], "doc-123")
+
+    def test_delete_document_rejects_empty_document_id(self) -> None:
+        service = RAGService(
+            RAGConfig(
+                enabled=True,
+                base_url="https://rag.example",
+                query_endpoint="/query",
+                stream_endpoint="/query/stream",
+                timeout_sec=10.0,
+                verify_ssl=False,
+                query_mode_default="hybrid",
+                top_k_default=5,
+            ),
+        )
+
+        with self.assertRaisesRegex(Exception, "document_id"):
+            service.delete_document(" ")
+
     def test_format_for_user_handles_empty_answer(self) -> None:
         service = RAGService(
             RAGConfig(
@@ -179,7 +381,3 @@ class RAGServiceTests(unittest.TestCase):
 
         result = service.search(query="empty answer case")
         self.assertIn("RAG", service.format_for_user(result))
-
-
-if __name__ == "__main__":
-    unittest.main()

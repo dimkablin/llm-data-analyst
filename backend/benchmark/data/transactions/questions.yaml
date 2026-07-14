@@ -1,0 +1,300 @@
+cases:
+- id: merchant_category_economics
+  question: 'Проанализируй категории мерчантов: где больше операций и оборота, как распределяются комиссии, кэшбэк и доход банка. Назови лучшие и проблемные категории.'
+  must_include_numbers:
+  - 113
+  - 3318436
+  - 13409
+  - 38448
+  - 204
+  - 5608103
+  - 25771
+  - 150
+  - 2287030
+  - 20177
+  - 424
+  - 670397
+  - 4884
+  - 399
+  - 125
+  - 3680516
+  - 114227
+  - -55780
+  expected_facts:
+  - 'electronics: 113 операций, amount 3 318 436, cashback_amount 13 409, bank_income 38 448.'
+  - 'p2p: 204 операции, amount 5 608 103, fee_amount 25 771, bank_income 25 771.'
+  - 'atm: 150 операций, amount 2 287 030, fee_amount 20 177, bank_income 20 177.'
+  - 'groceries: 424 операции, amount 670 397, cashback_amount 4 884, bank_income 399.'
+  - 'travel: 125 операций, amount 3 680 516, cashback_amount 114 227, bank_income -55 780.'
+  expected_insights:
+  - Категории сильно отличаются по экономике.
+  - electronics дает самый высокий bank_income.
+  - p2p и atm зарабатывают в основном на комиссиях.
+  - 'travel проблемная категория: большой оборот, но отрицательный bank_income.'
+- id: travel_promo_problem
+  question: 'Посмотри на траты в категории путешествий. Сравни операции с промо TRAVEL5 и без промо: где оборот, кэшбэк и доход банка. Объясни, убыток создает сама категория или конкретно промо.'
+  must_include_numbers:
+  - 125
+  - 3680516
+  - 114227
+  - -55780
+  - 55
+  - 2227032
+  - 109972
+  - -74781
+  - 67
+  - 1439097
+  - 3824
+  - 19202
+  expected_facts:
+  - 'Всего по travel: 125 операций, amount 3 680 516, cashback_amount 114 227, bank_income -55 780.'
+  - 'TRAVEL5: 55 операций, amount 2 227 032, cashback_amount 109 972, bank_income -74 781.'
+  - 'travel no_promo: 67 операций, amount 1 439 097, cashback_amount 3 824, bank_income 19 202.'
+  expected_insights:
+  - Главная причина отрицательного дохода - промо TRAVEL5.
+  - 'Проблема не в самой категории travel: без промо категория прибыльна.'
+  - TRAVEL5 разгоняет оборот, но кэшбэк слишком дорогой для банка.
+- id: suspicious_operations
+  question: 'Где чаще встречаются подозрительные операции: в каких каналах, категориях мерчантов и их сочетаниях? Покажи и количество, и долю, чтобы не спутать масштаб и риск.'
+  must_include_numbers:
+  - 31
+  - 1772
+  - 1.75
+  - 5
+  - 113
+  - 4.42
+  - 13
+  - 527
+  - 2.47
+  - 4
+  - 89
+  - 4.49
+  expected_facts:
+  - Всего 31 подозрительная операция из 1772, около 1,75%.
+  - 'electronics: 5 подозрительных операций из 113, доля 4,42%.'
+  - 'online: 13 подозрительных операций из 527, доля 2,47%.'
+  - 'online + electronics: 4 подозрительные операции из 89, доля 4,49%.'
+  expected_insights:
+  - Риск выше всего в онлайн-операциях.
+  - Особенно выделяется сочетание online + electronics.
+  - Нужно не путать absolute suspicious_count и suspicious_rate_pct.
+- id: customer_segments_income
+  question: Какие сегменты клиентов дают больше оборота и дохода банку? Сравни их по числу операций, обороту, кэшбэку, доходу, среднему чеку и доходу на одну операцию.
+  must_include_numbers:
+  - 1020
+  - 7705886
+  - 36844
+  - 7555
+  - 36
+  - 379
+  - 2539419
+  - 7997
+  - 6700
+  - 21
+  - 175
+  - 3742116
+  - 3726
+  - 21384
+  - 198
+  - 3164535
+  - -5144
+  - 15983
+  - -26
+  - 37663
+  expected_facts:
+  - 'mass: 1020 операций, amount 7 705 886, bank_income 36 844, средний чек 7 555, bank_income/count 36.'
+  - 'new: 379 операций, amount 2 539 419, bank_income 7 997, средний чек 6 700, bank_income/count 21.'
+  - 'small_business: 175 операций, amount 3 742 116, bank_income 3 726, средний чек 21 384, bank_income/count 21.'
+  - 'premium: 198 операций, amount 3 164 535, bank_income -5 144, средний чек 15 983, bank_income/count -26, cashback_amount 37 663.'
+  expected_insights:
+  - Самый доходный сегмент по суммарному bank_income - mass.
+  - Premium и small_business имеют высокий средний чек, но mass приносит основную прибыль.
+  - 'Premium проблемный: крупные операции есть, но cashback уводит bank_income в минус.'
+- id: declined_reversed_operations
+  question: Разбери отклоненные и отмененные операции. Покажи, в каких типах операций и категориях мерчантов они заметнее всего. Отдельно отрази количества и доли.
+  must_include_numbers:
+  - 30
+  - 1772
+  - 1.69
+  - 11
+  - 0.62
+  - 22
+  - 1264
+  - 1.74
+  - 4
+  - 204
+  - 1.96
+  - 2
+  - 150
+  - 1.33
+  - 154
+  - 1.3
+  - 3
+  - 113
+  - 2.65
+  - 125
+  - 2.4
+  - 424
+  - 1.89
+  expected_facts:
+  - declined = 30 операций из 1772, доля 1,69%.
+  - reversed = 11 операций из 1772, доля 0,62%.
+  - 'card_purchase: 22 declined из 1264, доля 1,74%.'
+  - 'transfer: 4 declined из 204, доля 1,96%.'
+  - 'cash_withdrawal: 2 declined из 150, доля 1,33%.'
+  - 'service_payment: 2 declined из 154, доля 1,30%.'
+  - 'electronics: 3 declined из 113, доля 2,65%.'
+  - 'travel: 3 declined из 125, доля 2,40%.'
+  - 'groceries: 8 declined из 424, доля 1,89%.'
+  expected_insights:
+  - По абсолютному количеству больше всего declined у card_purchase.
+  - По доле declined выделяются electronics и travel.
+  - Declined и reversed нельзя смешивать в один показатель.
+- id: channel_economics
+  question: 'Сравни каналы операций: где больше оборот, комиссии, кэшбэк, доход банка и средний чек. Объясни, почему online и card_pos отличаются от mobile_app.'
+  must_include_numbers:
+  - 462
+  - 5976456
+  - 24466
+  - 4007
+  - 31974
+  - 527
+  - 5841363
+  - 90171
+  - -1670
+  - 586
+  - 2397359
+  - 43185
+  - -11354
+  - 150
+  - 2287030
+  - 20177
+  expected_facts:
+  - 'mobile_app: 462 операции, amount 5 976 456, fee_amount 24 466, cashback_amount 4 007, bank_income 31 974.'
+  - 'online: 527 операций, amount 5 841 363, cashback_amount 90 171, bank_income -1 670.'
+  - 'card_pos: 586 операций, amount 2 397 359, cashback_amount 43 185, bank_income -11 354.'
+  - 'atm: 150 операций, amount 2 287 030, fee_amount 20 177, bank_income 20 177.'
+  expected_insights:
+  - mobile_app самый прибыльный канал по bank_income.
+  - online имеет большой оборот, но проседает из-за cashback_amount.
+  - card_pos убыточен при большом количестве операций из-за cashback и низкого среднего чека.
+- id: monthly_trend_april_issue
+  question: 'Покажи динамику по месяцам: число операций, оборот, кэшбэк и доход банка. Найди месяц с минусовым доходом и объясни, с чем это связано.'
+  must_include_numbers:
+  - 291
+  - 2228294
+  - 18267
+  - 281
+  - 2371417
+  - 17198
+  - 364
+  - 3321716
+  - 24011
+  - 446
+  - 5566442
+  - -51011
+  - 115060
+  - 390
+  - 3664086
+  - 34959
+  expected_facts:
+  - '2026-01: 291 операций, amount 2 228 294, bank_income 18 267.'
+  - '2026-02: 281 операция, amount 2 371 417, bank_income 17 198.'
+  - '2026-03: 364 операции, amount 3 321 716, bank_income 24 011.'
+  - '2026-04: 446 операций, amount 5 566 442, cashback_amount 115 060, bank_income -51 011.'
+  - '2026-05: 390 операций, amount 3 664 086, bank_income 34 959.'
+  expected_insights:
+  - Единственный месяц с отрицательным bank_income - апрель 2026.
+  - Провал апреля связан с резким ростом cashback_amount.
+  - Причину нужно искать в travel/TRAVEL5, а не во всех месяцах равномерно.
+- id: promo_effectiveness
+  question: 'Оцени экономику промо-акций: сравни их по числу операций, обороту, кэшбэку и доходу банка. Какие промо прибыльны, а какие съедают доход?'
+  must_include_numbers:
+  - 55
+  - 2227032
+  - 109972
+  - -74781
+  - 1530
+  - 13990840
+  - 17590
+  - 123761
+  - 146
+  - 314634
+  - 6237
+  - -3742
+  - 34
+  - 121862
+  - 3563
+  - -1815
+  - 7
+  - 497588
+  - 0
+  expected_facts:
+  - 'TRAVEL5: 55 операций, amount 2 227 032, cashback_amount 109 972, bank_income -74 781.'
+  - 'no_promo: 1530 операций, amount 13 990 840, cashback_amount 17 590, bank_income 123 761.'
+  - 'EVERYDAY2: 146 операций, amount 314 634, cashback_amount 6 237, bank_income -3 742.'
+  - 'WELCOME3: 34 операции, amount 121 862, cashback_amount 3 563, bank_income -1 815.'
+  - 'BUSINESS_FEE0: 7 операций, amount 497 588, cashback_amount 0, bank_income 0.'
+  expected_insights:
+  - TRAVEL5 - главный убыточный промо-драйвер.
+  - no_promo формирует основной положительный bank_income.
+  - EVERYDAY2 и WELCOME3 небольшие, но также минусовые.
+- id: city_profit_and_risk
+  question: Сравни города по обороту, доходу банка и подозрительным операциям. Где лучшая экономика, а где выше риск?
+  must_include_numbers:
+  - 683
+  - 6898194
+  - 7811
+  - 16
+  - 2.34
+  - 433
+  - 4192239
+  - 12033
+  - 6
+  - 1.39
+  - 218
+  - 1547390
+  - 13015
+  - 3
+  - 1.38
+  - 249
+  - 2276592
+  - 3502
+  - 1.2
+  expected_facts:
+  - 'Moscow: 683 операции, amount 6 898 194, bank_income 7 811, suspicious_count 16, suspicious_rate_pct 2,34%.'
+  - 'Saint Petersburg: 433 операции, amount 4 192 239, bank_income 12 033, suspicious_count 6, suspicious_rate_pct 1,39%.'
+  - 'Yekaterinburg: 218 операций, amount 1 547 390, bank_income 13 015, suspicious_count 3, suspicious_rate_pct 1,38%.'
+  - 'Kazan: 249 операций, amount 2 276 592, bank_income 3 502, suspicious_rate_pct 1,20%.'
+  expected_insights:
+  - Moscow лидирует по обороту и suspicious_count, но не по bank_income.
+  - Yekaterinburg дает самый высокий bank_income при меньшем обороте.
+  - По suspicious_rate_pct хуже всего Moscow среди крупных городов.
+- id: operation_type_economics
+  question: 'Сравни типы операций: по обороту, комиссиям, кэшбэку, доходу банка и среднему чеку. Отдели карточные покупки, переводы, снятия наличных и оплату услуг.'
+  must_include_numbers:
+  - 1264
+  - 8733188
+  - -10867
+  - 6909
+  - 204
+  - 5608103
+  - 25771
+  - 27491
+  - 150
+  - 2287030
+  - 20177
+  - 15247
+  - 154
+  - 523634
+  - 8341
+  - 3400
+  expected_facts:
+  - 'card_purchase: 1264 операции, amount 8 733 188, bank_income -10 867, avg_check 6 909.'
+  - 'transfer: 204 операции, amount 5 608 103, fee_amount 25 771, bank_income 25 771, avg_check 27 491.'
+  - 'cash_withdrawal: 150 операций, amount 2 287 030, fee_amount 20 177, bank_income 20 177, avg_check 15 247.'
+  - 'service_payment: 154 операции, amount 523 634, bank_income 8 341, avg_check 3 400.'
+  expected_insights:
+  - card_purchase самый массовый и крупнейший по обороту, но убыточный.
+  - transfer и cash_withdrawal прибыльны за счет комиссий.
+  - service_payment меньше по обороту, но положителен по bank_income.

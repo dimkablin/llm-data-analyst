@@ -72,7 +72,10 @@ export function Sessions() {
     if (!user) {
       return;
     }
-    void Promise.all([refreshSessions(), getRuntimeModelProfile().catch(() => null)]).then(([, model]) => {
+    void Promise.all([
+      refreshSessions(),
+      user.is_admin ? getRuntimeModelProfile().catch(() => null) : Promise.resolve(null),
+    ]).then(([, model]) => {
       if (model) {
         setModelProfile(model);
       }
@@ -213,7 +216,7 @@ export function Sessions() {
     }
   }
 
-  const modelLabel = modelProfile?.model || modelProfile?.provider || "runtime model";
+  const modelConnected = Boolean(user?.is_admin && modelProfile);
 
   function handleExportSelectedSession(): void {
     if (!selectedState) {
@@ -240,7 +243,7 @@ export function Sessions() {
             </div>
             <h1 className="text-2xl font-bold tracking-tight lg:text-3xl xl:text-4xl">Сессии аналитика</h1>
             <p className="max-w-xl text-[17px] leading-relaxed text-muted-foreground">
-              Централизованное хранилище ваших диалогов с AI, сгенерированных графиков и аналитических отчетов.
+              Централизованное хранилище ваших диалогов с ИИ, сгенерированных графиков и аналитических отчетов.
             </p>
           </motion.div>
 
@@ -260,7 +263,7 @@ export function Sessions() {
           <StatCard label="Всего сессий" value={String(sessions.length)} icon={<MessageSquare className="h-5 w-5" />} />
           <StatCard label="С датасетом" value={String(sessions.filter((item) => item.has_dataset).length)} icon={<Table2 className="h-5 w-5" />} />
           <StatCard label="Последний доступ" value={sessions[0] ? formatDateTime(sessions[0].last_access) : "—"} icon={<CalendarDays className="h-5 w-5" />} />
-          <StatCard label="Режим" value="Live backend" icon={<Cpu className="h-5 w-5" />} />
+          <StatCard label="Режим" value="Живой бэкенд" icon={<Cpu className="h-5 w-5" />} />
         </div>
 
         <div className="mb-6 flex items-center gap-4 xl:mb-8">
@@ -339,7 +342,7 @@ export function Sessions() {
                   <div className="flex items-center gap-4 text-muted-foreground">
                     <div className="flex items-center gap-1.5 rounded-lg bg-secondary/80 px-2.5 py-1 text-[12px] font-medium">
                       <Bot className="h-3.5 w-3.5" />
-                      {modelLabel}
+                      {modelConnected ? "Модель подключена" : "Ассистент"}
                     </div>
                     <div className="flex items-center gap-1.5 text-[13px]">
                       <BarChart3 className="h-3.5 w-3.5" />
@@ -379,7 +382,7 @@ export function Sessions() {
                   />
                   <div className="flex gap-3">
                     <button type="button" onClick={() => void handleRename()} className="rounded-2xl bg-foreground px-4 py-3 text-sm font-bold text-background">
-                      Сохранить title
+                      Сохранить заголовок
                     </button>
                     <button type="button" onClick={() => void handleDeleteSession(selectedState.session_id)} className="rounded-2xl border border-rose-500/30 px-4 py-3 text-sm font-bold text-rose-400">
                       <Trash2 className="mr-1 inline h-4 w-4" />
@@ -430,7 +433,7 @@ export function Sessions() {
                   <MessageSquare className="h-10 w-10 text-muted-foreground/50" />
                 </div>
                 <h3 className="mb-3 text-2xl font-bold">Выберите сессию</h3>
-                <p className="max-w-xs text-muted-foreground">Правая панель остается частью нового frontend и показывает живые backend-данные по выбранной сессии.</p>
+                <p className="max-w-xs text-muted-foreground">Правая панель остается частью нового фронтенда и показывает живые данные бэкенда по выбранной сессии.</p>
               </div>
             )}
           </div>

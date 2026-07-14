@@ -1,0 +1,4 @@
+customer_id,customer_name,region,segment
+501,Acme Corp,North,enterprise
+502,Beta LLC,South,smb
+503,Delta Market,West,midmarket

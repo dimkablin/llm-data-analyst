@@ -109,7 +109,3 @@ class ForecastIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["recipe"][0]["model_name"], "test-model")
         self.assertIn("forecast", payload["meta"])
         self.assertEqual(payload["meta"]["forecast"]["row_count"], 2)
-
-
-if __name__ == "__main__":
-    unittest.main()

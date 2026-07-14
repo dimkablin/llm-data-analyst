@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from statistics import median
@@ -13,8 +14,11 @@ from backend.observability.models import (
     PhoenixLatencyPoint,
     PhoenixOverviewResponse,
     PhoenixOverviewStats,
+    PhoenixSpanSnapshotItem,
     PhoenixTokenUsageRow,
+    PhoenixTraceDetailResponse,
     PhoenixTraceRow,
+    PhoenixTracesResponse,
 )
 
 
@@ -63,6 +67,16 @@ class PhoenixSpanSnapshot:
     @property
     def user(self) -> str | None:
         value = self.attributes.get("metadata.username")
+        if value is None:
+            return None
+        clean = str(value).strip()
+        return clean or None
+
+    @property
+    def skill_ids(self) -> str | None:
+        value = self.attributes.get("metadata.selected_skill_names")
+        if value is None:
+            value = self.attributes.get("metadata.selected_skill_ids")
         if value is None:
             return None
         clean = str(value).strip()
@@ -204,6 +218,7 @@ class PhoenixRunSnapshot:
     output_tokens: int | None
     total_tokens: int | None
     token_source: str
+    skill_ids: str | None = None
 
 
 class PhoenixObservabilityService:
@@ -222,6 +237,19 @@ class PhoenixObservabilityService:
             clean = str(origin).strip().rstrip("/")
             if clean and clean not in self._api_origins:
                 self._api_origins.append(clean)
+
+        # In-memory cache for span fetches
+        self._cached_spans: list[PhoenixSpanSnapshot] | None = None
+        self._cached_at: float = 0.0
+        self._cache_ttl: float = 15.0
+
+    def _get_spans(self, project_id: str) -> list[PhoenixSpanSnapshot]:
+        now = time.monotonic()
+        if self._cached_spans is not None and now - self._cached_at < self._cache_ttl:
+            return self._cached_spans
+        self._cached_spans = self._fetch_spans(project_id)
+        self._cached_at = now
+        return self._cached_spans
 
     def build_overview(self) -> PhoenixOverviewResponse:
         generated_at = datetime.now(UTC).isoformat()
@@ -255,7 +283,7 @@ class PhoenixObservabilityService:
                     }
                 )
 
-            spans = self._fetch_spans(project["id"])
+            spans = self._get_spans(project["id"])
             runs = self._build_runs(spans)
             warnings: list[str] = []
             if runs and not any(run.total_tokens is not None for run in runs):
@@ -403,6 +431,7 @@ class PhoenixObservabilityService:
                     span_count=len(group),
                     started_at=root.start_time,
                     model=model,
+                    skill_ids=root.skill_ids,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     total_tokens=total_tokens,
@@ -599,6 +628,126 @@ class PhoenixObservabilityService:
         root_path = self.settings.phoenix_host_root_path.strip() or "/phoenix"
         root_path = f"/{root_path.lstrip('/')}"
         return root_path
+
+    def get_traces(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PhoenixTracesResponse:
+        try:
+            project = self._resolve_project()
+            if project is None:
+                return PhoenixTracesResponse(total=0, traces=[])
+            spans = self._get_spans(project["id"])
+            runs = self._build_runs(spans)
+            total = len(runs)
+            page = runs[offset : offset + limit]
+            return PhoenixTracesResponse(
+                total=total,
+                traces=[self._run_to_trace_row(run) for run in page],
+            )
+        except Exception:
+            return PhoenixTracesResponse(total=0, traces=[])
+
+    def get_trace_spans(self, trace_id: str) -> PhoenixTraceDetailResponse:
+        try:
+            project = self._resolve_project()
+            if project is None:
+                return PhoenixTraceDetailResponse(trace_id=trace_id, spans=[])
+            all_spans = self._get_spans(project["id"])
+            trace_spans = [s for s in all_spans if s.trace_id == trace_id]
+            return PhoenixTraceDetailResponse(
+                trace_id=trace_id,
+                project_id=project["id"],
+                project_name=project["name"],
+                spans=[self._span_to_item(s) for s in trace_spans],
+            )
+        except Exception:
+            return PhoenixTraceDetailResponse(trace_id=trace_id, spans=[])
+
+    def get_session_spans(self, session_id: str) -> PhoenixTraceDetailResponse:
+        try:
+            project = self._resolve_project()
+            if project is None:
+                return PhoenixTraceDetailResponse(trace_id="", spans=[])
+            all_spans = self._get_spans(project["id"])
+            matching_trace_ids = {
+                span.trace_id for span in all_spans
+                if span.session_id == session_id
+            }
+            if not matching_trace_ids:
+                return PhoenixTraceDetailResponse(trace_id="", spans=[])
+            trace_spans = [
+                s for s in all_spans
+                if s.trace_id in matching_trace_ids
+            ]
+            trace_spans.sort(key=lambda s: s.start_time)
+            return PhoenixTraceDetailResponse(
+                trace_id=sorted(matching_trace_ids)[0],
+                project_id=project["id"],
+                project_name=project["name"],
+                spans=[self._span_to_item(s) for s in trace_spans],
+            )
+        except Exception:
+            return PhoenixTraceDetailResponse(trace_id="", spans=[])
+
+    @staticmethod
+    def _run_to_trace_row(run: PhoenixRunSnapshot) -> PhoenixTraceRow:
+        return PhoenixTraceRow(
+            trace_id=run.trace_id,
+            session_id=run.session_id,
+            query_preview=run.query_preview,
+            request_kind=run.request_kind,
+            user=run.user,
+            status=run.status,
+            duration_ms=run.duration_ms,
+            tool_calls=run.tool_calls,
+            span_count=run.span_count,
+            model=run.model,
+            skill_ids=run.skill_ids,
+            input_tokens=run.input_tokens,
+            output_tokens=run.output_tokens,
+            total_tokens=run.total_tokens,
+            started_at=run.started_at.isoformat(),
+        )
+
+    @staticmethod
+    def _extract_span_text(span: PhoenixSpanSnapshot, key: str) -> str | None:
+        raw = span.attributes.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        if raw[0] in ("{", "["):
+            try:
+                blob = json.loads(raw)
+                text = json.dumps(blob, indent=2, ensure_ascii=False)
+                if len(text) > 2000:
+                    text = text[:2000] + "\n..."
+                return text
+            except Exception:
+                pass
+        return raw[:2000] if len(raw) > 2000 else raw
+
+    @staticmethod
+    def _span_to_item(span: PhoenixSpanSnapshot) -> PhoenixSpanSnapshotItem:
+        input_t, output_t, total_t, _ = span.token_usage
+        return PhoenixSpanSnapshotItem(
+            span_id=span.span_id,
+            parent_id=span.parent_id,
+            name=span.name,
+            span_kind=span.span_kind,
+            status_code=span.status_code,
+            status_message=span.status_message,
+            duration_ms=span.duration_ms,
+            start_time=span.start_time.isoformat(),
+            end_time=span.end_time.isoformat(),
+            input_tokens=input_t,
+            output_tokens=output_t,
+            total_tokens=total_t,
+            input_value=PhoenixObservabilityService._extract_span_text(span, "input.value"),
+            output_value=PhoenixObservabilityService._extract_span_text(span, "output.value"),
+            skill_ids=span.skill_ids,
+            attributes=span.attributes,
+        )
 
     def _api_get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         query = urlencode(

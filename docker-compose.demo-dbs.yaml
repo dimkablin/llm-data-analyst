@@ -1,0 +1,52 @@
+services:
+  demo_postgres:
+    image: postgres:16-alpine
+    container_name: llm-analyst-demo-postgres
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo_analytics
+    ports:
+      - "${DEMO_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+      - ./demo_dbs/data:/demo-data:ro
+      - ./demo_dbs/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo_analytics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  demo_clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: llm-analyst-demo-clickhouse
+    environment:
+      CLICKHOUSE_DB: demo
+      CLICKHOUSE_USER: demo
+      CLICKHOUSE_PASSWORD: demo
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "${DEMO_CLICKHOUSE_HTTP_PORT:-18123}:8123"
+      - "${DEMO_CLICKHOUSE_NATIVE_PORT:-19000}:9000"
+    volumes:
+      - demo_clickhouse_data:/var/lib/clickhouse
+      - demo_clickhouse_logs:/var/log/clickhouse-server
+      - ./demo_dbs/data:/var/lib/clickhouse/user_files/demo:ro
+      - ./demo_dbs/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  demo_postgres_data:
+  demo_clickhouse_data:
+  demo_clickhouse_logs:

@@ -217,7 +217,3 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             with self.assertRaises(PredictIntegrationError) as anomaly_exc:
                 anomaly.run_analysis("аномалии по выручке", csv_session_id="test-session")
         self.assertIn("request timed out", str(anomaly_exc.exception).lower())
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from backend.api.deps import get_current_user
-from backend.api.models import UploadResponse
+from backend.api.models import BatchUploadResponse, UploadResponse
 from backend.auth.auth_db import AuthDB, AuthUser
 from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.data_access.tabular_preprocessing import TabularPreprocessingOptions
+from backend.data_access.tabular_upload_service import (
+    TabularUploadError,
+    TabularUploadFile,
+    TabularUploadResult,
+    TabularUploadService,
+)
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
 from backend.sessions.session_store import SessionState, SessionStore
@@ -23,6 +31,8 @@ _store: SessionStore = None  # type: ignore
 _csv_runtime: CSVSessionRuntime = None  # type: ignore
 _manifest_store: ManifestStore = None  # type: ignore
 _orchestrator: NotebookOrchestrator = None  # type: ignore
+_storage_dir: Path | None = None
+_semantic_catalog_service = None  # type: ignore
 
 
 def setup(
@@ -31,13 +41,18 @@ def setup(
     csv_runtime: CSVSessionRuntime,
     manifest_store: ManifestStore,
     notebook_orchestrator: NotebookOrchestrator,
+    storage_dir: str | Path | None = None,
+    semantic_catalog_service=None,
 ) -> None:
-    global _auth_db, _store, _csv_runtime, _manifest_store, _orchestrator
+    global _auth_db, _store, _csv_runtime, _manifest_store, _orchestrator, _storage_dir
+    global _semantic_catalog_service
     _auth_db = auth_db
     _store = store
     _csv_runtime = csv_runtime
     _manifest_store = manifest_store
     _orchestrator = notebook_orchestrator
+    _storage_dir = Path(storage_dir) if storage_dir is not None else Path(settings.storage_dir)
+    _semantic_catalog_service = semantic_catalog_service
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -69,81 +84,161 @@ def _ensure_safe_readonly_sql(sql: str) -> str:
 def _df_to_json_rows(df) -> list[dict]:
     return json.loads(df.to_json(orient="records", date_format="iso"))
 
+
+def _upload_service() -> TabularUploadService:
+    return TabularUploadService(
+        store=_store,
+        csv_runtime=_csv_runtime,
+        manifest_store=_manifest_store,
+        notebook_orchestrator=_orchestrator,
+        storage_dir=_storage_dir or Path(settings.storage_dir),
+    )
+
+
+async def _read_tabular_uploads(files: list[UploadFile]) -> list[TabularUploadFile]:
+    max_bytes = settings.max_dataset_mb * 1024 * 1024
+    uploads: list[TabularUploadFile] = []
+    for file in files:
+        file_name = (file.filename or "uploaded.csv").strip()
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"Uploaded file '{file_name}' is empty")
+        if len(content) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"Dataset '{file_name}' exceeds size limit")
+        uploads.append(
+            TabularUploadFile(
+                file_name=file_name,
+                content=content,
+                content_type=file.content_type,
+            )
+        )
+    return uploads
+
+
+def _refresh_catalog(session_id: str) -> None:
+    try:
+        from backend.data_access.catalog_refresh import refresh_session_catalog
+
+        refresh_session_catalog(
+            _store,
+            session_id,
+            csv_runtime=_csv_runtime,
+        )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to refresh data catalog after tabular upload: %s", exc
+        )
+
+
+def _refresh_semantic_catalog(session_id: str, user_id: int) -> None:
+    if _semantic_catalog_service is None or not settings.semantic_layer_enabled:
+        return
+    try:
+        _semantic_catalog_service.refresh(session_id=session_id, user_id=user_id)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to refresh semantic catalog after tabular upload: %s", exc
+        )
+
+
+def _batch_response(result) -> BatchUploadResponse:
+    return BatchUploadResponse.model_validate(result.model_dump())
+
+
+def _parse_preprocessing_options(raw: str | None) -> TabularPreprocessingOptions:
+    if raw is None or not str(raw).strip():
+        return TabularPreprocessingOptions()
+    try:
+        return TabularPreprocessingOptions.model_validate_json(raw)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid preprocessing options: {exc}") from exc
+
+
+def _mark_dataset_loaded(session_id: str) -> None:
+    _auth_db.mark_session_has_dataset(session_id, True)
+
+
+async def _ingest_tabular_uploads(
+    *,
+    session_id: str,
+    files: list[UploadFile],
+    current_user: AuthUser,
+    preprocessing_options: str | None,
+    failure_message: str,
+) -> TabularUploadResult:
+    _load_owned_session(session_id, current_user)
+    try:
+        result = _upload_service().ingest_files(
+            session_id=session_id,
+            files=await _read_tabular_uploads(files),
+            ttl_seconds=settings.csv_session_ttl_sec,
+            max_bytes_per_file=settings.max_dataset_mb * 1024 * 1024,
+            preprocessing_options=_parse_preprocessing_options(preprocessing_options),
+        )
+    except TabularUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{failure_message}: {exc}") from exc
+
+    _mark_dataset_loaded(session_id)
+    _refresh_catalog(session_id)
+    _refresh_semantic_catalog(session_id, current_user.id)
+    return result
+
+
 @router.post("/sessions/{session_id}/data", response_model=UploadResponse)
 async def upload_data(
     session_id: str,
     file: Annotated[UploadFile, File()],
     current_user: Annotated[AuthUser, Depends(get_current_user)],
+    preprocessing_options: Annotated[str | None, Form()] = None,
 ) -> UploadResponse:
-    _load_owned_session(session_id, current_user)
-
-    content = await file.read()
-    max_bytes = settings.max_dataset_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(status_code=413, detail="Dataset exceeds size limit")
-
-    try:
-        df, csv_info = _csv_runtime.register_csv_bytes(
-            session_id=session_id,
-            file_name=file.filename or "uploaded.csv",
-            csv_bytes=content,
-            ttl_seconds=settings.csv_session_ttl_sec,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read CSV: {exc}") from exc
-
-    # Legacy single-source persistence.
-    _store.save_dataframe(session_id, df)
-    _store.set_dataset_name(session_id, file.filename)
-    _store.bind_csv_source(session_id, filename=file.filename)
-    _store.set_csv_runtime_state(
-        session_id,
-        csv_loaded=True,
-        csv_session_id=csv_info.session_id,
-        csv_table_names=list(csv_info.table_names),
-        csv_expires_at=csv_info.expires_at,
+    result = await _ingest_tabular_uploads(
+        session_id=session_id,
+        files=[file],
+        current_user=current_user,
+        preprocessing_options=preprocessing_options,
+        failure_message="Failed to read tabular file",
     )
-    _auth_db.mark_session_has_dataset(session_id, True)
-
-    # Multi-source: register in manifest + create notebook cell.
-    from backend.api.routes.sources import _add_source_to_manifest
-
-    parquet_rel = f"sources/{file.filename or 'data'}.parquet"
-    _add_source_to_manifest(
-        session_id,
-        source_type="csv",
-        display_name=file.filename or "uploaded.csv",
-        file_name=file.filename,
-        parquet_path=parquet_rel,
-        csv_session_id=csv_info.session_id,
-        csv_table_names=list(csv_info.table_names),
-        csv_expires_at=csv_info.expires_at,
-        schema_hint={str(c): str(df[c].dtype) for c in list(df.columns)[:30]},
-    )
+    first = result.files[0]
 
     return UploadResponse(
         session_id=session_id,
-        rows=len(df),
-        columns=len(df.columns),
+        rows=first.rows,
+        columns=first.columns,
     )
 
 
-# Used by the predict service — requires authentication and session ownership.
-# Pass the app session_id (returned by the upload endpoint); ownership is verified
-# against current_user before the CSV session is accessed.
+@router.post("/sessions/{session_id}/data/batch", response_model=BatchUploadResponse)
+async def upload_data_batch(
+    session_id: str,
+    files: Annotated[list[UploadFile], File()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    preprocessing_options: Annotated[str | None, Form()] = None,
+) -> BatchUploadResponse:
+    result = await _ingest_tabular_uploads(
+        session_id=session_id,
+        files=files,
+        current_user=current_user,
+        preprocessing_options=preprocessing_options,
+        failure_message="Failed to read tabular files",
+    )
+    return _batch_response(result)
+
+
+# Predict-service calls this endpoint without a bearer token and passes the CSV
+# runtime session_id, matching /csv/query below.
 @router.get("/csv/schema")
 async def csv_schema(
     session_id: Annotated[str, Query()],
-    current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> dict:
-    state = _load_owned_session(session_id, current_user)
-    if not state.csv_loaded or not state.csv_session_id:
-        raise HTTPException(status_code=404, detail="No CSV data in this session")
-    csv_session_id = state.csv_session_id
-
     try:
-        info = _csv_runtime.get_session_info(csv_session_id)
-        tables = _csv_runtime.list_tables(csv_session_id)
+        info = _csv_runtime.get_session_info(session_id)
+        tables = _csv_runtime.list_tables(session_id)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"CSV session not found: {exc}") from exc
 
@@ -154,7 +249,7 @@ async def csv_schema(
     if not main_table:
         raise HTTPException(status_code=500, detail="CSV session returned invalid table metadata")
 
-    columns_meta = _csv_runtime.describe_table(csv_session_id, main_table)
+    columns_meta = _csv_runtime.describe_table(session_id, main_table)
 
     return {
         "session_id": session_id,

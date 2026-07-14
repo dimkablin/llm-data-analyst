@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+# NOTE: Ollama ≤ 0.20.7 limitation — the OpenAI-compat /v1/chat/completions endpoint
+# ignores think:true/false in ALL payload forms tested (top-level field, options.think,
+# /no_think prefix, chat_template_kwargs). Thinking control for Ollama is handled
+# exclusively via make_reasoning_llm(provider="ollama", enable_thinking=...) which routes
+# to ReasoningChatOllama using the native /api/chat endpoint (langchain-ollama ChatOllama).
+# The methods below (build_extra_body) remain valid for vLLM and other OpenAI-compat
+# providers; the Ollama path no longer calls them.
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -12,8 +19,8 @@ class LLMProviderPolicy:
     прямых проверок вида ``if provider == "vllm"``.
     """
 
-    # "chat_template_kwargs" — провайдер принимает поле в extra_body.
-    # "none"               — thinking toggle не поддерживается / не нужен.
+    # "chat_template_kwargs" — vLLM-specific: поле chat_template_kwargs в extra_body.
+    # "none"                 — thinking toggle не поддерживается / не нужен.
     thinking_control_mode: Literal["chat_template_kwargs", "none"]
 
     # Diagnostic-only: vllm стриппит <think> server-side → orphaned </think>.
@@ -28,13 +35,16 @@ class LLMProviderPolicy:
         Caller: ``extra_body.update(policy.build_extra_body(enable_thinking=...))``.
         """
         if self.thinking_control_mode == "chat_template_kwargs":
+            # vLLM: передаёт параметры Jinja-шаблона через chat_template_kwargs.
             return {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
         return {}
 
 
 _POLICIES: dict[str, LLMProviderPolicy] = {
+    # Ollama: thinking is controlled via ReasoningChatOllama(reasoning=...) which maps to
+    # the native /api/chat "think" field. build_extra_body is not used for Ollama.
     "ollama": LLMProviderPolicy(
-        thinking_control_mode="chat_template_kwargs",
+        thinking_control_mode="none",
         may_emit_orphaned_think_close_tags=False,
     ),
     "vllm": LLMProviderPolicy(

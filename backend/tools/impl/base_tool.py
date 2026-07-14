@@ -7,21 +7,23 @@ from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pandas as pd
-from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from backend.agent.callbacks import strip_thinking
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
 from backend.artifacts.artifact_meta import extract_artifact_hints
-from backend.core.config import settings
-from backend.core.llm_provider import get_provider_policy
 from backend.core.redaction import sanitize_error_text
+from backend.tools.observations import (
+    DataFrameSchemaSummary,
+    ToolExecutionObservation,
+    ToolObservationStatus,
+)
 
 if TYPE_CHECKING:
     from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
     from backend.tools.sandbox import SessionSandbox
 
+from backend.tools.code_preflight import list_sandbox_user_var_names, preflight_sandbox_code
 from backend.tools.sandbox import normalize_code
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,10 @@ class ToolResultEnvelope(BaseModel):
     items: dict[str, object]
 
 
+class _CodeInput(BaseModel):
+    code: str = Field(description="Валидный Python-код для выполнения в sandbox-окружении.")
+
+
 class BaseExecTool(BaseTool):
     """
     Базовый инструмент для анализа данных.
@@ -42,6 +48,7 @@ class BaseExecTool(BaseTool):
     """
 
     name: str = "base_tool"
+    args_schema: type[BaseModel] = _CodeInput
     artifact_name: str = "base"
     human_name: str = "артефактов"
     description: str = ""
@@ -61,7 +68,7 @@ class BaseExecTool(BaseTool):
             "Опасные вызовы (open/eval/exec/compile) запрещены.",
         ),
         (
-            r"\b__import__\b|\bglobals\s*\(|\blocals\s*\(",
+            r"\b__import__\b|\bglobals\b|\blocals\b",
             "Доступ к системному окружению Python запрещен.",
         ),
         (
@@ -75,18 +82,20 @@ class BaseExecTool(BaseTool):
             "Загрузка файлов запрещена. DataFrame `df` уже доступен в области видимости — "
             "используй его напрямую без pd.read_csv/read_excel.",
         ),
+        (
+            r"\b(import|from)\s+(sql_tool|pandas_tool|plotly_tool|database_tool)\b"
+            r"|\b(sql_tool|pandas_tool|plotly_tool)\s*\(",
+            "Нельзя вызывать или импортировать другие tools из кода. "
+            "Данные уже в sandbox — используй переменную из сообщения sql_tool/pandas_tool.",
+        ),
     )
     response_format: str = "content_and_artifact"
+    parallel_safe: ClassVar[bool] = False
     execution_timeout_sec: float = 25.0
     tool_result_schema_version: str = "1.0"
     artifact_name_max_len: int = 48
     tool_cache_size: int = 48
-    code_fix_max_retries: int = 3
 
-    # Subclass thinking default for internal LLM calls.
-    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
-    # _fix_with_llm() always uses enable_thinking=False regardless of this flag.
-    TOOL_ENABLE_THINKING: ClassVar[bool] = False
     _df: pd.DataFrame = PrivateAttr()
     _include_plotly: bool = PrivateAttr(default=False)
     _tool_cache: OrderedDict[str, tuple[str, dict[str, object]]] = PrivateAttr(
@@ -95,12 +104,6 @@ class BaseExecTool(BaseTool):
     _dataset_signature: str = PrivateAttr(default="")
     _db_runtime_config: "RuntimeDBConnectionConfig | None" = PrivateAttr(default=None)
     _sandbox: "SessionSandbox | None" = PrivateAttr(default=None)
-    _llm_base_url: str | None = PrivateAttr(default=None)
-    _llm_model: str | None = PrivateAttr(default=None)
-    _llm_api_key: str | None = PrivateAttr(default=None)
-    _llm_enable_thinking: bool = PrivateAttr(default=False)
-    _llm_chat_template_kwargs_enabled: bool = PrivateAttr(default=True)
-    _llm_provider: str = PrivateAttr(default="")
 
     def __init__(
         self,
@@ -110,30 +113,15 @@ class BaseExecTool(BaseTool):
         tool_cache_size: int = 48,
         db_runtime_config: "RuntimeDBConnectionConfig | None" = None,
         sandbox: "SessionSandbox | None" = None,
-        llm_base_url: str | None = None,
-        llm_model: str | None = None,
-        llm_api_key: str | None = None,
-        llm_enable_thinking: bool = False,
-        llm_chat_template_kwargs_enabled: bool = True,
-        llm_provider: str = "",
-        code_fix_max_retries: int = 3,
     ) -> None:
         super().__init__()
         self._df = df
         self._include_plotly = include_plotly
         self.execution_timeout_sec = execution_timeout_sec
         self.tool_cache_size = max(0, int(tool_cache_size))
-        self.code_fix_max_retries = max(0, int(code_fix_max_retries))
         self._dataset_signature = self._build_dataset_signature(df)
         self._db_runtime_config = db_runtime_config
         self._sandbox = sandbox
-        self._llm_base_url = llm_base_url
-        self._llm_model = llm_model
-        self._llm_api_key = llm_api_key
-        # effective = global setting AND this tool class's default
-        self._llm_enable_thinking = llm_enable_thinking and type(self).TOOL_ENABLE_THINKING
-        self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
-        self._llm_provider = str(llm_provider or "").strip().lower()
 
     @staticmethod
     def _build_dataset_signature(df: pd.DataFrame) -> str:
@@ -211,11 +199,24 @@ class BaseExecTool(BaseTool):
                     imports.add(node.module.split(".")[0])
         return imports
 
+    _FORECAST_LIBS: ClassVar[frozenset[str]] = frozenset(
+        {"statsmodels", "sklearn", "prophet", "tensorflow", "keras"},
+    )
+
     def validate_libraries(self, code: str) -> tuple[bool, str]:
         if not self.allowed_libs:
             return True, ""
         try:
             imports = self.get_imports_from_code(code)
+            forecast_hits = sorted(lib for lib in imports if lib in self._FORECAST_LIBS)
+            if forecast_hits:
+                return (
+                    False,
+                    f"Прогноз нельзя строить в {self.name} ({', '.join(forecast_hits)}). "
+                    "Используй forecast_tool: "
+                    "tool_result = forecast.forecast_result("
+                    '"Подготовь данные для прогноза ...", artifact_name="forecast_result", horizon=N)',
+                )
             forbidden = [lib for lib in imports if lib not in self.allowed_libs]
             if forbidden:
                 return (
@@ -313,9 +314,7 @@ class BaseExecTool(BaseTool):
 
         if raw_items is None:
             if len(raw_result) == 1 and self.artifact_name in raw_result:
-                candidate_items = raw_result.get(self.artifact_name)
-                if isinstance(candidate_items, dict):
-                    raw_items = candidate_items
+                raw_items = raw_result.get(self.artifact_name)
             elif reserved_keys.intersection(raw_result.keys()):
                 return (
                     None,
@@ -325,7 +324,10 @@ class BaseExecTool(BaseTool):
                 raw_items = raw_result
 
         if not isinstance(raw_items, dict):
-            return None, "Поле `items` в `tool_result` должно быть объектом JSON (dict)."
+            # Be tolerant to common LLM envelope mistakes:
+            # - items returned as a single payload instead of {"name": payload}
+            # - items returned as list for table/value output
+            raw_items = {self.artifact_name: raw_items}
 
         artifact_aliases = {
             "plotly": "plot",
@@ -386,9 +388,227 @@ class BaseExecTool(BaseTool):
     def get_execution_scope(self) -> dict[str, Any]:
         return {}
 
+    def get_preflight_extra_allowed(self) -> set[str]:
+        """Names that will exist at runtime but may not yet be in sandbox scope."""
+        from backend.tools.code_preflight import _PLOTLY_SCOPE_NAMES
+
+        names = set(self.get_execution_scope().keys())
+        if self._include_plotly:
+            names.update(_PLOTLY_SCOPE_NAMES)
+        return names
+
     @staticmethod
     def _extract_payload_hints(tool_result: object) -> dict[str, Any]:
         return extract_artifact_hints(tool_result)
+
+    @staticmethod
+    def _assigns_tool_result(code: str) -> bool:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+        return any(
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Store)
+            and node.id == "tool_result"
+            for node in ast.walk(tree)
+        )
+
+    def _inferred_tool_result_note(
+        self,
+        *,
+        code: str,
+        raw_tool_result: object,
+        normalized_result: dict[str, object],
+    ) -> str:
+        if self._assigns_tool_result(code):
+            return ""
+        if isinstance(raw_tool_result, str) and raw_tool_result.strip():
+            source = "printed stdout" if re.search(r"\bprint\s*\(", code) else "string output"
+        else:
+            names = ", ".join(f"`{name}`" for name in normalized_result)
+            source = f"result variable(s): {names}" if names else "last expression"
+        return (
+            f"# {self.name} inferred `tool_result` from {source} "
+            "because code did not assign `tool_result`."
+        )
+
+    def _merge_inferred_artifact_hints(
+        self,
+        artifact_hints: dict[str, Any],
+        *,
+        code: str,
+        normalized_result: dict[str, object],
+    ) -> dict[str, Any]:
+        """Add deterministic provenance hints that can be inferred from code/scope."""
+        if self.artifact_name != "table" or self._sandbox is None:
+            return artifact_hints
+        if not any(isinstance(value, (pd.DataFrame, pd.Series)) for value in normalized_result.values()):
+            return artifact_hints
+        if not self._code_combines_tabular_inputs(code):
+            return artifact_hints
+
+        source_table_names = self._referenced_dataframe_names(code)
+        if len(source_table_names) < 2:
+            return artifact_hints
+
+        merged_hints = copy.deepcopy(artifact_hints)
+        meta = dict(merged_hints.get("meta") or {})
+        lineage = dict(meta.get("lineage") or {})
+        existing_names = self._normalize_name_list(lineage.get("source_table_names"))
+        combined_names = self._unique_names([*existing_names, *source_table_names])
+        if len(combined_names) < 2:
+            return artifact_hints
+
+        lineage["source_table_names"] = combined_names
+        existing_tables = lineage.get("source_tables")
+        if not isinstance(existing_tables, list) or not existing_tables:
+            lineage["source_tables"] = [
+                {"qualified_name": name, "table_name": name}
+                for name in combined_names
+            ]
+        meta["lineage"] = lineage
+        merged_hints["meta"] = meta
+        return merged_hints
+
+    @staticmethod
+    def _normalize_name_list(raw: object) -> list[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            values = [raw]
+        elif isinstance(raw, (list, tuple, set)):
+            values = list(raw)
+        else:
+            return []
+        return [str(item).strip() for item in values if str(item).strip()]
+
+    @staticmethod
+    def _unique_names(values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            name = str(value).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            result.append(name)
+        return result
+
+    @staticmethod
+    def _code_combines_tabular_inputs(code: str) -> bool:
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr in {"merge", "join"}:
+                    return True
+                if (
+                    func.attr in {"merge", "concat"}
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id in {"pd", "pandas"}
+                ):
+                    return True
+            if isinstance(func, ast.Name) and func.id in {"merge", "concat"}:
+                return True
+        return False
+
+    def _referenced_dataframe_names(self, code: str) -> list[str]:
+        if self._sandbox is None:
+            return []
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return []
+
+        referenced_names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        }
+        assigned_names = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        scope = self._sandbox.get_user_scope()
+        return [
+            name
+            for name in sorted(referenced_names)
+            if name not in assigned_names and isinstance(scope.get(name), pd.DataFrame)
+        ]
+
+    def _available_variable_names(self) -> list[str]:
+        if self._sandbox is None:
+            return []
+        return list_sandbox_user_var_names(self._sandbox.get_user_scope())
+
+    def _referenced_dataframe_schemas(self, code: str) -> list[DataFrameSchemaSummary]:
+        if self._sandbox is None:
+            return []
+        scope = self._sandbox.get_user_scope()
+        return [
+            DataFrameSchemaSummary.from_value(name, scope.get(name))
+            for name in self._referenced_dataframe_names(code)
+        ]
+
+    def _contract_hint(self) -> str:
+        if self.artifact_name == "plot":
+            return (
+                "This tool must assign the final chart artifact to `tool_result`.\n"
+                "Debug prints are not considered tool output.\n"
+                "For plot output:\n"
+                'tool_result = chart.result(fig, artifact_name="chart_name")'
+            )
+        return (
+            "This tool must assign the final artifact to `tool_result`.\n"
+            "Debug prints are not considered tool output.\n"
+            "For table output:\n"
+            'tool_result = {"schema_version": "1.0", "artifact_type": "table", '
+            '"items": {"result": result_df}}'
+        )
+
+    def _error_result(
+        self,
+        *,
+        input_code: str,
+        error: str,
+        executed_code: str | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        clean_error = sanitize_error_text(str(error or "").strip())
+        observation = ToolExecutionObservation(
+            status=ToolObservationStatus.ERROR,
+            tool_name=self.name,
+            input_code=input_code,
+            executed_code=executed_code if executed_code != input_code else None,
+            error=clean_error,
+            contract_hint=self._contract_hint(),
+            available_variables=self._available_variable_names(),
+            referenced_dataframe_schemas=self._referenced_dataframe_schemas(input_code),
+        )
+        text = observation.to_message_text()
+        payload: dict[str, object] = {
+            self.artifact_name: None,
+            "text": text,
+            "status": observation.status.value,
+            "error": clean_error,
+            "input_code": input_code,
+            "contract_hint": observation.contract_hint,
+            "available_variables": list(observation.available_variables),
+            "referenced_dataframe_schemas": [
+                schema.model_dump(mode="json")
+                for schema in observation.referenced_dataframe_schemas
+            ],
+            "observation": observation.model_dump(mode="json"),
+        }
+        if observation.executed_code:
+            payload["executed_code"] = observation.executed_code
+        return text, payload
 
     def _execute_in_sandbox(self, code: str) -> object:
         """Delegate execution to the session sandbox."""
@@ -429,11 +649,37 @@ class BaseExecTool(BaseTool):
             if not valid:
                 return False, validate_message, {}
 
+            artifact_hints = self._merge_inferred_artifact_hints(
+                artifact_hints,
+                code=code,
+                normalized_result=normalized_result,
+            )
+
             text = (
                 f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
                 f"{', '.join(normalized_result.keys())}"
             )
-            payload: dict[str, object] = {"text": text, "code": code}
+            inferred_note = self._inferred_tool_result_note(
+                code=code,
+                raw_tool_result=tool_result,
+                normalized_result=normalized_result,
+            )
+            tool_result_note = ""
+            if isinstance(tool_result, dict):
+                tool_result_note = str(tool_result.get("tool_result_note") or "").strip()
+            result_notes = [note for note in (inferred_note, tool_result_note) if note]
+            if result_notes:
+                text = f"{text}\n" + "\n".join(result_notes)
+
+            payload: dict[str, object] = {
+                "text": text,
+                "code": code,
+                "artifact_type": self.artifact_name,
+                "items": normalized_result,
+            }
+            if result_notes:
+                payload["tool_result_note"] = "\n".join(result_notes)
+
             if artifact_hints:
                 payload.update(artifact_hints)
             payload[self.artifact_name] = normalized_result
@@ -447,69 +693,18 @@ class BaseExecTool(BaseTool):
                 else ""
             )
             return False, f"SyntaxError: {e.msg}\n{error_line}", {}
+        except KeyError as e:
+            missing = str(e.args[0]) if e.args else str(e)
+            return False, f"KeyError: {missing}", {}
         except Exception as e:
+            message = str(e) or e.__class__.__name__
             logger.exception("Tool %s failed while executing code", self.name)
-            return False, str(e) or e.__class__.__name__, {}
-
-    def _fix_with_llm(self, code: str, error: str, attempt: int) -> str | None:
-        """Ask LLM to fix broken code given the error message. Returns fixed code or None."""
-        if not self._llm_base_url or not self._llm_model:
-            return None
-
-        llm_kwargs: dict[str, Any] = {
-            "model": self._llm_model,
-            "base_url": self._llm_base_url,
-            "api_key": self._llm_api_key or "no-key",
-            "streaming": False,
-            "temperature": 0.0,
-            "timeout": 60.0,
-        }
-        if self._llm_chat_template_kwargs_enabled:
-            _eb: dict[str, Any] = dict(llm_kwargs.get("extra_body") or {})
-            _eb.update(
-                get_provider_policy(self._llm_provider).build_extra_body(enable_thinking=False)
-            )
-            if _eb:
-                llm_kwargs["extra_body"] = _eb
-        llm = ThinkingAwareChatOpenAI(**llm_kwargs)
-
-        # Extract the first ~400 chars of the tool description to give the LLM scope context.
-        scope_hint = (self.description or "")[:400].strip()
-
-        prompt = f"""Fix the Python code for {self.name} (attempt {attempt}).
-
-Tool scope (available variables):
-{scope_hint}
-
-Failed code:
-{code}
-
-Error:
-{error}
-
-Return ONLY the corrected Python code. No markdown, no explanations, no code fences."""
-
-        try:
-            resp = llm.invoke([
-                SystemMessage(content=f"{settings.llm_no_think_prefix} Fix code. Return Python only.".strip()),  # noqa: E501
-                HumanMessage(content=prompt),
-            ])
-            fixed = strip_thinking(str(resp.content or "")).strip()
-            # Strip markdown code fences if LLM adds them despite instructions.
-            fixed = re.sub(r"^```(?:python)?\s*", "", fixed, flags=re.IGNORECASE)
-            fixed = re.sub(r"\s*```$", "", fixed)
-            return normalize_code(fixed.strip()) or None
-        except Exception as exc:
-            logger.debug("code_fix_with_llm failed on attempt %d: %s", attempt, exc)
-            return None
+            return False, message, {}
 
     def _run(self, code: str) -> tuple[str, dict[str, object]]:
-        # Strip any leaked <think>...</think> blocks (e.g. when the upstream LLM
-        # embeds reasoning inside the generated code argument).
         code = normalize_code(strip_thinking(code))
         if not code:
-            text = f"❌ Ошибка при создании {self.human_name}: пустой код инструмента"
-            return text, {self.artifact_name: None, "text": text}
+            return self._error_result(input_code=code, error=f"Empty code for {self.name}.")
 
         cache_key = self._cache_key(code)
         cached = self._cache_get(cache_key)
@@ -518,37 +713,33 @@ Return ONLY the corrected Python code. No markdown, no explanations, no code fen
 
         valid, validate_message = self.validate_libraries(code)
         if not valid:
-            text = f"❌ Ошибка при создании {self.human_name}: {validate_message}"
-            return text, {self.artifact_name: None, "text": text}
+            return self._error_result(input_code=code, error=validate_message)
 
         valid, validate_message = self.validate_code_patterns(code)
         if not valid:
-            text = f"❌ Ошибка при создании {self.human_name}: {validate_message}"
-            return text, {self.artifact_name: None, "text": text}
+            return self._error_result(input_code=code, error=validate_message)
 
-        current_code = code
-        last_error = ""
+        run_code = code
+        if self._sandbox is not None:
+            run_code, preflight_err = preflight_sandbox_code(
+                run_code,
+                self._sandbox.get_user_scope(),
+                extra_allowed=self.get_preflight_extra_allowed(),
+            )
+            if preflight_err:
+                return self._error_result(
+                    input_code=code,
+                    executed_code=run_code,
+                    error=preflight_err,
+                )
 
-        for attempt in range(1 + self.code_fix_max_retries):
-            ok, msg, payload = self._try_run_once(current_code)
-            if ok:
-                result = (msg, payload)
-                self._cache_set(cache_key, result)
-                return result
+        ok, msg, payload = self._try_run_once(run_code)
+        if ok:
+            if run_code != code:
+                payload["input_code"] = code
+                payload["executed_code"] = run_code
+            result = (msg, payload)
+            self._cache_set(cache_key, result)
+            return result
 
-            last_error = msg
-
-            if attempt < self.code_fix_max_retries:
-                fixed = self._fix_with_llm(current_code, last_error, attempt + 1)
-                if fixed and fixed != current_code:
-                    logger.debug(
-                        "%s: code fix attempt %d/%d — retrying after error: %s",
-                        self.name, attempt + 1, self.code_fix_max_retries, last_error[:120],
-                    )
-                    current_code = fixed
-                    continue
-                # LLM unavailable or returned identical code — no point retrying.
-                break
-
-        text = f"❌ Ошибка при создании {self.human_name}: {last_error}"
-        return text, {self.artifact_name: None, "text": text}
+        return self._error_result(input_code=code, executed_code=run_code, error=msg)

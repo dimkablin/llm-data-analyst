@@ -7,7 +7,6 @@ from typing import Any
 import pandas as pd
 from pydantic import PrivateAttr
 
-from backend.agent.prompts import forecast_tool_prompt
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.integrations.forecast import (
     ForecastIntegrationError,
@@ -15,6 +14,7 @@ from backend.integrations.forecast import (
 )
 from backend.tools.impl.base_tool import BaseExecTool
 from backend.tools.impl.db_helpers import DBAnalyticsHelper, DemoDBConnectionView
+from backend.tools.instructions import tool_description
 
 
 @dataclass
@@ -30,32 +30,7 @@ class ForecastToolHelper:
         *,
         horizon: int | None = None,
     ) -> dict[str, Any]:
-        result = self.service.run_forecast(
-            question,
-            db_runtime_config=self.db_runtime_config,
-            csv_session_id=self.csv_session_id,
-            horizon=horizon,
-        )
-        payload = self.service.build_artifact_payload(
-            result,
-            tool_name=self.tool_name,
-        )
-
-        forecast_meta = payload["meta"]["forecast"]
-
-        out: dict[str, Any] = {
-            "rows": payload["rows"],
-            "source": payload["source"],
-            "recipe": payload["recipe"],
-            "meta": payload["meta"],
-            "summary": forecast_meta.get("summary"),
-            "warnings": list(forecast_meta.get("warnings", [])),
-        }
-
-        if "plot" in payload:
-            out["plot"] = payload["plot"]
-
-        return out
+        return self.forecast_result(question, horizon=horizon)
 
     def forecast_result(
         self,
@@ -66,7 +41,7 @@ class ForecastToolHelper:
         horizon: int | None = None,
     ) -> dict[str, Any]:
         result = self.service.run_forecast(
-            question,
+            self._prepare_question(question),
             db_runtime_config=self.db_runtime_config,
             csv_session_id=self.csv_session_id,
             horizon=horizon,
@@ -110,12 +85,57 @@ class ForecastToolHelper:
 
         return artifact
 
+    def _catalog_hint(self) -> str:
+        if self.db_runtime_config is None:
+            return ""
+
+        try:
+            db = DBAnalyticsHelper(self.db_runtime_config, timeout_sec=10.0)
+            rows = db.list_tables_with_columns()
+        except Exception:
+            return ""
+
+        lines = []
+        for row in rows[:20]:
+            qname = row.get("qualified_name") or row.get("table_name")
+            cols = row.get("columns") or []
+            cols_preview = ", ".join(map(str, cols[:30]))
+            lines.append(f"- {qname}: {cols_preview}")
+
+        if not lines:
+            return ""
+
+        return "Доступные таблицы и колонки:\n" + "\n".join(lines)
+
+    def _prepare_question(self, question: str) -> str:
+        base = str(question or "").strip()
+        catalog = self._catalog_hint()
+
+        parts = [
+            base,
+            "",
+            "BACKEND INSTRUCTIONS FOR PREDICT-SERVICE:",
+            "- Choose the most relevant table from the available tables.",
+            "- If the user already named a table, use that table.",
+            "- Prepare only the historical input dataset for forecasting.",
+            "- The final SQL must return exactly two columns with exact aliases: dt, y.",
+            "- dt must be a date/datetime/timestamp column.",
+            "- y must be a numeric observed historical value.",
+            "- Do not generate future rows in SQL.",
+            "- Do not compute forecast values in SQL.",
+        ]
+
+        if catalog:
+            parts.extend(["", catalog])
+
+        return "\n".join(parts).strip()
+
 
 class ForecastTool(BaseExecTool):
     name: str = "forecast_tool"
     artifact_name: str = "table"
     human_name: str = "прогнозов"
-    description: str = forecast_tool_prompt
+    description: str = tool_description("forecast_tool")
     allowed_libs: set[str] = {"pandas", "numpy"}
     allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
 

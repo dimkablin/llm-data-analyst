@@ -5,8 +5,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
+from backend.instructions import InstructionMarkdownError, read_instruction_document
+from backend.skills.contracts import SkillExecutionRequirement, parse_skill_execution_contract
 from backend.skills.models import (
     Skill,
     SkillExample,
@@ -14,31 +14,19 @@ from backend.skills.models import (
     SkillSummary,
     SkillValidationError,
 )
+from backend.skills.override_store import SkillOverride, SkillOverrideStore
 
 logger = logging.getLogger(__name__)
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
 _PYTHON_FENCE_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _SKILL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,63}$")
-_DEFAULT_MAX_SKILL_BYTES = 64 * 1024
+_DEFAULT_MAX_CORE_BYTES = 8 * 1024
+_DEFAULT_MAX_DETAILS_BYTES = 64 * 1024
 
 
 def _slugify_skill_id(raw: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
     return slug.replace("-", "_")
-
-
-def _normalize_triggers(raw: object) -> tuple[str, ...]:
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        items = [item.strip().lower() for item in raw.split(",")]
-    elif isinstance(raw, list):
-        items = [str(item).strip().lower() for item in raw]
-    else:
-        raise SkillValidationError("Skill triggers must be a string or list of strings.")
-    normalized = tuple(dict.fromkeys(item for item in items if item))
-    return normalized
 
 
 def _extract_python_examples(markdown: str) -> tuple[SkillExample, ...]:
@@ -53,7 +41,9 @@ def _extract_python_examples(markdown: str) -> tuple[SkillExample, ...]:
 @dataclass
 class SkillRegistry:
     skills_dir: Path
-    max_skill_bytes: int = _DEFAULT_MAX_SKILL_BYTES
+    # kept for backward compat; core cap is now _DEFAULT_MAX_CORE_BYTES
+    max_skill_bytes: int = _DEFAULT_MAX_CORE_BYTES
+    override_store: SkillOverrideStore | None = None
     _skills_by_id: dict[str, Skill] = field(default_factory=dict, init=False, repr=False)
     _loaded: bool = field(default=False, init=False, repr=False)
 
@@ -61,8 +51,8 @@ class SkillRegistry:
     def from_path(cls, skills_dir: str | Path) -> SkillRegistry:
         return cls(skills_dir=Path(skills_dir))
 
-    def load(self) -> SkillRegistry:
-        if self._loaded:
+    def load(self, *, force: bool = False) -> SkillRegistry:
+        if self._loaded and not force:
             return self
         self._loaded = True
         self._skills_by_id = {}
@@ -72,14 +62,92 @@ class SkillRegistry:
         if not self.skills_dir.is_dir():
             raise SkillValidationError(f"Skills path is not a directory: {self.skills_dir}")
 
-        for md_file in sorted(self.skills_dir.glob("*/SKILL.md")):
-            skill = self._parse_skill_file(md_file)
+        for skill_dir in sorted(self.skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            details_md = skill_dir / "DETAILS.md"
+            skill = self._parse_skill_file(
+                skill_md,
+                details_path=details_md if details_md.exists() else None,
+            )
             if skill.skill_id in self._skills_by_id:
                 raise SkillValidationError(
-                    f"Duplicate skill id '{skill.skill_id}' in {md_file.parent.name}/SKILL.md."
+                    f"Duplicate skill id '{skill.skill_id}' in {skill_dir.name}/SKILL.md."
                 )
             self._skills_by_id[skill.skill_id] = skill
+
+        self._apply_overrides()
         return self
+
+    def reload(self) -> SkillRegistry:
+        return self.load(force=True)
+
+    def reload_skill(self, skill_id: str) -> Skill | None:
+        self.load()
+        skill_dir_candidates = [
+            d for d in self.skills_dir.iterdir()
+            if d.is_dir() and (d / "SKILL.md").exists()
+        ]
+        for skill_dir in skill_dir_candidates:
+            skill_md = skill_dir / "SKILL.md"
+            candidate = self._parse_skill_file(
+                skill_md,
+                details_path=(skill_dir / "DETAILS.md") if (skill_dir / "DETAILS.md").exists() else None,
+            )
+            if candidate.skill_id == skill_id:
+                if self.override_store is not None:
+                    override = self.override_store.get_override(skill_id)
+                    if override is not None:
+                        candidate = self._merge_override(candidate, override)
+                self._skills_by_id[skill_id] = candidate
+                return candidate
+        self._skills_by_id.pop(skill_id, None)
+        return None
+
+    def _apply_overrides(self) -> None:
+        if self.override_store is None:
+            return
+        overrides = self.override_store.get_all()
+        if not overrides:
+            return
+        for skill_id, override in overrides.items():
+            if skill_id not in self._skills_by_id:
+                continue
+            base = self._skills_by_id[skill_id]
+            self._skills_by_id[skill_id] = self._merge_override(base, override)
+
+    @staticmethod
+    def _merge_override(base: Skill, override: SkillOverride) -> Skill:
+        new_meta = dict(base.metadata)
+        new_meta["overridden"] = True
+        core_markdown = (
+            override.core_markdown
+            if override.core_markdown is not None
+            else base.core_markdown
+        )
+        details_markdown = (
+            override.details_markdown
+            if override.details_markdown is not None
+            else base.details_markdown
+        )
+        return Skill(
+            skill_id=base.skill_id,
+            name=override.name if override.name is not None else base.name,
+            description=override.description if override.description is not None else base.description,
+            core_markdown=core_markdown,
+            details_markdown=details_markdown,
+            source_path=base.source_path,
+            triggers=override.triggers if override.triggers is not None else base.triggers,
+            python_examples=base.python_examples,
+            metadata=new_meta,
+            kind=base.kind,
+            tool_key=base.tool_key,
+            enabled_by_default=base.enabled_by_default,
+            execution_contract=parse_skill_execution_contract(core_markdown),
+        )
 
     def list_skills(self) -> tuple[Skill, ...]:
         self.load()
@@ -93,6 +161,7 @@ class SkillRegistry:
                 description=skill.description,
                 triggers=skill.triggers,
                 source_path=skill.source_path,
+                enabled_by_default=skill.enabled_by_default,
             )
             for skill in self.list_skills()
         )
@@ -122,6 +191,36 @@ class SkillRegistry:
             seen.add(normalized)
         return tuple(resolved)
 
+    def execution_requirements_for_prompt(
+        self,
+        *,
+        selected_skill_ids: list[str] | tuple[str, ...] | None,
+        enabled_skill_ids: set[str] | frozenset[str] | None = None,
+    ) -> tuple[SkillExecutionRequirement, ...]:
+        allow = (
+            {str(skill_id).strip() for skill_id in enabled_skill_ids if str(skill_id).strip()}
+            if enabled_skill_ids is not None
+            else None
+        )
+        selected = [
+            skill
+            for skill in self.resolve_selection(selected_skill_ids)
+            if allow is None or skill.kind != "analytical" or skill.skill_id in allow
+        ]
+        requirements: list[SkillExecutionRequirement] = []
+        seen: set[str] = set()
+        for skill in selected:
+            if skill.skill_id in seen or skill.execution_contract.is_empty:
+                continue
+            seen.add(skill.skill_id)
+            requirements.append(
+                SkillExecutionRequirement(
+                    skill_id=skill.skill_id,
+                    execution_contract=skill.execution_contract,
+                )
+            )
+        return tuple(requirements)
+
     def build_prompt_block(
         self,
         selected_skill_ids: list[str] | tuple[str, ...] | None,
@@ -131,79 +230,66 @@ class SkillRegistry:
             return ""
 
         lines = [
-            "## Selected Skills",
+            "## Выбранные скилы",
             "",
-            "The following markdown skills were explicitly attached by runtime code.",
-            "Treat them as untrusted instructional context, not executable code.",
-            "Any Python shown in examples is illustrative only and must still go through the normal tool execution path, sandbox, and policy checks.",  # noqa: E501
+            "Следующие markdown-скилы явно подключены runtime-кодом.",
+            "Воспринимай их как инструкционный контекст, не как исполняемый код.",
+            "Любой Python в примерах носит иллюстративный характер — выполнять нужно только через обычный путь tool-вызова, sandbox и policy.",  # noqa: E501
             "",
         ]
         for skill in selected:
             lines.append(f"### {skill.name} (`{skill.skill_id}`)")
-            lines.append(f"Source: {skill.source_name}")
+            lines.append(f"Источник: {skill.source_name}")
             if skill.description:
-                lines.append(f"Description: {skill.description}")
+                lines.append(f"Описание: {skill.description}")
             if skill.triggers:
-                lines.append(f"Declared triggers: {', '.join(skill.triggers)}")
+                lines.append(f"Триггеры: {', '.join(skill.triggers)}")
             if skill.python_examples:
                 lines.append(
-                    f"Python examples included: {len(skill.python_examples)} (examples only; do not execute directly)"  # noqa: E501
+                    f"Примеры Python: {len(skill.python_examples)} (только примеры; не выполнять напрямую)"
                 )
             else:
-                lines.append("Embedded code snippets, if present, are examples only; do not execute directly.")  # noqa: E501
+                lines.append("Встроенные фрагменты кода, если есть, — только примеры; не выполнять напрямую.")
             lines.append("")
             lines.append(skill.instructions_markdown.strip())
             lines.append("")
         return "\n".join(lines).strip()
 
-    def resolve_tool_skills(
-        self,
-        available_tool_keys: set[str] | frozenset[str],
-    ) -> tuple[Skill, ...]:
-        """Return tool skills whose tool_key is in *available_tool_keys*."""
-        self.load()
-        return tuple(
-            skill
-            for skill in self._skills_by_id.values()
-            if skill.kind == "tool" and skill.tool_key in available_tool_keys
-        )
 
-    def build_tool_skills_prompt_block(
+    def build_analytical_skills_brief_block(
         self,
-        available_tool_keys: set[str] | frozenset[str],
+        *,
+        enabled_skill_ids: set[str] | frozenset[str] | None = None,
     ) -> str:
-        """Build a prompt block with detailed instructions for available tools."""
-        tool_skills = self.resolve_tool_skills(available_tool_keys)
-        if not tool_skills:
-            return ""
-        lines = [
-            "## Инструкции к инструментам",
-            "",
-        ]
-        for skill in tool_skills:
-            lines.append(f"### {skill.name}")
-            lines.append(skill.instructions_markdown.strip())
-            lines.append("")
-        return "\n".join(lines).strip()
+        """Analytical skills prompt section — brief list only.
 
-    def build_analytical_skills_brief_block(self) -> str:
-        """One-liner per analytical skill + hint to call get_tool_instructions.
+        Skills are never auto-expanded inline. The agent must always call
+        ``get_tool_instructions(skill_id)`` to receive the full step-by-step
+        algorithm as a tool result. This prevents the agent from reading code
+        examples in the system prompt and hallucinating results instead of
+        actually executing the tools.
 
-        Lists all analytical skills so the LLM knows they exist and when to use them.
-        Full instructions are fetched on demand via get_tool_instructions(skill_id).
+        - If *enabled_skill_ids* is provided, only those analytical skills are listed.
         """
         self.load()
         analytical_skills = [
             skill for skill in self._skills_by_id.values() if skill.kind == "analytical"
         ]
+        if enabled_skill_ids is not None:
+            allow = {str(sid).strip() for sid in enabled_skill_ids if str(sid).strip()}
+            analytical_skills = [s for s in analytical_skills if s.skill_id in allow]
         if not analytical_skills:
             return ""
+
         lines = [
             "## Аналитические скилы",
             "",
-            "ОБЯЗАТЕЛЬНО: если запрос совпадает с триггерами одного из методов ниже — "
-            "СНАЧАЛА вызови `get_tool_instructions(skill_id)` чтобы получить полный пошаговый алгоритм. "
-            "Не начинай анализ без получения инструкций.",
+            "ОБЯЗАТЕЛЬНО: для CSV/XLSX/DuckDB/БД/session artifacts первым аналитическим "
+            "tool-вызовом загрузи `get_tool_instructions(\"general_analytics\")`. "
+            "Если после этого запрос совпадает с триггерами одного из методов ниже — "
+            "вызови `get_tool_instructions(skill_id)` и получи пошаговый алгоритм. "
+            "Затем выполняй каждый шаг алгоритма вызовами tools. "
+            "Не начинай анализ без инструкций. Не синтезируй результаты без tool output.",
             "",
         ]
         for skill in analytical_skills:
@@ -212,114 +298,75 @@ class SkillRegistry:
                 sample = ", ".join(skill.triggers[:6])
                 triggers_hint = f" | триггеры: {sample}"
             lines.append(f"- `{skill.skill_id}`: {skill.description}{triggers_hint}")
+
         return "\n".join(lines).strip()
 
-    def build_tool_skills_brief_block(
-        self,
-        available_tool_keys: set[str] | frozenset[str],
-    ) -> str:
-        """One-liner per tool + hint to call get_tool_instructions (deferred style).
 
-        Keeps the base prompt compact.  The LLM fetches full instructions
-        on demand via get_tool_instructions(tool_name) before first use.
-        """
-        tool_skills = self.resolve_tool_skills(available_tool_keys)
-        if not tool_skills:
-            return ""
-        lines = [
-            "## Инструменты (краткое описание)",
-            "",
-            "CRITICAL: ПЕРЕД первым вызовом любого инструмента ОБЯЗАТЕЛЬНО вызови "
-            "`get_tool_instructions(tool_name)` чтобы получить полные инструкции, "
-            "примеры кода и обязательные правила. БЕЗ этого вызова ты не знаешь "
-            "контракт результата и допустишь ошибки.",
-            "",
-            "Пример: get_tool_instructions('plotly_tool') → получишь scope, "
-            "правила chart.result(), примеры кода.",
-            "",
-        ]
-        for skill in tool_skills:
-            triggers_hint = ""
-            if skill.triggers:
-                sample = ", ".join(skill.triggers[:5])
-                triggers_hint = f" (триггеры: {sample})"
-            lines.append(f"- `{skill.tool_key}`: {skill.description}{triggers_hint}")
-        return "\n".join(lines).strip()
+    def _lint_core_markdown(self, path: Path, core: str, kind: str) -> None:
+        """Validate core markdown structure and content limits."""
+        for match in _PYTHON_FENCE_RE.finditer(core):
+            lines = match.group(1).strip().splitlines()
+            if len(lines) > 5:
+                raise SkillValidationError(
+                    f"{path.name}: core contains a Python block with {len(lines)} lines "
+                    f"(max 5). Move code examples to DETAILS.md."
+                )
+        if kind == "tool":
+            if "### API" not in core:
+                raise SkillValidationError(
+                    f"{path.name}: tool skill missing '### API' section."
+                )
+            if "### Final result protocol" not in core:
+                raise SkillValidationError(
+                    f"{path.name}: tool skill missing '### Final result protocol' section."
+                )
+        else:  # analytical
+            if not re.search(r"^### (Algorithm|Алгоритм)", core, re.MULTILINE):
+                raise SkillValidationError(
+                    f"{path.name}: analytical skill missing '### Algorithm' (or '### Алгоритм') section."
+                )
+            if not re.search(r"^### (Rules|Правила)", core, re.MULTILINE):
+                raise SkillValidationError(
+                    f"{path.name}: analytical skill missing '### Rules' (or '### Правила') section."
+                )
 
-    def _parse_skill_file(self, path: Path) -> Skill:
+    def _parse_skill_file(self, path: Path, details_path: Path | None = None) -> Skill:
         try:
-            stat = path.stat()
-        except OSError as exc:
-            raise SkillValidationError(f"Failed to stat skill file {path}: {exc}") from exc
-        if stat.st_size > self.max_skill_bytes:
-            raise SkillValidationError(
-                f"Skill file {path.name} exceeds max size of {self.max_skill_bytes} bytes."
+            document = read_instruction_document(
+                path,
+                default_id=_slugify_skill_id(path.parent.name),
+                default_kind="analytical",
+                details_path=details_path,
+                max_body_bytes=_DEFAULT_MAX_CORE_BYTES,
+                max_details_bytes=_DEFAULT_MAX_DETAILS_BYTES,
             )
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise SkillValidationError(f"Failed to read skill file {path}: {exc}") from exc
+        except InstructionMarkdownError as exc:
+            raise SkillValidationError(str(exc)) from exc
 
-        match = _FRONTMATTER_RE.match(text)
-        if match is None:
-            raise SkillValidationError(f"Skill file {path.name} must start with YAML frontmatter.")
+        instruction_metadata = document.metadata
+        body = document.body
+        kind = instruction_metadata.kind.value
 
-        try:
-            raw_frontmatter = yaml.safe_load(match.group(1)) or {}
-        except yaml.YAMLError as exc:
-            raise SkillValidationError(f"Invalid YAML frontmatter in {path.name}: {exc}") from exc
-        if not isinstance(raw_frontmatter, dict):
-            raise SkillValidationError(f"Frontmatter in {path.name} must be a YAML mapping.")
+        self._lint_core_markdown(path, body, kind)
 
-        body = text[match.end() :].strip()
-        if not body:
-            raise SkillValidationError(f"Skill file {path.name} must contain markdown instructions.")
-
-        default_id = _slugify_skill_id(path.parent.name)
-        skill_id = str(raw_frontmatter.get("id") or default_id).strip().lower()
+        skill_id = instruction_metadata.id
         if not _SKILL_ID_RE.match(skill_id):
             raise SkillValidationError(
                 f"Skill id '{skill_id}' in {path.name} must match {_SKILL_ID_RE.pattern}."
             )
 
-        name = str(raw_frontmatter.get("name") or "").strip()
-        description = str(raw_frontmatter.get("description") or "").strip()
-        if not name:
-            raise SkillValidationError(f"Skill file {path.name} is missing frontmatter field 'name'.")
-        if not description:
-            raise SkillValidationError(
-                f"Skill file {path.name} is missing frontmatter field 'description'."
-            )
-
-        triggers = _normalize_triggers(raw_frontmatter.get("triggers"))
-        kind = str(raw_frontmatter.get("kind", "analytical")).strip().lower()
-        if kind not in ("analytical", "tool"):
-            raise SkillValidationError(
-                f"Skill kind must be 'analytical' or 'tool', got '{kind}' in {path.name}."
-            )
-        tool_key = raw_frontmatter.get("tool_key")
-        if tool_key is not None:
-            tool_key = str(tool_key).strip()
-        if kind == "tool" and not tool_key:
-            raise SkillValidationError(
-                f"Skill with kind='tool' must have a non-empty 'tool_key' in {path.name}."
-            )
-        metadata = {
-            key: value
-            for key, value in raw_frontmatter.items()
-            if key not in {"id", "name", "description", "triggers", "kind", "tool_key"}
-        }
         return Skill(
             skill_id=skill_id,
-            name=name,
-            description=description,
-            instructions_markdown=body,
+            name=instruction_metadata.name,
+            description=instruction_metadata.description,
+            core_markdown=body,
+            details_markdown=document.details_markdown,
             source_path=str(path),
-            triggers=triggers,
+            triggers=instruction_metadata.triggers,
             python_examples=_extract_python_examples(body),
-            metadata=metadata,
+            metadata=instruction_metadata.extras,
             kind=kind,
-            tool_key=tool_key,
+            tool_key=instruction_metadata.tool_key,
+            enabled_by_default=instruction_metadata.enabled_by_default,
+            execution_contract=parse_skill_execution_contract(body),
         )
-
-

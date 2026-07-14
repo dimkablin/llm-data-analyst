@@ -111,7 +111,3 @@ class AnomalyPlanfactIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["recipe"][0]["model_name"], "planfact-test")
         self.assertIn("anomaly_planfact", payload["meta"])
         self.assertEqual(payload["meta"]["anomaly_planfact"]["row_count"], 1)
-
-
-if __name__ == "__main__":
-    unittest.main()

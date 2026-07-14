@@ -4,11 +4,9 @@ import { useTheme } from "next-themes";
 import {
   AlertTriangle,
   BadgeCheck,
-  Bell,
   Brush,
   Check,
   Cpu,
-  Globe,
   KeyRound,
   LogOut,
   Palette,
@@ -40,12 +38,11 @@ import {
 } from "../lib/backend-types";
 import { formatDateTime, summarizeError } from "../lib/format";
 
-type AccountTab = "general" | "tools" | "notifications" | "security" | "users" | "account";
+type AccountTab = "general" | "tools" | "security" | "users" | "account";
 
 const TABS: Array<{ id: AccountTab; label: string; icon: ReactNode }> = [
   { id: "general", label: "Общее", icon: <Brush className="h-4 w-4" /> },
   { id: "tools", label: "Доступ к инструментам", icon: <Wrench className="h-4 w-4" /> },
-  { id: "notifications", label: "Уведомления", icon: <Bell className="h-4 w-4" /> },
   { id: "security", label: "Безопасность", icon: <Shield className="h-4 w-4" /> },
   { id: "users", label: "Пользователи", icon: <Users className="h-4 w-4" /> },
   { id: "account", label: "Аккаунт", icon: <User className="h-4 w-4" /> },
@@ -74,15 +71,10 @@ export function Account() {
   const [themeMode, setThemeMode] = useState<"system" | "light" | "dark">(settings.theme);
   const [accent, setAccent] = useState<AccentId>(() => getStoredAccent());
   const [spinnerId, setSpinnerId] = useState<SpinnerId>(() => getStoredSpinner());
-  const [language, setLanguage] = useState("Русский");
 
   const toolsSectionRef = useRef<ToolAccessSectionRef>(null);
   const [isToolsRefreshing, setIsToolsRefreshing] = useState(false);
   const savedSettingsRef = useRef(settings);
-
-  const [browserNotifications, setBrowserNotifications] = useState(true);
-  const [emailNotifications, setEmailNotifications] = useState(false);
-  const [systemAlerts, setSystemAlerts] = useState(true);
 
   const [currentPassword, setCurrentPassword] = useState("");
   const [nextPassword, setNextPassword] = useState("");
@@ -98,6 +90,7 @@ export function Account() {
   const [isDeletingAllSessions, setIsDeletingAllSessions] = useState(false);
   const [confirmDeleteSessions, setConfirmDeleteSessions] = useState(false);
   const [deleteSessionsMessage, setDeleteSessionsMessage] = useState<string | null>(null);
+  const [deletedSessionsFlash, setDeletedSessionsFlash] = useState(false);
 
   const selectedAccent = useMemo(
     () => ACCENTS.find((option) => option.id === accent) ?? ACCENTS[0],
@@ -197,7 +190,8 @@ export function Account() {
     setDeleteSessionsMessage(null);
     try {
       await deleteAllSessions();
-      setDeleteSessionsMessage("Все сессии удалены. При следующем открытии workspace будет создана новая.");
+      setDeletedSessionsFlash(true);
+      setTimeout(() => setDeletedSessionsFlash(false), 2500);
     } catch (error) {
       setDeleteSessionsMessage(summarizeError(error));
     } finally {
@@ -349,34 +343,34 @@ export function Account() {
 
                   </Card>
 
-                  <Card title="Локализация и ответы" subtitle="Язык интерфейса и формат вывода аналитики." icon={<Globe className="h-4 w-4" />}>
-                    <Field label="Язык">
-                      <Select value={language} onValueChange={setLanguage}>
-                        <SelectTrigger className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Русский">Русский</SelectItem>
-                          <SelectItem value="English">English</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
+                  <Card title="Ответы" subtitle="Настройки рассуждения и глубины анализа для новых запросов." icon={<Cpu className="h-4 w-4" />}>
                     <label className="inline-flex items-center gap-2 text-sm font-medium">
                       <input type="checkbox" checked={settingsDraft.default_include_reasoning} onChange={(event) => setSettingsDraft((prev) => ({ ...prev, default_include_reasoning: event.target.checked }))} className="h-4 w-4 accent-primary" />
-                      Показывать reasoning по умолчанию
+                      Показывать рассуждение по умолчанию
                     </label>
-                    <Field label="Стиль ответа">
-                      <Select value={settingsDraft.default_answer_style} onValueChange={(value) => setSettingsDraft((prev) => ({ ...prev, default_answer_style: value === "concise" ? "concise" : "detailed" }))}>
-                        <SelectTrigger className="h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm">
+                    <Field label="Глубина анализа">
+                      <Select
+                        value={settingsDraft.analysis_mode}
+                        onValueChange={(value) => {
+                          const mode = value === "deep" ? "deep" : "fast";
+                          const depth = mode === "deep" ? "deep" : "light";
+                          const maxSteps = mode === "deep" ? Math.max(settingsDraft.agent_max_steps, 128) : Math.min(settingsDraft.agent_max_steps, 8);
+                          setSettingsDraft((prev) => ({
+                            ...prev,
+                            analysis_mode: mode,
+                            analysis_depth: depth,
+                            agent_max_steps: clampAgentMaxStepsForDepth(depth, maxSteps),
+                          }));
+                        }}
+                      >
+                        <SelectTrigger className="mb-2 h-11 w-full rounded-xl border border-border/60 bg-secondary/70 px-4 text-sm">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="detailed">Развернутый</SelectItem>
-                          <SelectItem value="concise">Краткий</SelectItem>
+                          <SelectItem value="fast">Быстро</SelectItem>
+                          <SelectItem value="deep">Глубокий анализ</SelectItem>
                         </SelectContent>
                       </Select>
-                    </Field>
-                    <Field label="Глубина анализа">
                       <Select
                         value={settingsDraft.analysis_depth}
                         onValueChange={(value) => {
@@ -400,14 +394,48 @@ export function Account() {
                     </Field>
                   </Card>
 
+                  {user.is_admin ? (
+                    <div className="xl:col-span-2">
+                      <Card
+                        title="Интерфейс агента в чате"
+                        subtitle="Только для администраторов: вернуть подробный список вызовов инструментов."
+                        icon={<Wrench className="h-4 w-4" />}
+                      >
+                        <label className="inline-flex items-start gap-3 rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.show_detailed_tool_steps}
+                            onChange={(event) =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                show_detailed_tool_steps: event.target.checked,
+                              }))
+                            }
+                            className="mt-0.5 h-4 w-4 accent-primary"
+                          />
+                          <span className="text-sm leading-relaxed">
+                            <span className="font-semibold text-foreground">
+                              Детальные шаги инструментов
+                            </span>
+                            <span className="mt-1 block text-muted-foreground">
+                              Включено — как раньше: planner_tool, sql_tool, pandas_tool с аргументами.
+                              Выключено — пять этапов: выбор инструментов, данные, графики, анализ,
+                              суммаризация.
+                            </span>
+                          </span>
+                        </label>
+                      </Card>
+                    </div>
+                  ) : null}
+
                   <div className="xl:col-span-2">
-                    <Card title="Параметры backend" subtitle="Тонкие настройки из /auth/settings для runtime-профиля агента." icon={<Cpu className="h-4 w-4" />}>
+                    <Card title="Параметры бэкенда" subtitle="Тонкие настройки из /auth/settings для профиля выполнения агента." icon={<Cpu className="h-4 w-4" />}>
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <NumField label="Темп. чата" value={settingsDraft.llm_temperature_chat} step={0.05} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_temperature_chat: value }))} />
                         <NumField label="Темп. инструментов" value={settingsDraft.llm_temperature_tool} step={0.05} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_temperature_tool: value }))} />
                         <NumField label="Макс. токенов" value={settingsDraft.llm_max_tokens_default} step={128} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_max_tokens_default: Math.round(value) }))} />
-                        <NumField label="Токены reasoning" value={settingsDraft.llm_max_tokens_reasoning} step={128} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
-                        <NumField label="Timeout backend, сек" value={settingsDraft.backend_query_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
+                        <NumField label="Токены рассуждения" value={settingsDraft.llm_max_tokens_reasoning} step={128} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, llm_max_tokens_reasoning: Math.round(value) }))} />
+                        <NumField label="Таймаут бэкенда, сек" value={settingsDraft.backend_query_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, backend_query_timeout_sec: Math.round(value) }))} />
                         <NumField
                           label="Макс. шагов"
                           value={settingsDraft.agent_max_steps}
@@ -422,7 +450,7 @@ export function Account() {
                             }))
                           }
                         />
-                        <NumField label="Timeout шага, сек" value={settingsDraft.agent_step_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
+                        <NumField label="Таймаут шага, сек" value={settingsDraft.agent_step_timeout_sec} step={5} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_step_timeout_sec: Math.round(value) }))} />
                         <NumField label="Внутр. рекурсия" value={settingsDraft.agent_inner_recursion_limit} step={1} onChange={(value) => setSettingsDraft((prev) => ({ ...prev, agent_inner_recursion_limit: Math.round(value) }))} />
                       </div>
                     </Card>
@@ -480,24 +508,14 @@ export function Account() {
                   </Button>
                 }
               >
-                <ToolAccessSection ref={toolsSectionRef} onLoadingChange={setIsToolsRefreshing} />
-              </SectionBlock>
-            ) : null}
-
-            {activeTab === "notifications" ? (
-              <SectionBlock title="Уведомления" subtitle="Настройка каналов уведомлений и оповещений." icon={<Bell className="h-4 w-4" />}>
-                <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                  <ToggleCard title="Браузерные уведомления" desc="Оповещения о завершении анализа и готовности артефактов." enabled={browserNotifications} onChange={setBrowserNotifications} />
-                  <ToggleCard title="Email-уведомления" desc="Дублировать важные события на привязанный email." enabled={emailNotifications} onChange={setEmailNotifications} />
-                  <ToggleCard title="Системные оповещения" desc="Показывать сообщения о состоянии runtime и инфраструктуры." enabled={systemAlerts} onChange={setSystemAlerts} />
-                </div>
+                <ToolAccessSection ref={toolsSectionRef} onLoadingChange={setIsToolsRefreshing} isAdmin={user?.is_admin ?? false} />
               </SectionBlock>
             ) : null}
 
             {activeTab === "security" ? (
               <SectionBlock title="Безопасность" subtitle="Смена пароля и контроль текущей сессии." icon={<Shield className="h-4 w-4" />}>
                 <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-                  <Card title="Смена пароля" subtitle="Подключено к backend /auth/change-password." icon={<KeyRound className="h-4 w-4" />}>
+                  <Card title="Смена пароля" subtitle="Подключено к бэкенду: /auth/change-password." icon={<KeyRound className="h-4 w-4" />}>
                     <Input label="Текущий пароль" value={currentPassword} onChange={setCurrentPassword} type="password" />
                     <Input label="Новый пароль" value={nextPassword} onChange={setNextPassword} type="password" />
                     <Input label="Повторите новый пароль" value={nextPasswordRepeat} onChange={setNextPasswordRepeat} type="password" />
@@ -508,15 +526,15 @@ export function Account() {
                     {passwordMessage ? <p className="text-sm text-muted-foreground">{passwordMessage}</p> : null}
                   </Card>
                   <Card title="Сессия" subtitle="Выход и переход в рабочую область." icon={<LogOut className="h-4 w-4" />}>
-                    <div className="rounded-xl border border-border/50 bg-secondary/25 p-3 text-sm text-muted-foreground">Текущая backend-сессия связана с bearer token и ownership моделей/чатов.</div>
-                    <Link to="/workspace" className="rounded-xl bg-secondary px-5 py-2.5 text-sm font-bold hover:bg-muted">Открыть workspace</Link>
+                    <div className="rounded-xl border border-border/50 bg-secondary/25 p-3 text-sm text-muted-foreground">Текущая сессия бэкенда связана с токеном доступа и владением моделей/чатов.</div>
+                    <Link to="/workspace" className="rounded-xl bg-secondary px-5 py-2.5 text-sm font-bold hover:bg-muted">Открыть рабочую область</Link>
                   </Card>
                 </div>
               </SectionBlock>
             ) : null}
 
             {activeTab === "users" ? (
-              <SectionBlock title="Управление пользователями" subtitle="Рабочая admin-функциональность старого frontend, встроенная в новый интерфейс." icon={<Users className="h-4 w-4" />}>
+              <SectionBlock title="Управление пользователями" subtitle="Рабочая админ-функциональность старого фронтенда, встроенная в новый интерфейс." icon={<Users className="h-4 w-4" />}>
                 {!user.is_admin ? (
                   <div className="rounded-2xl border border-border/50 bg-secondary/25 p-5 text-sm text-muted-foreground">Раздел сохранен в UI, но доступен только администраторам.</div>
                 ) : (
@@ -567,12 +585,12 @@ export function Account() {
                         </div>
                         <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-emerald-400">
                           <BadgeCheck className="h-4 w-4" />
-                          active
+                          активен
                         </div>
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-3">
-                      <Link to="/workspace" className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground">Открыть workspace</Link>
+                      <Link to="/workspace" className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground">Открыть рабочую область</Link>
                       <button type="button" onClick={() => { void logout().then(() => navigate("/auth", { replace: true })); }} className="inline-flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-secondary px-5 py-2.5 text-sm font-bold hover:bg-muted">
                         <LogOut className="h-4 w-4" />
                         Выйти из аккаунта
@@ -616,11 +634,24 @@ export function Account() {
                         <button
                           type="button"
                           onClick={() => void handleDeleteAllSessions()}
-                          disabled={isDeletingAllSessions}
-                          className="flex shrink-0 items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-400 transition-all hover:bg-rose-500/20 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={isDeletingAllSessions || deletedSessionsFlash}
+                          className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                            deletedSessionsFlash
+                              ? "border border-green-500/30 bg-green-600 text-white shadow-lg shadow-green-500/20"
+                              : "border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300"
+                          }`}
                         >
-                          <Trash2 className="h-4 w-4" />
-                          Удалить
+                          {deletedSessionsFlash ? (
+                            <>
+                              <Check className="h-4 w-4" />
+                              Удалено!
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="h-4 w-4" />
+                              Удалить
+                            </>
+                          )}
                         </button>
                       )}
                     </div>
@@ -707,22 +738,6 @@ function Card({ title, subtitle, icon, children }: { title: string; subtitle: st
         <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>
       </div>
       {children}
-    </div>
-  );
-}
-
-function ToggleCard({ title, desc, enabled, onChange }: { title: string; desc: string; enabled: boolean; onChange: (value: boolean) => void }) {
-  return (
-    <div className="rounded-2xl border border-border/50 bg-secondary/25 p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-[15px] font-semibold tracking-tight">{title}</h3>
-          <p className="mt-2 text-sm text-muted-foreground">{desc}</p>
-        </div>
-        <button type="button" onClick={() => onChange(!enabled)} className={`relative mt-1 inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${enabled ? "bg-primary" : "bg-border/70"}`} aria-pressed={enabled} aria-label={title}>
-          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-        </button>
-      </div>
     </div>
   );
 }

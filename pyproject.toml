@@ -14,13 +14,14 @@ readme = "README.md"
 [tool.poetry.dependencies]
 plotly = "^6.1.2"
 pandas = "^2.3.0"
+openpyxl = "^3.1.5"
+python-docx = "^1.1.2"
 tabulate = "^0.9.0"
-streamlit = "^1.46.0"
-ydata-profiling = "^4.16.1"
-streamlit-ydata-profiling = "^0.2.1"
 langchain = ">=1.0.0,<2.0.0"
 langchain-openai = ">=1.0.0,<2.0.0"
+langchain-ollama = ">=1.1.0,<2.0.0"
 langgraph = ">=1.0.0,<2.0.0"
+qdrant-client = ">=1.12.0,<2.0.0"
 jinja2 = "^3.1.2"
 python-dotenv = "^1.1.1"
 markdown2 = "^2.5.3"
@@ -35,6 +36,7 @@ cryptography = "^46.0.3"
 psycopg = {version = "^3.2.12", extras = ["binary"]}
 duckdb = "^1.5.1"
 pyyaml = "^6.0.3"
+mcp = "^1.23.2"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -96,10 +98,10 @@ extend-immutable-calls = ["Depends", "Security", "Query", "Header", "Cookie", "B
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "live: requires a running LLM endpoint or external service (deselect with -m 'not live')",
-    "e2e: end-to-end tests that require a full stack (deselect with -m 'not e2e')",
+    "live: requires a running LLM endpoint or external service",
+    "e2e: full-stack end-to-end test requiring backend and/or Ollama",
+    "benchmark: live benchmark runs against deployed backend",
 ]
-addopts = "--tb=short"
 
 [build-system]
 requires = ["poetry-core"]

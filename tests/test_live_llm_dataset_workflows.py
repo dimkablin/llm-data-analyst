@@ -17,10 +17,14 @@ LIVE_LLM_TESTS_ENABLED = os.getenv("LIVE_LLM_TESTS", "").strip().lower() in {
     "on",
 }
 
-pytestmark = pytest.mark.skipif(
-    not LIVE_LLM_TESTS_ENABLED,
-    reason="Set LIVE_LLM_TESTS=1 to run live LLM dataset workflow tests.",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.e2e,
+    pytest.mark.skipif(
+        not LIVE_LLM_TESTS_ENABLED,
+        reason="Set LIVE_LLM_TESTS=1 to run live LLM dataset workflow tests.",
+    ),
+]
 
 
 def _build_live_runner():
@@ -74,7 +78,7 @@ def test_live_llm_uses_tools_on_real_csv_dataset() -> None:
     assert response.route == "analysis"
     assert response.tool_calls >= 1
     assert response.artifacts
-    assert any(name in {"pandas_tool", "value_tool"} for name in response.tool_names)
+    assert "pandas_tool" in response.tool_names
 
 
 def test_live_llm_uses_explicit_skill_with_dataset() -> None:

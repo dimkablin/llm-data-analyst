@@ -12,6 +12,7 @@ from backend.artifacts.execution import (
     ExecutionArtifact,
 )
 from backend.artifacts.presentation import to_presentation
+from backend.core.json_utils import make_json_safe
 
 _EXEC_TO_API_TYPE: dict[ExecArtifactType, str] = {
     ExecArtifactType.DATAFRAME: "table",
@@ -30,16 +31,18 @@ def execution_to_api_payload(exec_artifact: ExecutionArtifact) -> dict[str, Any]
     Output shape matches the frontend ``ArtifactPayload`` contract.
     """
     pa = to_presentation(exec_artifact)
-    return {
-        "id": exec_artifact.id,
-        "type": _EXEC_TO_API_TYPE.get(exec_artifact.artifact_type, "table"),
-        "text": pa.title,
-        "role": "ai",
-        "meta": pa.meta,
-        "timestamp": pa.created_at,
-        "data": pa.data,
-        "execution_artifact_id": exec_artifact.id,
-        "content_hash": exec_artifact.content_hash,
-        "version": exec_artifact.version,
-        "parent_ids": exec_artifact.parent_ids,
-    }
+    return make_json_safe(
+        {
+            "id": exec_artifact.id,
+            "type": _EXEC_TO_API_TYPE.get(exec_artifact.artifact_type, "table"),
+            "text": pa.title,
+            "role": "ai",
+            "meta": pa.meta,
+            "timestamp": pa.created_at,
+            "data": pa.data,
+            "execution_artifact_id": exec_artifact.id,
+            "content_hash": exec_artifact.content_hash,
+            "version": exec_artifact.version,
+            "parent_ids": exec_artifact.parent_ids,
+        }
+    )

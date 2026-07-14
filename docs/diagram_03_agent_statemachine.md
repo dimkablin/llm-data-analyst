@@ -1,47 +1,49 @@
-# Диаграмма 3 — Граф агента (Agent-Centric Loop)
+# Diagram 3 - Agent State Machine
 
-Внутренняя логика LangGraph-графа. Для AI-инженеров и разработчиков.
+Current LangGraph topology is intentionally small and domain-neutral.
 
 ```mermaid
 flowchart TD
-    START --> dispatch
+    START([START]) --> Prepare["prepare_context\nAgentContextBuilder"]
+    Prepare -->|"done or response already set"| Finalize["finalize\nfinal response orchestration"]
+    Prepare -->|"needs tool loop"| Agent["agent\ndirect_tool_loop"]
+    Agent --> Finalize
+    Finalize --> END([END])
 
-    dispatch -->|"chat / summary\nkeyword pre-check"| finalize
-    dispatch -->|"analysis request"| agent
+    subgraph Context["Context preparation"]
+        ToolCtx["tool catalog and allowed tools"]
+        SkillCtx["selected skills and requirements"]
+        SourceCtx["session/source/DB runtime metadata"]
+        FutureCtx["future budget and vector-retrieval policies"]
+    end
 
-    agent -->|"load skill instructions"| skills
-    skills --> agent
+    subgraph Runtime["Generic runtime responsibilities"]
+        State["typed state"]
+        Events["runtime events"]
+        Artifacts["artifact references"]
+        Validation["generic skill/tool contract validation"]
+    end
 
-    agent -->|"call tool"| tools
-    tools -->|"sandbox result / artifact"| agent
+    subgraph Extensions["Domain extensions"]
+        Skills["SKILL.md instructions"]
+        Tools["typed tools"]
+        Manifests["domain extension manifests"]
+        MCP["MCP servers"]
+    end
 
-    agent -->|"no more tool_calls\nor max_iterations reached"| finalize
-    finalize --> END
-
-    skills["📚 SkillRegistry  ./skills/
-    ───────────────
-    get_tool_instructions(tool_name)
-    ───────────────
-    kind=tool → инструкции к тулу
-    sql · pandas · plotly · value
-    database · planner · reviewer
-    forecast · rag · search · anomaly
-    ───────────────
-    kind=analytical → алгоритмы
-    💡 cohort_analysis"]
-
-    tools["🛠 Tools
-    ───────────────
-    sql_tool · database_tool
-    pandas_tool · value_tool
-    plotly_tool · search_tool
-    rag_tool · forecast_tool
-    anomaly_planfact_tool
-    planner_tool · reviewer_tool"]
-
-    style dispatch fill:#2d2d2d,color:#fff
-    style agent fill:#1a3a5c,color:#fff
-    style finalize fill:#2d2d2d,color:#fff
-    style skills fill:#1a2d1a,color:#ccc,stroke:#4a7a4a
-    style tools fill:#1a1a2d,color:#ccc,stroke:#4a4a7a
+    Prepare --> Context
+    Agent --> Runtime
+    Runtime --> Extensions
 ```
+
+## Node Responsibilities
+
+- `prepare_context` builds generic context. It does not classify customer
+  scenarios by keywords and does not short-circuit chat, summary, or reports.
+- `agent` calls the LLM and executes typed tools through the generic tool loop.
+- `finalize` performs generic final response orchestration and validation. It
+  may append warnings for failed checks, but it must not replace good model
+  answers with deterministic domain summaries.
+
+New investment, sales, risk, forecasting, or customer-specific behavior should
+enter through skills/tools/domain manifests/MCP, not by changing graph topology.

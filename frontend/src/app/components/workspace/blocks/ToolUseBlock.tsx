@@ -6,18 +6,32 @@ type Props = {
   tool_name: string;
   input_summary: string;
   input_code?: string;
+  input_preview?: string;
   status: "running" | "done" | "error";
   started_at: number;
-  /** Result summary shown inline after tool completes. */
+  /** Сводка результата, показанная внутри строки после завершения инструмента. */
   result_summary?: string;
   output_preview?: string;
   artifact_keys?: string[];
 };
 
+function formatToolInput(input_preview?: string, input_code?: string): string | null {
+  const raw = input_preview?.trim();
+  if (raw) {
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      return raw;
+    }
+  }
+  return input_code?.trim() || null;
+}
+
 export function ToolUseBlock({
   tool_name,
   input_summary,
   input_code,
+  input_preview,
   status,
   started_at,
   result_summary,
@@ -37,7 +51,8 @@ export function ToolUseBlock({
     return () => clearInterval(t);
   }, [isRunning, started_at]);
 
-  const hasDetail = !!(input_code || output_preview || (artifact_keys?.length));
+  const detailInput = formatToolInput(input_preview, input_code);
+  const hasDetail = !!(detailInput || output_preview || (artifact_keys?.length));
 
   const statusIcon = isRunning ? (
     <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
@@ -49,7 +64,7 @@ export function ToolUseBlock({
 
   return (
     <div className="flex flex-col">
-      {/* Main tool call row */}
+      {/* Основная строка вызова инструмента. */}
       <div
         className={`flex items-center gap-2 rounded-lg px-2 py-1 transition-colors ${
           hasDetail ? "cursor-pointer hover:bg-muted/20" : ""
@@ -64,7 +79,7 @@ export function ToolUseBlock({
         >
           {tool_name}
         </span>
-        {input_summary ? (
+        {!expanded && input_summary ? (
           <span className="truncate font-mono text-[12px] text-muted-foreground/40">
             {input_summary}
           </span>
@@ -77,7 +92,7 @@ export function ToolUseBlock({
           </span>
         ) : null}
 
-        {/* Artifact badges */}
+        {/* Метки артефактов. */}
         {!isRunning && artifact_keys?.length ? (
           <span className="ml-auto shrink-0 font-mono text-[11px] text-emerald-500/60">
             → {artifact_keys.join(", ")}
@@ -103,13 +118,13 @@ export function ToolUseBlock({
       {/* Expanded detail */}
       {expanded ? (
         <div className="ml-7 mt-1 flex flex-col gap-2">
-          {input_code ? (
+          {detailInput ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/30 select-none">
-                Input
+                Вход
               </span>
               <div className="overflow-x-auto rounded border border-border/20 bg-muted/15 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/60 whitespace-pre">
-                {input_code}
+                {detailInput}
               </div>
             </div>
           ) : null}
@@ -117,7 +132,7 @@ export function ToolUseBlock({
           {output_preview ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/30 select-none">
-                {status === "error" ? "Error" : "Output"}
+                {status === "error" ? "Ошибка" : "Выход"}
               </span>
               {status === "error" ? (
                 <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
@@ -132,7 +147,7 @@ export function ToolUseBlock({
           ) : !output_preview && artifact_keys?.length ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/30 select-none">
-                Output
+                Выход
               </span>
               <div className="rounded border border-border/20 bg-muted/15 px-3 py-2 font-mono text-[11px] text-emerald-500/60">
                 {artifact_keys.join(", ")}

@@ -1,13 +1,17 @@
 import React, { type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  BarChart3,
   BookOpen,
   Bot,
+  Braces,
   Check,
   Copy,
   Download,
+  File,
   FileSpreadsheet,
+  FileText,
   Globe,
-  Pin,
+  Hash,
   Plus,
   RefreshCw,
   Send,
@@ -16,28 +20,40 @@ import {
   User,
   X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import type {
   ArtifactPayload,
   AssistantBlock,
   ChatMessage,
+  ContextUsageSnapshot,
   ExecutionGraph,
   PhaseEvent,
   SessionSourceState,
   StreamToolCall,
+  UserSettings,
 } from "../../lib/backend-types";
+import { filterBlocks, filterReasoningSteps } from "../../lib/think-filter";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
+import { ContextUsageRing } from "./ContextUsageRing";
 import { SpinnerDisplay } from "../SpinnerDisplay";
 import { BlockTimeline, ThinkingBlock } from "./blocks";
+import { getArtifactIconKey, type ArtifactIconKey } from "../../lib/artifact-icons";
+import { selectDefaultHighlightedBoardArtifactIds } from "../../lib/board-artifacts";
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
-function Tip({ label, children }: { label: string; children: React.ReactNode }) {
+import { ArtifactSurface } from "./ArtifactSurface";
+function Tip({ label, children, side = "top" }: { label: string; children: React.ReactNode; side?: "top" | "bottom" }) {
+  const isTop = side === "top";
   return (
     <div className="group/tip relative inline-flex">
       {children}
-      <div className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50">
+      <div className={`pointer-events-none absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border/50 bg-popover px-2.5 py-1 text-[11px] font-medium text-popover-foreground shadow-md opacity-0 transition-opacity duration-150 group-hover/tip:opacity-100 z-50 ${isTop ? "bottom-full mb-2" : "top-full mt-2"}`}>
         {label}
-        <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+        {isTop
+          ? <div className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-popover" />
+          : <div className="absolute left-1/2 bottom-full -translate-x-1/2 border-4 border-transparent border-b-popover" />
+        }
       </div>
     </div>
   );
@@ -49,9 +65,36 @@ const QUICK_SUGGESTIONS = [
   "Найди аномалии и выбросы",
 ];
 
+const ARTIFACT_ICON_COMPONENTS: Record<ArtifactIconKey, LucideIcon> = {
+  artifact: File,
+  chart: BarChart3,
+  table: FileSpreadsheet,
+  metric: Hash,
+  json: Braces,
+  note: FileText,
+};
+
+function ArtifactChipIcon({ type }: { type: string | null | undefined }) {
+  const Icon = ARTIFACT_ICON_COMPONENTS[getArtifactIconKey(type)];
+  return <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />;
+}
+
+function LiveStatusPill({ label }: { label: string }) {
+  return (
+    <div
+      className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[12px] font-semibold text-primary animate-pulse"
+      role="status"
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+      {label}
+    </div>
+  );
+}
+
 type Props = {
   title: string;
   modelLabel?: string;
+  datasetName?: string;
   messages: ChatMessage[];
   streamDraft: string;
   streamReasoning: string;
@@ -59,6 +102,8 @@ type Props = {
   streamTools: StreamToolCall[];
   streamBlocks: AssistantBlock[];
   streamGraph?: ExecutionGraph | null;
+  contextUsage?: ContextUsageSnapshot | null;
+  isContextUsageLoading?: boolean;
   isStreaming: boolean;
   isBackgroundStreaming?: boolean;
   error: string | null;
@@ -68,17 +113,28 @@ type Props = {
   hasDataset: boolean;
   activeSource?: SessionSourceState;
   onSubmit: (value: string) => Promise<void>;
+  onDraftChange?: (value: string) => void;
   onStop: () => void;
   onRetry: () => Promise<void>;
   onSettingsClick: () => void;
   onUploadClick: () => void;
   onExportChat: () => void;
   onPinArtifact: (artifact: ArtifactPayload) => void;
+  onPinMessage: (content: string, messageId: string, timestamp: string) => void;
+  settings: Pick<
+    UserSettings,
+    | "show_thinking"
+    | "show_think_planning"
+    | "show_think_tool"
+    | "show_think_final"
+    | "show_detailed_tool_steps"
+  >;
 };
 
 export function ChatPanel({
   title,
   modelLabel,
+  datasetName,
   messages,
   streamDraft,
   streamReasoning,
@@ -86,6 +142,8 @@ export function ChatPanel({
   streamTools,
   streamBlocks,
   streamGraph,
+  contextUsage = null,
+  isContextUsageLoading = false,
   isStreaming,
   isBackgroundStreaming = false,
   error,
@@ -95,13 +153,17 @@ export function ChatPanel({
   hasDataset,
   activeSource,
   onSubmit,
+  onDraftChange,
   onStop,
   onRetry,
   onSettingsClick,
   onUploadClick,
   onExportChat,
   onPinArtifact,
+  onPinMessage,
+  settings,
 }: Props) {
+  const showDetailedTools = settings.show_detailed_tool_steps;
   const [input, setInput] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -144,14 +206,19 @@ export function ChatPanel({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isMenuOpen]);
 
+  function updateInput(value: string): void {
+    setInput(value);
+    onDraftChange?.(value);
+  }
+
   function handleMenuAction(action: "upload" | "search" | "research"): void {
     setIsMenuOpen(false);
     if (action === "upload") {
       onUploadClick();
     } else if (action === "search") {
-      setInput((prev) => prev || "Найди в интернете: ");
+      updateInput(input || "Найди в интернете: ");
     } else {
-      setInput((prev) => prev || "Глубоко исследуй в интернете: ");
+      updateInput(input || "Глубоко исследуй в интернете: ");
     }
   }
 
@@ -160,51 +227,90 @@ export function ChatPanel({
       return;
     }
     const value = input;
-    setInput("");
+    updateInput("");
     await onSubmit(value);
   }
 
-  const sourceStatus =
-    activeSource?.source_type === "db_connection"
-      ? "db connected"
-      : hasDataset
-        ? "dataset attached"
-        : "no dataset";
+  const assistantConnected = Boolean(modelLabel) || isReady;
+  const modelStatusText = assistantConnected
+    ? "Модель подключена"
+    : "Модель: подключение…";
+
+  const sourceType = activeSource?.source_type ?? null;
+  const csvLabel = String(activeSource?.source_label || datasetName || "").trim();
+  const dbLabel = String(activeSource?.source_label || "").trim();
+  const dbSchema = String(activeSource?.source_mode || "").trim();
+  const ragLabel = String(activeSource?.source_label || "").trim();
+  const dataConnected =
+    sourceType === "db_connection" ||
+    sourceType === "openproject" ||
+    sourceType === "csv" ||
+    sourceType === "rag" ||
+    hasDataset;
+  const dataStatusText =
+    sourceType === "openproject" || (sourceType === "db_connection" && activeSource?.source_mode === "postgres_sync")
+      ? "Данные: OpenProject"
+      : sourceType === "db_connection"
+      ? dbSchema
+        ? `Данные: БД ${dbLabel || "подключена"} · схема ${dbSchema}`
+        : `Данные: БД ${dbLabel || "подключена"}`
+      : sourceType === "rag"
+        ? `Данные: загружены (${ragLabel || "База знаний"})`
+      : sourceType === "csv" || hasDataset
+        ? `Данные: загружены${csvLabel ? ` (${csvLabel})` : ""}`
+        : "Данные: не выбраны";
+
+  const isCompactingContext = contextUsage?.compaction_status === "running";
+  const isWaitingForFirstStreamEvent =
+    isStreaming &&
+    !streamDraft.trim() &&
+    streamBlocks.length === 0 &&
+    streamTools.length === 0;
+  const liveStatusLabel = isCompactingContext
+    ? "Сжимаю контекст"
+    : isWaitingForFirstStreamEvent
+      ? "Думаю"
+      : "";
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-card-sunken/30 dark:bg-card/15">
-      <div className="flex items-center justify-between border-b border-border/50 p-3 lg:p-5">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-lg shadow-primary/20">
+      <div className="flex h-16 flex-none items-center justify-between gap-3 border-b border-border/50 px-3 lg:px-5">
+        <div className="flex h-full min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 flex-none items-center justify-center rounded-xl bg-primary shadow-lg shadow-primary/20">
             <Bot className="h-5 w-5 text-primary-foreground" />
           </div>
-          <div>
-            <div className="text-[14px] font-bold tracking-tight">{title}</div>
-            <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              <span className={`h-1.5 w-1.5 rounded-full ${isReady ? "bg-emerald-500" : "bg-amber-400"}`}></span>
-              <span>{modelLabel || "backend model"}</span>
-              <span>{sourceStatus}</span>
+          <div className="min-w-0">
+            <div className="truncate text-[14px] font-bold leading-5 tracking-tight">{title}</div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-3 overflow-hidden text-[11px] font-medium leading-4 tracking-wide text-muted-foreground">
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full ${assistantConnected ? "bg-emerald-500" : "bg-rose-500"}`} />
+                <span className="truncate">{modelStatusText}</span>
+              </span>
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full ${dataConnected ? "bg-emerald-500" : "bg-rose-500"}`} />
+                <span className="truncate">{dataStatusText}</span>
+              </span>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Tip label="Экспорт чата">
+        <div className="flex h-full shrink-0 items-center gap-1">
+          <Tip label="Экспорт чата" side="bottom">
             <button
               type="button"
               onClick={onExportChat}
               disabled={messages.length === 0}
-              className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-all hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <Download className="h-5 w-5" />
+              <Download className="h-[18px] w-[18px]" />
             </button>
           </Tip>
-          <Tip label="Настройки">
+          <Tip label="Настройки" side="bottom">
             <button
               type="button"
               onClick={onSettingsClick}
-              className="rounded-lg p-2 text-muted-foreground transition-all hover:bg-secondary hover:text-foreground"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-all hover:bg-secondary hover:text-foreground"
             >
-              <Settings2 className="h-5 w-5" />
+              <Settings2 className="h-[18px] w-[18px]" />
             </button>
           </Tip>
         </div>
@@ -234,7 +340,9 @@ export function ChatPanel({
               isLast={index === messages.length - 1}
               isStreaming={isStreaming}
               onPinArtifact={onPinArtifact}
+              onPinMessage={onPinMessage}
               onRegenerate={onRetry}
+              settings={settings}
             />
           ))}
 
@@ -249,15 +357,33 @@ export function ChatPanel({
                 <SpinnerDisplay />
               </div>
               <div className="flex min-w-0 flex-1 flex-col gap-2">
+                {liveStatusLabel ? <LiveStatusPill label={liveStatusLabel} /> : null}
+
                 {/* Block timeline (new) or legacy tool list */}
                 {streamBlocks.length > 0 ? (
                   <BlockTimeline
                     blocks={streamBlocks}
-                    liveThinking={streamReasoning}
+                    liveThinking={settings.show_thinking ? streamReasoning : ""}
                     isLive
+                    showDetailedTools={showDetailedTools}
+                    isSummarizing={Boolean(
+                      streamDraft.trim() &&
+                        streamTools.length > 0 &&
+                        !streamTools.some((tool) => tool.status === "running"),
+                    )}
                   />
-                ) : streamTools.length > 0 || streamReasoning ? (
-                  <ToolCallList tools={streamTools} reasoning={streamReasoning} isLive />
+                ) : streamTools.length > 0 || (settings.show_thinking && streamReasoning) ? (
+                  <ToolCallList
+                    tools={streamTools}
+                    reasoning={settings.show_thinking ? streamReasoning : undefined}
+                    isLive
+                    showDetailedTools={showDetailedTools}
+                    isSummarizing={Boolean(
+                      streamDraft.trim() &&
+                        streamTools.length > 0 &&
+                        !streamTools.some((tool) => tool.status === "running"),
+                    )}
+                  />
                 ) : null}
 
                 {/* Streaming answer text */}
@@ -265,7 +391,7 @@ export function ChatPanel({
                   <div className="rounded-2xl rounded-tl-none border border-border/40 bg-card px-4 py-3 text-[13px] leading-relaxed lg:px-5 lg:py-4 lg:text-[14px]">
                     <MarkdownBlock content={streamDraft} />
                   </div>
-                ) : !streamBlocks.length && !streamTools.length ? (
+                ) : !streamBlocks.length && !streamTools.length && !liveStatusLabel ? (
                   <div className="rounded-2xl rounded-tl-none border border-border/40 bg-card px-4 py-3 text-[13px] leading-relaxed lg:px-5 lg:py-4 lg:text-[14px]">
                     <span className="text-muted-foreground/50">…</span>
                   </div>
@@ -300,7 +426,7 @@ export function ChatPanel({
               <button
                 key={suggestion}
                 type="button"
-                onClick={() => setInput(suggestion)}
+                onClick={() => updateInput(suggestion)}
                 className="group flex items-center gap-1.5 rounded-full border border-border/40 bg-card/60 px-3.5 py-1.5 text-[12px] font-medium text-muted-foreground backdrop-blur-sm transition-all duration-150 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
               >
                 <span className="h-1 w-1 rounded-full bg-primary/40 transition-colors group-hover:bg-primary/70" />
@@ -312,9 +438,9 @@ export function ChatPanel({
 
 
         <div className="group relative rounded-3xl border border-border/50 bg-card/80 backdrop-blur-sm shadow-lg shadow-black/5 transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:ring-4 focus-within:ring-primary/8">
-          <textarea
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
+            <textarea
+              value={input}
+              onChange={(event) => updateInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -322,7 +448,7 @@ export function ChatPanel({
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
-            className="min-h-[80px] w-full resize-none bg-transparent p-4 pl-12 pr-14 text-[13.5px] leading-relaxed outline-none placeholder:text-muted-foreground/50 lg:p-5 lg:pl-14 lg:pr-16 lg:text-[15px] xl:min-h-[108px]"
+            className="min-h-[80px] w-full resize-none bg-transparent p-4 pl-12 pr-28 text-[13.5px] leading-relaxed outline-none placeholder:text-muted-foreground/50 lg:p-5 lg:pl-14 lg:pr-32 lg:text-[15px] xl:min-h-[108px]"
           />
 
           {/* "+" action menu — bottom left */}
@@ -397,6 +523,13 @@ export function ChatPanel({
               </button>
             )}
           </div>
+
+          <div className="absolute bottom-3 right-14 lg:right-16">
+            <ContextUsageRing
+              usage={contextUsage}
+              isLoading={isContextUsageLoading}
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -436,16 +569,30 @@ function MessageBubble({
   isLast,
   isStreaming,
   onPinArtifact,
+  onPinMessage,
   onRegenerate,
+  settings,
 }: {
   message: ChatMessage;
   isLast: boolean;
   isStreaming: boolean;
   onPinArtifact: (artifact: ArtifactPayload) => void;
+  onPinMessage: (content: string, messageId: string, timestamp: string) => void;
   onRegenerate: () => Promise<void>;
+  settings: Pick<
+    UserSettings,
+    | "show_thinking"
+    | "show_think_planning"
+    | "show_think_tool"
+    | "show_think_final"
+    | "show_detailed_tool_steps"
+  >;
 }) {
   const isUser = message.role === "user";
   const [copied, setCopied] = useState(false);
+  const highlightedArtifactIds = new Set(
+    selectDefaultHighlightedBoardArtifactIds(message.artifacts ?? []),
+  );
 
   function handleCopy(): void {
     void navigator.clipboard.writeText(message.content).then(() => {
@@ -466,62 +613,127 @@ function MessageBubble({
       </div>
 
       <div className={`flex min-w-0 max-w-[88%] flex-col gap-1.5 ${isUser ? "items-end" : ""}`}>
-        {/* Live streaming: BlockTimeline (thinking interleaved with tool calls) */}
-        {!isUser && message.blocks?.length ? (
-          <BlockTimeline blocks={message.blocks} />
+        {/* History: BlockTimeline (thinking interleaved with tool calls).
+            Фильтруем блоки рассуждения, когда show_thinking выключен, чтобы совпадать с живым потоком. */}
+        {!isUser && message.blocks && message.blocks.length > 0 ? (
+          <BlockTimeline
+            blocks={filterBlocks(message.blocks, settings)}
+            showDetailedTools={settings.show_detailed_tool_steps}
+          />
         ) : (
           <>
-            {/* Reload: orphan reasoning steps (final synthesis, no tool call follows).
-                Tool-associated steps are already shown via pre_reasoning inside ToolCallList.
-                Filter by !tool_name for backward compat with state.json written before this fix. */}
-            {!isUser && message.reasoning_steps?.filter((s) => !s.tool_name).length
-              ? message.reasoning_steps
-                  .filter((s) => !s.tool_name)
-                  .map((step) => (
-                    <ThinkingBlock key={`rs-${step.step_index}`} content={step.content} defaultCollapsed />
+            {/* Повторная загрузка: одиночные шаги рассуждения, например финальный синтез без следующего инструмента.
+                Шаги, связанные с инструментами, уже показаны через pre_reasoning внутри ToolCallList.
+                Фильтр !tool_name нужен для обратной совместимости с state.json, записанным до этого исправления. */}
+            {!isUser && (() => {
+              const filtered = filterReasoningSteps(
+                message.reasoning_steps?.filter((s) => !s.tool_name),
+                settings,
+              );
+              return filtered.length > 0
+                ? filtered.map((step) => (
+                    <ThinkingBlock
+                      key={`rs-${step.step_index}`}
+                      content={step.content}
+                      defaultCollapsed
+                      sourceLabel={step.kind === "planning" ? "планировщик" : "агент"}
+                    />
                   ))
-              : null}
-            {/* Tool call list — reasoning omitted when reasoning_steps present (avoids CoT duplication) */}
+                : null;
+            })()}
+            {/* Список вызовов инструментов: рассуждение скрыто при наличии reasoning_steps, чтобы не дублировать CoT. */}
             {!isUser && message.tools?.length ? (
               <ToolCallList
                 tools={message.tools}
                 reasoning={
                   message.reasoning_steps?.length ? undefined : (message.reasoning ?? undefined)
                 }
+                showDetailedTools={settings.show_detailed_tool_steps}
               />
             ) : null}
-            {/* Backward compat: old messages without reasoning_steps and without tools */}
+            {/* Обратная совместимость: старые сообщения без reasoning_steps и инструментов. */}
             {!isUser &&
               message.reasoning &&
               !message.reasoning_steps?.length &&
               !message.tools?.length ? (
-              <ThinkingBlock content={message.reasoning} defaultCollapsed />
+              <ThinkingBlock content={message.reasoning} defaultCollapsed sourceLabel="агент" />
             ) : null}
           </>
         )}
 
-        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/50 bg-primary text-primary-foreground" : "rounded-tl-none border-border/50 bg-card"}`}>
-          <MarkdownBlock content={message.content} className={isUser ? "markdown-invert" : undefined} />
+        <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/40 bg-primary text-primary-foreground shadow-primary/10" : "rounded-tl-none border-border/50 bg-card"}`}>
+          <MarkdownBlock content={message.content} inverted={isUser} />
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
               <span>{formatDurationMs(message.metrics.duration_ms)}</span>
-              <span>{message.metrics.model}</span>
-              <span>{message.metrics.artifact_count} artifacts</span>
+              <span>{message.metrics.artifact_count} артефактов</span>
             </div>
           ) : null}
           {message.artifacts?.length ? (
-            <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4">
-              {message.artifacts.map((artifact) => (
-                <button
-                  key={artifact.id}
-                  type="button"
-                  onClick={() => onPinArtifact(artifact)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/10 px-3 py-1.5 text-[12px] font-semibold text-primary transition-all hover:bg-primary/20"
-                >
-                  <Pin className="h-3.5 w-3.5" />
-                  {artifact.text || artifact.type}
-                </button>
-              ))}
+            <div className="mt-4 grid gap-3 border-t border-border/20 pt-4">
+              {message.artifacts
+                .filter((artifact) => artifact.type === "plot")
+                .map((artifact) => {
+                  const isHighlighted = highlightedArtifactIds.has(artifact.id);
+                  const toneClass = isHighlighted
+                    ? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/20"
+                    : "border-primary/20 bg-white text-primary hover:bg-primary/5 dark:bg-card";
+                  return (
+                    <ArtifactSurface
+                      key={artifact.id}
+                      artifact={artifact}
+                      showCode={false}
+                      contentHeightPx={280}
+                      headerAction={
+                        <button
+                          type="button"
+                          onClick={() => onPinArtifact(artifact)}
+                          className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition-all ${toneClass}`}
+                        >
+                          <ArtifactChipIcon type={artifact.type} />
+                          На дашборд
+                        </button>
+                      }
+                    />
+                  );
+                })}
+              {message.artifacts.some((artifact) => artifact.type !== "plot") ? (
+                <div className="flex flex-wrap gap-2">
+                  {message.artifacts
+                    .filter((artifact) => artifact.type !== "plot")
+                    .map((artifact) => {
+                      const isHighlighted = highlightedArtifactIds.has(artifact.id);
+                      const toneClass = isHighlighted
+                        ? "border-primary/20 bg-primary/10 text-primary hover:bg-primary/20"
+                        : "border-primary/20 bg-white text-primary hover:bg-primary/5 dark:bg-card";
+                      return (
+                        <button
+                          key={artifact.id}
+                          type="button"
+                          onClick={() => onPinArtifact(artifact)}
+                          className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] font-semibold transition-all ${toneClass}`}
+                        >
+                          <ArtifactChipIcon type={artifact.type} />
+                          {artifact.text || artifact.type}
+                        </button>
+                      );
+                    })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {!isUser &&
+          message.content.trim().length > 0 &&
+          !message.artifacts?.some((artifact) => artifact.meta?.source_type === "openproject") ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onPinMessage(message.content, message.id, message.timestamp)}
+                className="inline-flex items-center gap-2 rounded-lg border border-primary/20 bg-white px-3 py-1.5 text-[12px] font-semibold text-primary transition-all hover:bg-primary/5 dark:bg-card"
+              >
+                <ArtifactChipIcon type="note" />
+                На доску
+              </button>
             </div>
           ) : null}
         </div>

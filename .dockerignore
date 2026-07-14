@@ -5,6 +5,9 @@
 .env.example
 
 .venv
+.uv-cache
+.pytest_tmp
+tmp87v4n0bm
 __pycache__
 *.pyc
 *.pyo

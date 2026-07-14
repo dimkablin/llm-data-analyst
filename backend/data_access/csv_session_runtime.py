@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import duckdb
 import pandas as pd
@@ -50,6 +50,20 @@ class CSVSessionRuntime:
         if cleaned[0].isdigit():
             cleaned = f"t_{cleaned}"
         return cleaned[:120]
+
+    @staticmethod
+    def unique_table_name(file_name: str, existing: Iterable[str]) -> str:
+        base = CSVSessionRuntime.sanitize_table_name(file_name)
+        taken = {str(item).strip().lower() for item in existing if str(item).strip()}
+        if base not in taken:
+            return base
+        counter = 2
+        while True:
+            suffix = f"_{counter}"
+            candidate = f"{base[: 120 - len(suffix)]}{suffix}"
+            if candidate not in taken:
+                return candidate
+            counter += 1
 
     @staticmethod
     def _quote_ident(value: str) -> str:
@@ -169,6 +183,104 @@ class CSVSessionRuntime:
             expires_at=int(meta["expires_at"]),
         )
 
+    def register_dataframes(
+        self,
+        *,
+        session_id: str,
+        tables: dict[str, pd.DataFrame],
+        ttl_seconds: int | None = None,
+    ) -> CSVSessionInfo:
+        self.cleanup_expired_sessions()
+
+        if not tables:
+            raise ValueError("No tables to register")
+
+        session_dir = self._session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        db_path = self._db_path(session_id)
+
+        safe_tables = {
+            self.sanitize_table_name(table_name): df
+            for table_name, df in tables.items()
+        }
+
+        with self._lock:
+            con = duckdb.connect(str(db_path))
+            try:
+                con.execute("BEGIN TRANSACTION")
+                for safe_table, df in safe_tables.items():
+                    con.register("_uploaded_df", df)
+                    try:
+                        con.execute(
+                            f"CREATE OR REPLACE TABLE {self._quote_ident(safe_table)} AS "
+                            "SELECT * FROM _uploaded_df"
+                        )
+                    finally:
+                        try:
+                            con.unregister("_uploaded_df")
+                        except Exception:
+                            pass
+                con.execute("COMMIT")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+            finally:
+                con.close()
+
+            meta = self._touch_session(session_id, ttl_seconds=ttl_seconds)
+            names = list(meta.get("table_names") or [])
+            names.extend(safe_tables.keys())
+            meta["table_names"] = sorted(set(names))
+            self._write_meta(session_id, meta)
+
+        return CSVSessionInfo(
+            session_id=session_id,
+            db_path=str(db_path),
+            table_names=list(meta["table_names"]),
+            expires_at=int(meta["expires_at"]),
+        )
+
+    def unregister_tables(self, session_id: str, table_names: Iterable[str]) -> None:
+        """Drop session tables and remove them from runtime metadata."""
+        safe_tables = [
+            self.sanitize_table_name(table_name)
+            for table_name in table_names
+            if str(table_name or "").strip()
+        ]
+        if not safe_tables:
+            return
+        safe_table_set = set(safe_tables)
+
+        with self._lock:
+            db_path = self._db_path(session_id)
+            if db_path.exists():
+                con = duckdb.connect(str(db_path))
+                try:
+                    con.execute("BEGIN TRANSACTION")
+                    for table_name in safe_tables:
+                        con.execute(f"DROP TABLE IF EXISTS {self._quote_ident(table_name)}")
+                    con.execute("COMMIT")
+                except Exception:
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    con.close()
+
+            meta = self._read_meta(session_id)
+            remaining = [
+                name
+                for name in list(meta.get("table_names") or [])
+                if str(name) not in safe_table_set
+            ]
+            meta["table_names"] = sorted(set(remaining))
+            self._write_meta(session_id, meta)
+
     def register_csv_bytes(
         self,
         *,
@@ -178,7 +290,10 @@ class CSVSessionRuntime:
         ttl_seconds: int | None = None,
         pandas_read_csv_kwargs: dict[str, Any] | None = None,
     ) -> tuple[pd.DataFrame, CSVSessionInfo]:
-        df = pd.read_csv(io.BytesIO(csv_bytes), **dict(pandas_read_csv_kwargs or {}))
+        df = self._read_csv_resilient(
+            csv_bytes,
+            pandas_read_csv_kwargs=dict(pandas_read_csv_kwargs or {}),
+        )
         info = self.register_dataframe(
             session_id=session_id,
             table_name=file_name,
@@ -186,6 +301,67 @@ class CSVSessionRuntime:
             ttl_seconds=ttl_seconds,
         )
         return df, info
+
+    @staticmethod
+    def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize empty/duplicate columns for stable downstream prompts/tools."""
+        raw_columns = [str(col).replace("\ufeff", "").strip() for col in list(df.columns)]
+        normalized: list[str] = []
+        seen: dict[str, int] = {}
+        for idx, col in enumerate(raw_columns):
+            base = col or f"column_{idx + 1}"
+            count = seen.get(base, 0) + 1
+            seen[base] = count
+            normalized.append(base if count == 1 else f"{base}_{count}")
+        df = df.copy()
+        df.columns = normalized
+        return df
+
+    @staticmethod
+    def _read_csv_resilient(
+        csv_bytes: bytes,
+        *,
+        pandas_read_csv_kwargs: dict[str, Any],
+    ) -> pd.DataFrame:
+        """Best-effort CSV parsing for demo stability across common encodings/separators."""
+        if not csv_bytes:
+            raise ValueError("CSV file is empty")
+
+        base_kwargs = dict(pandas_read_csv_kwargs)
+        base_kwargs.setdefault("skip_blank_lines", True)
+        base_kwargs.setdefault("low_memory", False)
+        # Pragmatic fallback for noisy real-world CSVs; caller can override.
+        base_kwargs.setdefault("on_bad_lines", "skip")
+
+        encodings = (
+            [str(base_kwargs["encoding"])]
+            if "encoding" in base_kwargs
+            else ["utf-8-sig", "utf-8", "cp1251", "latin-1"]
+        )
+
+        separators: list[Any]
+        if "sep" in base_kwargs:
+            separators = [base_kwargs["sep"]]
+        else:
+            # Try auto-detect first, then common explicit delimiters.
+            separators = [None, ",", ";", "\t", "|"]
+
+        last_error: Exception | None = None
+        for encoding in encodings:
+            for sep in separators:
+                kwargs = dict(base_kwargs)
+                kwargs["encoding"] = encoding
+                kwargs["sep"] = sep
+                if sep is None and "engine" not in kwargs:
+                    kwargs["engine"] = "python"
+                try:
+                    df = pd.read_csv(io.BytesIO(csv_bytes), **kwargs)
+                    return CSVSessionRuntime._normalize_columns(df)
+                except Exception as exc:  # noqa: BLE001 - keep trying fallbacks
+                    last_error = exc
+                    continue
+
+        raise ValueError(f"Unable to parse CSV with common encodings/separators: {last_error}")
 
     def get_session_info(self, session_id: str) -> CSVSessionInfo:
         self.cleanup_expired_sessions()
@@ -265,5 +441,3 @@ class CSVSessionRuntime:
 
     def delete_session(self, session_id: str) -> None:
         shutil.rmtree(self._session_dir(session_id), ignore_errors=True)
-
-

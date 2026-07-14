@@ -19,23 +19,8 @@ import {
   setStoredToken,
   updateUserSettings,
 } from "../lib/backend-api";
+import { DEFAULT_USER_SETTINGS } from "../lib/default-settings";
 import type { AuthUser, UserSettings } from "../lib/backend-types";
-
-const DEFAULT_SETTINGS: UserSettings = {
-  theme: "dark",
-  default_include_reasoning: true,
-  default_answer_style: "detailed",
-  analysis_depth: "light",
-  llm_temperature_chat: 0.5,
-  llm_temperature_tool: 0.15,
-  llm_max_tokens_default: 1200,
-  llm_max_tokens_reasoning: 2200,
-  backend_query_timeout_sec: 180,
-  agent_max_steps: 20,
-  agent_step_timeout_sec: 45,
-  agent_inner_recursion_limit: 6,
-  ui_scale: 100,
-};
 
 type AppSessionContextValue = {
   user: AuthUser | null;
@@ -54,13 +39,13 @@ const AppSessionContext = createContext<AppSessionContextValue | null>(null);
 
 export function AppSessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
 
   const refreshAuth = useCallback(async () => {
     if (!hasStoredToken()) {
       setUser(null);
-      setSettings(DEFAULT_SETTINGS);
+      setSettings(DEFAULT_USER_SETTINGS);
       setIsAuthLoading(false);
       return;
     }
@@ -73,12 +58,12 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
         const nextSettings = await getUserSettings();
         setSettings(nextSettings);
       } catch {
-        setSettings(DEFAULT_SETTINGS);
+        setSettings(DEFAULT_USER_SETTINGS);
       }
     } catch {
       clearStoredToken();
       setUser(null);
-      setSettings(DEFAULT_SETTINGS);
+      setSettings(DEFAULT_USER_SETTINGS);
     } finally {
       setIsAuthLoading(false);
     }
@@ -102,7 +87,7 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     try {
       setSettings(await getUserSettings());
     } catch {
-      setSettings(DEFAULT_SETTINGS);
+      setSettings(DEFAULT_USER_SETTINGS);
     }
   }, []);
 
@@ -113,7 +98,7 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     try {
       setSettings(await getUserSettings());
     } catch {
-      setSettings(DEFAULT_SETTINGS);
+      setSettings(DEFAULT_USER_SETTINGS);
     }
   }, []);
 
@@ -125,7 +110,7 @@ export function AppSessionProvider({ children }: { children: ReactNode }) {
     }
     clearStoredToken();
     setUser(null);
-    setSettings(DEFAULT_SETTINGS);
+    setSettings(DEFAULT_USER_SETTINGS);
   }, []);
 
   const saveSettings = useCallback(async (payload: Partial<UserSettings>) => {

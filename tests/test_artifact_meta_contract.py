@@ -117,7 +117,3 @@ class ArtifactMetaContractTests(unittest.TestCase):
         self.assertEqual(meta["provenance"]["recipe"], meta["recipe"])
         self.assertEqual(meta["provenance"]["source"], meta["source"])
         self.assertEqual(meta["source"]["source_label"], "Sales DB")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -6,9 +6,14 @@ __all__ = [
     "THINKING_RE",
     "AgentProgressCollector",
     "AgentResponse",
+    "AgentRunRequest",
+    "AgentRunResult",
     "AgentRunner",
+    "AgentRuntimeEffects",
+    "ContextUsageCollector",
     "LLMTextCollector",
     "PhaseCollector",
+    "QueryCacheEntry",
     "TokenStreamCallbackHandler",
     "ToolCollector",
     "_is_llm_transport_failure",
@@ -18,11 +23,21 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"AgentResponse", "AgentRunner", "_is_llm_transport_failure"}:
+    if name == "AgentRunner":
         module = import_module("backend.agent.runner")
+        return getattr(module, name)
+    if name == "_is_llm_transport_failure":
+        module = import_module("backend.agent.tool_loop")
+        return getattr(module, name)
+    if name in {"AgentResponse", "AgentRuntimeEffects", "QueryCacheEntry"}:
+        module = import_module("backend.agent.models")
+        return getattr(module, name)
+    if name in {"AgentRunRequest", "AgentRunResult"}:
+        module = import_module("backend.agent.runtime_contracts")
         return getattr(module, name)
     if name in {
         "AgentProgressCollector",
+        "ContextUsageCollector",
         "LLMTextCollector",
         "PhaseCollector",
         "TokenStreamCallbackHandler",

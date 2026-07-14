@@ -12,11 +12,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from backend.auth.user_settings_defaults import (
+    DEFAULT_USER_SETTINGS,
+    UserSettingsDefaults,
+)
 from backend.core.config import DEPTH_MAX_STEPS
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,64}$")
 THEME_VALUES = {"light", "dark"}
 ANSWER_STYLE_VALUES = {"concise", "detailed"}
+ANALYSIS_MODE_VALUES = {"fast", "deep"}
+ANALYSIS_MODE_ALIASES = {"demo": "deep"}
 ANALYSIS_DEPTH_VALUES = {"light", "medium", "deep"}
 ANALYSIS_DEPTH_MAX_OUTER_STEPS = DEPTH_MAX_STEPS
 
@@ -34,6 +40,7 @@ class UserSettings:
     theme: str
     default_include_reasoning: bool
     default_answer_style: str
+    analysis_mode: str
     analysis_depth: str
     llm_temperature_chat: float
     llm_temperature_tool: float
@@ -45,6 +52,12 @@ class UserSettings:
     agent_inner_recursion_limit: int
     agent_react_enabled: bool = False
     ui_scale: int = 100
+    llm_streaming: bool = True
+    show_thinking: bool = True
+    show_think_planning: bool = True
+    show_think_tool: bool = True
+    show_think_final: bool = True
+    show_detailed_tool_steps: bool = False
 
 
 @dataclass(frozen=True)
@@ -67,10 +80,16 @@ class DBConnectionRecord:
 
 
 class AuthDB:
-    def __init__(self, db_path: str, token_ttl_days: int = 30) -> None:
+    def __init__(
+        self,
+        db_path: str,
+        token_ttl_days: int = 30,
+        user_settings_defaults: UserSettingsDefaults = DEFAULT_USER_SETTINGS,
+    ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.token_ttl_days = token_ttl_days
+        self.user_settings_defaults = user_settings_defaults
         self._init_schema()
         self._cleanup_expired_tokens()
 
@@ -172,14 +191,15 @@ class AuthDB:
                     theme TEXT NOT NULL DEFAULT 'dark',
                     default_include_reasoning INTEGER NOT NULL DEFAULT 1,
                     default_answer_style TEXT NOT NULL DEFAULT 'detailed',
+                    analysis_mode TEXT NOT NULL DEFAULT 'fast',
                     llm_temperature_chat REAL NOT NULL DEFAULT 0.7,
                     llm_temperature_tool REAL NOT NULL DEFAULT 0.5,
                     llm_max_tokens_default INTEGER NOT NULL DEFAULT 2048,
                     llm_max_tokens_reasoning INTEGER NOT NULL DEFAULT 4096,
                     backend_query_timeout_sec INTEGER NOT NULL DEFAULT 180,
-                    agent_max_steps INTEGER NOT NULL DEFAULT 20,
+                    agent_max_steps INTEGER NOT NULL DEFAULT 32,
                     agent_step_timeout_sec INTEGER NOT NULL DEFAULT 45,
-                    agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 14,
+                    agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 32,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
                 );
@@ -207,6 +227,39 @@ class AuthDB:
 
                 CREATE INDEX IF NOT EXISTS idx_user_skill_settings_user
                     ON user_skill_settings(user_id, skill_id);
+
+                CREATE TABLE IF NOT EXISTS mcp_server_configs (
+                    server_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    transport TEXT NOT NULL,
+                    url TEXT,
+                    command TEXT,
+                    args_json TEXT NOT NULL DEFAULT '[]',
+                    env_json TEXT NOT NULL DEFAULT '{}',
+                    timeout_sec REAL NOT NULL DEFAULT 30.0,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    enabled_by_default INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by INTEGER,
+                    FOREIGN KEY(updated_by) REFERENCES users(id) ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_mcp_server_configs_enabled
+                    ON mcp_server_configs(enabled, server_id);
+
+                CREATE TABLE IF NOT EXISTS user_mcp_server_settings (
+                    user_id INTEGER NOT NULL,
+                    server_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, server_id),
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_mcp_server_settings_user
+                    ON user_mcp_server_settings(user_id, server_id);
 
                 CREATE TABLE IF NOT EXISTS user_db_connections (
                     id TEXT PRIMARY KEY,
@@ -295,6 +348,13 @@ class AuthDB:
                 ADD COLUMN default_answer_style TEXT NOT NULL DEFAULT 'detailed'
                 """
             )
+        if "analysis_mode" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN analysis_mode TEXT NOT NULL DEFAULT 'fast'
+                """
+            )
         if "updated_at" not in existing_columns:
             conn.execute(
                 """
@@ -345,7 +405,7 @@ class AuthDB:
             conn.execute(
                 """
                 ALTER TABLE user_settings
-                ADD COLUMN agent_max_steps INTEGER NOT NULL DEFAULT 20
+                ADD COLUMN agent_max_steps INTEGER NOT NULL DEFAULT 32
                 """
             )
         if "agent_step_timeout_sec" not in existing_columns:
@@ -359,7 +419,7 @@ class AuthDB:
             conn.execute(
                 """
                 ALTER TABLE user_settings
-                ADD COLUMN agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 14
+                ADD COLUMN agent_inner_recursion_limit INTEGER NOT NULL DEFAULT 32
                 """
             )
         else:
@@ -367,8 +427,8 @@ class AuthDB:
             conn.execute(
                 """
                 UPDATE user_settings
-                SET agent_inner_recursion_limit = 14
-                WHERE agent_inner_recursion_limit <= 6
+                SET agent_inner_recursion_limit = 32
+                WHERE agent_inner_recursion_limit <= 24
                 """
             )
         if "analysis_depth" not in existing_columns:
@@ -390,6 +450,48 @@ class AuthDB:
                 """
                 ALTER TABLE user_settings
                 ADD COLUMN agent_react_enabled INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "llm_streaming" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN llm_streaming INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_thinking" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_thinking INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_planning" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_planning INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_tool" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_tool INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_think_final" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_think_final INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "show_detailed_tool_steps" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_detailed_tool_steps INTEGER NOT NULL DEFAULT 0
                 """
             )
 
@@ -434,7 +536,16 @@ class AuthDB:
             raise ValueError("Допустимые уровни: light, medium или deep")
         return value
 
+    @staticmethod
+    def _normalize_analysis_mode(mode: str | None) -> str:
+        value = str(mode or "").strip().lower()
+        value = ANALYSIS_MODE_ALIASES.get(value, value)
+        if value not in ANALYSIS_MODE_VALUES:
+            raise ValueError("Допустимые режимы: fast или deep")
+        return value
+
     def _ensure_user_settings_row(self, conn: sqlite3.Connection, user_id: int) -> None:
+        defaults = self.user_settings_defaults
         conn.execute(
             """
             INSERT INTO user_settings(
@@ -442,6 +553,7 @@ class AuthDB:
                 theme,
                 default_include_reasoning,
                 default_answer_style,
+                analysis_mode,
                 analysis_depth,
                 llm_temperature_chat,
                 llm_temperature_tool,
@@ -451,12 +563,44 @@ class AuthDB:
                 agent_max_steps,
                 agent_step_timeout_sec,
                 agent_inner_recursion_limit,
+                agent_react_enabled,
+                ui_scale,
+                llm_streaming,
+                show_thinking,
+                show_think_planning,
+                show_think_tool,
+                show_think_final,
+                show_detailed_tool_steps,
                 updated_at
             )
-            VALUES (?, 'dark', 1, 'detailed', 'light', 0.7, 0.5, 2048, 4096, 180, 20, 45, 14, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
-            (user_id, self._now_iso()),
+            (
+                user_id,
+                defaults.theme,
+                1 if defaults.default_include_reasoning else 0,
+                defaults.default_answer_style,
+                defaults.analysis_mode,
+                defaults.analysis_depth,
+                defaults.llm_temperature_chat,
+                defaults.llm_temperature_tool,
+                defaults.llm_max_tokens_default,
+                defaults.llm_max_tokens_reasoning,
+                defaults.backend_query_timeout_sec,
+                defaults.agent_max_steps,
+                defaults.agent_step_timeout_sec,
+                defaults.agent_inner_recursion_limit,
+                1 if defaults.agent_react_enabled else 0,
+                defaults.ui_scale,
+                1 if defaults.llm_streaming else 0,
+                1 if defaults.show_thinking else 0,
+                1 if defaults.show_think_planning else 0,
+                1 if defaults.show_think_tool else 0,
+                1 if defaults.show_think_final else 0,
+                1 if defaults.show_detailed_tool_steps else 0,
+                self._now_iso(),
+            ),
         )
 
     @staticmethod
@@ -469,10 +613,16 @@ class AuthDB:
         )
 
     def ensure_default_admin(self, username: str, password: str) -> None:
-        existing = self.get_user_by_username(username)
+        normalized = username.strip()
+        existing = self.get_user_by_username(normalized)
         if existing is not None:
             return
-        self.create_user(username=username, password=password, is_admin=True)
+        try:
+            self.create_user(username=normalized, password=password, is_admin=True)
+        except sqlite3.IntegrityError:
+            if self.get_user_by_username(normalized) is not None:
+                return
+            raise
 
     def get_user_by_username(self, username: str) -> AuthUser | None:
         with self._connect() as conn:
@@ -666,12 +816,16 @@ class AuthDB:
         theme = raw_theme if raw_theme in THEME_VALUES else "dark"
         raw_style = str(row["default_answer_style"] or "").strip().lower()
         answer_style = raw_style if raw_style in ANSWER_STYLE_VALUES else "detailed"
+        raw_mode = str(row["analysis_mode"] if "analysis_mode" in row.keys() else "fast").strip().lower()
+        normalized_mode = ANALYSIS_MODE_ALIASES.get(raw_mode, raw_mode)
+        analysis_mode = normalized_mode if normalized_mode in ANALYSIS_MODE_VALUES else "fast"
         raw_depth = str(row["analysis_depth"] if "analysis_depth" in row.keys() else "light").strip().lower()
         depth = raw_depth if raw_depth in ANALYSIS_DEPTH_VALUES else "light"
         return UserSettings(
             theme=theme,
             default_include_reasoning=bool(row["default_include_reasoning"]),
             default_answer_style=answer_style,
+            analysis_mode=analysis_mode,
             analysis_depth=depth,
             llm_temperature_chat=float(row["llm_temperature_chat"] or 0.7),
             llm_temperature_tool=float(row["llm_temperature_tool"] or 0.5),
@@ -679,15 +833,45 @@ class AuthDB:
             llm_max_tokens_reasoning=int(row["llm_max_tokens_reasoning"] or 4096),
             backend_query_timeout_sec=int(row["backend_query_timeout_sec"] or 180),
             agent_max_steps=min(
-                max(2, int(row["agent_max_steps"] or 20)),
-                ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(depth, 20),
+                max(
+                    2,
+                    int(
+                        row["agent_max_steps"] or DEFAULT_USER_SETTINGS.agent_max_steps
+                    ),
+                ),
+                ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(
+                    depth, DEFAULT_USER_SETTINGS.agent_max_steps
+                ),
             ),
             agent_step_timeout_sec=int(row["agent_step_timeout_sec"] or 45),
-            agent_inner_recursion_limit=int(row["agent_inner_recursion_limit"] or 14),
+            agent_inner_recursion_limit=int(
+                row["agent_inner_recursion_limit"]
+                or DEFAULT_USER_SETTINGS.agent_inner_recursion_limit
+            ),
             agent_react_enabled=(
                 bool(row["agent_react_enabled"]) if "agent_react_enabled" in row.keys() else False
             ),
             ui_scale=int(row["ui_scale"] if "ui_scale" in row.keys() else 100),
+            llm_streaming=(
+                bool(row["llm_streaming"]) if "llm_streaming" in row.keys() else True
+            ),
+            show_thinking=(
+                bool(row["show_thinking"]) if "show_thinking" in row.keys() else True
+            ),
+            show_think_planning=(
+                bool(row["show_think_planning"]) if "show_think_planning" in row.keys() else True
+            ),
+            show_think_tool=(
+                bool(row["show_think_tool"]) if "show_think_tool" in row.keys() else True
+            ),
+            show_think_final=(
+                bool(row["show_think_final"]) if "show_think_final" in row.keys() else True
+            ),
+            show_detailed_tool_steps=(
+                bool(row["show_detailed_tool_steps"])
+                if "show_detailed_tool_steps" in row.keys()
+                else False
+            ),
         )
 
     def get_user_settings(self, user_id: int) -> UserSettings:
@@ -696,6 +880,7 @@ class AuthDB:
             row = conn.execute(
                 """
                 SELECT theme, default_include_reasoning, default_answer_style
+                    , analysis_mode
                     , analysis_depth
                     , llm_temperature_chat, llm_temperature_tool
                     , llm_max_tokens_default, llm_max_tokens_reasoning
@@ -703,28 +888,16 @@ class AuthDB:
                     , agent_step_timeout_sec, agent_inner_recursion_limit
                     , agent_react_enabled
                     , ui_scale
+                    , llm_streaming, show_thinking
+                    , show_think_planning, show_think_tool, show_think_final
+                    , show_detailed_tool_steps
                 FROM user_settings
                 WHERE user_id = ?
                 """,
                 (user_id,),
             ).fetchone()
         if row is None:
-            return UserSettings(
-                theme="dark",
-                default_include_reasoning=True,
-                default_answer_style="detailed",
-                analysis_depth="light",
-                llm_temperature_chat=0.7,
-                llm_temperature_tool=0.5,
-                llm_max_tokens_default=2048,
-                llm_max_tokens_reasoning=4096,
-                backend_query_timeout_sec=180,
-                agent_max_steps=20,
-                agent_step_timeout_sec=45,
-                agent_inner_recursion_limit=6,
-                agent_react_enabled=False,
-                ui_scale=100,
-            )
+            return self.user_settings_defaults.to_user_settings()
         return self._parse_user_settings(row)
 
     def update_user_settings(
@@ -734,6 +907,7 @@ class AuthDB:
         theme: str | None = None,
         default_include_reasoning: bool | None = None,
         default_answer_style: str | None = None,
+        analysis_mode: str | None = None,
         analysis_depth: str | None = None,
         llm_temperature_chat: float | None = None,
         llm_temperature_tool: float | None = None,
@@ -745,18 +919,29 @@ class AuthDB:
         agent_inner_recursion_limit: int | None = None,
         agent_react_enabled: bool | None = None,
         ui_scale: int | None = None,
+        llm_streaming: bool | None = None,
+        show_thinking: bool | None = None,
+        show_think_planning: bool | None = None,
+        show_think_tool: bool | None = None,
+        show_think_final: bool | None = None,
+        show_detailed_tool_steps: bool | None = None,
     ) -> UserSettings:
         with self._connect() as conn:
             self._ensure_user_settings_row(conn, user_id)
             current_row = conn.execute(
                 """
                 SELECT theme, default_include_reasoning, default_answer_style
+                    , analysis_mode
                     , analysis_depth
                     , llm_temperature_chat, llm_temperature_tool
                     , llm_max_tokens_default, llm_max_tokens_reasoning
                     , backend_query_timeout_sec, agent_max_steps
                     , agent_step_timeout_sec, agent_inner_recursion_limit
+                    , agent_react_enabled
                     , ui_scale
+                    , llm_streaming, show_thinking
+                    , show_think_planning, show_think_tool, show_think_final
+                    , show_detailed_tool_steps
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -778,11 +963,24 @@ class AuthDB:
                 if default_answer_style is not None
                 else current.default_answer_style
             )
+            next_analysis_mode = (
+                self._normalize_analysis_mode(analysis_mode)
+                if analysis_mode is not None
+                else current.analysis_mode
+            )
             next_analysis_depth = (
                 self._normalize_analysis_depth(analysis_depth)
                 if analysis_depth is not None
                 else current.analysis_depth
             )
+
+            if analysis_mode is not None and analysis_depth is None:
+                # Mode presets tuned for UX:
+                # fast -> lower latency; deep -> richer analysis.
+                if next_analysis_mode == "deep":
+                    next_analysis_depth = "deep"
+                else:
+                    next_analysis_depth = "light"
             next_llm_temperature_chat = (
                 float(llm_temperature_chat)
                 if llm_temperature_chat is not None
@@ -813,7 +1011,9 @@ class AuthDB:
                 if agent_max_steps is not None
                 else current.agent_max_steps
             )
-            _depth_cap = ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(next_analysis_depth, 20)
+            _depth_cap = ANALYSIS_DEPTH_MAX_OUTER_STEPS.get(
+                next_analysis_depth, DEFAULT_USER_SETTINGS.agent_max_steps
+            )
             next_agent_max_steps = min(max(2, next_agent_max_steps), _depth_cap)
             next_agent_step_timeout_sec = (
                 int(agent_step_timeout_sec)
@@ -835,10 +1035,37 @@ class AuthDB:
                 if ui_scale is not None
                 else current.ui_scale
             )
+            next_llm_streaming = (
+                bool(llm_streaming) if llm_streaming is not None else current.llm_streaming
+            )
+            next_show_thinking = (
+                bool(show_thinking) if show_thinking is not None else current.show_thinking
+            )
+            next_show_think_planning = (
+                bool(show_think_planning)
+                if show_think_planning is not None
+                else current.show_think_planning
+            )
+            next_show_think_tool = (
+                bool(show_think_tool)
+                if show_think_tool is not None
+                else current.show_think_tool
+            )
+            next_show_think_final = (
+                bool(show_think_final)
+                if show_think_final is not None
+                else current.show_think_final
+            )
+            next_show_detailed_tool_steps = (
+                bool(show_detailed_tool_steps)
+                if show_detailed_tool_steps is not None
+                else current.show_detailed_tool_steps
+            )
             conn.execute(
                 """
                 UPDATE user_settings
                 SET theme = ?, default_include_reasoning = ?, default_answer_style = ?,
+                    analysis_mode = ?,
                     analysis_depth = ?,
                     llm_temperature_chat = ?, llm_temperature_tool = ?,
                     llm_max_tokens_default = ?, llm_max_tokens_reasoning = ?,
@@ -846,6 +1073,9 @@ class AuthDB:
                     agent_step_timeout_sec = ?, agent_inner_recursion_limit = ?,
                     agent_react_enabled = ?,
                     ui_scale = ?,
+                    llm_streaming = ?, show_thinking = ?,
+                    show_think_planning = ?, show_think_tool = ?, show_think_final = ?,
+                    show_detailed_tool_steps = ?,
                     updated_at = ?
                 WHERE user_id = ?
                 """,
@@ -853,6 +1083,7 @@ class AuthDB:
                     next_theme,
                     1 if next_reasoning else 0,
                     next_answer_style,
+                    next_analysis_mode,
                     next_analysis_depth,
                     next_llm_temperature_chat,
                     next_llm_temperature_tool,
@@ -864,6 +1095,12 @@ class AuthDB:
                     next_agent_inner_recursion_limit,
                     1 if next_agent_react_enabled else 0,
                     next_ui_scale,
+                    1 if next_llm_streaming else 0,
+                    1 if next_show_thinking else 0,
+                    1 if next_show_think_planning else 0,
+                    1 if next_show_think_tool else 0,
+                    1 if next_show_think_final else 0,
+                    1 if next_show_detailed_tool_steps else 0,
                     self._now_iso(),
                     user_id,
                 ),
@@ -872,6 +1109,7 @@ class AuthDB:
             theme=next_theme,
             default_include_reasoning=next_reasoning,
             default_answer_style=next_answer_style,
+            analysis_mode=next_analysis_mode,
             analysis_depth=next_analysis_depth,
             llm_temperature_chat=next_llm_temperature_chat,
             llm_temperature_tool=next_llm_temperature_tool,
@@ -883,6 +1121,12 @@ class AuthDB:
             agent_inner_recursion_limit=next_agent_inner_recursion_limit,
             agent_react_enabled=next_agent_react_enabled,
             ui_scale=next_ui_scale,
+            llm_streaming=next_llm_streaming,
+            show_thinking=next_show_thinking,
+            show_think_planning=next_show_think_planning,
+            show_think_tool=next_show_think_tool,
+            show_think_final=next_show_think_final,
+            show_detailed_tool_steps=next_show_detailed_tool_steps,
         )
 
     def list_user_tool_settings(self, user_id: int) -> dict[str, bool]:
@@ -960,6 +1204,186 @@ class AuthDB:
                     self._now_iso(),
                 ),
             )
+
+    def list_user_mcp_server_settings(self, user_id: int) -> dict[str, bool]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT server_id, enabled
+                FROM user_mcp_server_settings
+                WHERE user_id = ?
+                ORDER BY server_id ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return {
+            str(row["server_id"]): bool(row["enabled"])
+            for row in rows
+            if str(row["server_id"]).strip()
+        }
+
+    def set_user_mcp_server_enabled(
+        self,
+        user_id: int,
+        server_id: str,
+        enabled: bool,
+    ) -> None:
+        clean_server_id = str(server_id or "").strip()
+        if not clean_server_id:
+            raise ValueError("server_id is required")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_mcp_server_settings(user_id, server_id, enabled, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, server_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id,
+                    clean_server_id,
+                    1 if enabled else 0,
+                    self._now_iso(),
+                ),
+            )
+
+    def list_mcp_server_configs(self) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM mcp_server_configs
+                ORDER BY name ASC, server_id ASC
+                """
+            ).fetchall()
+        return [self._to_mcp_server_config(row) for row in rows]
+
+    def get_mcp_server_config(self, server_id: str):
+        clean_server_id = str(server_id or "").strip()
+        if not clean_server_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM mcp_server_configs
+                WHERE server_id = ?
+                """,
+                (clean_server_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._to_mcp_server_config(row)
+
+    def upsert_mcp_server_config(self, payload, *, updated_by: int | None = None):
+        from backend.mcp.models import MCPServerConfig, MCPServerCreateRequest
+
+        if isinstance(payload, MCPServerConfig):
+            config = payload
+        elif isinstance(payload, MCPServerCreateRequest):
+            config = MCPServerConfig(**payload.model_dump())
+        else:
+            config = MCPServerConfig(**dict(payload))
+        now_iso = self._now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mcp_server_configs(
+                    server_id, name, description, transport, url, command, args_json,
+                    env_json, timeout_sec, enabled, enabled_by_default, created_at,
+                    updated_at, updated_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(server_id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    transport = excluded.transport,
+                    url = excluded.url,
+                    command = excluded.command,
+                    args_json = excluded.args_json,
+                    env_json = excluded.env_json,
+                    timeout_sec = excluded.timeout_sec,
+                    enabled = excluded.enabled,
+                    enabled_by_default = excluded.enabled_by_default,
+                    updated_at = excluded.updated_at,
+                    updated_by = excluded.updated_by
+                """,
+                (
+                    config.server_id,
+                    config.name,
+                    config.description,
+                    str(config.transport.value),
+                    config.url,
+                    config.command,
+                    json.dumps(list(config.args), ensure_ascii=False),
+                    json.dumps(dict(config.env), ensure_ascii=False),
+                    float(config.timeout_sec),
+                    1 if config.enabled else 0,
+                    1 if config.enabled_by_default else 0,
+                    config.created_at or now_iso,
+                    now_iso,
+                    updated_by,
+                ),
+            )
+        stored = self.get_mcp_server_config(config.server_id)
+        if stored is None:
+            raise RuntimeError("Failed to read saved MCP server config.")
+        return stored
+
+    def delete_mcp_server_config(self, server_id: str) -> bool:
+        clean_server_id = str(server_id or "").strip()
+        if not clean_server_id:
+            return False
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM user_mcp_server_settings WHERE server_id = ?",
+                (clean_server_id,),
+            )
+            cursor = conn.execute(
+                "DELETE FROM mcp_server_configs WHERE server_id = ?",
+                (clean_server_id,),
+            )
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _to_mcp_server_config(row: sqlite3.Row):
+        from backend.mcp.models import MCPServerConfig, MCPServerTransport
+
+        def _json_list(raw: str | None) -> list[str]:
+            try:
+                parsed = json.loads(raw or "[]")
+            except Exception:
+                return []
+            if not isinstance(parsed, list):
+                return []
+            return [str(item) for item in parsed]
+
+        def _json_str_dict(raw: str | None) -> dict[str, str]:
+            try:
+                parsed = json.loads(raw or "{}")
+            except Exception:
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            return {str(key): str(value) for key, value in parsed.items()}
+
+        return MCPServerConfig(
+            server_id=str(row["server_id"]),
+            name=str(row["name"]),
+            description=str(row["description"]) if row["description"] is not None else None,
+            transport=MCPServerTransport(str(row["transport"])),
+            url=str(row["url"]) if row["url"] is not None else None,
+            command=str(row["command"]) if row["command"] is not None else None,
+            args=_json_list(str(row["args_json"]) if row["args_json"] is not None else None),
+            env=_json_str_dict(str(row["env_json"]) if row["env_json"] is not None else None),
+            timeout_sec=float(row["timeout_sec"]),
+            enabled=bool(row["enabled"]),
+            enabled_by_default=bool(row["enabled_by_default"]),
+            created_at=str(row["created_at"]) if row["created_at"] is not None else None,
+            updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
+            updated_by=int(row["updated_by"]) if row["updated_by"] is not None else None,
+        )
 
     def register_session(
         self, session_id: str, user_id: int, allow_auto_title: bool = False
@@ -1449,5 +1873,3 @@ class AuthDB:
                 """,
                 (user_id, mem_type, content, _time.time()),
             )
-
-

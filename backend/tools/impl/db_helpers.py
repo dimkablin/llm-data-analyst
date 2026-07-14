@@ -53,6 +53,13 @@ def _strip_sql(sql: str) -> str:
     return str(sql or "").strip().rstrip(";").strip()
 
 
+def _escape_literal_percent_for_psycopg(sql: str) -> str:
+    """Double '%' that are not psycopg placeholders (%s, %b, %f, %t)."""
+    if "%" not in sql:
+        return sql
+    return re.sub(r"%(?![sbft])", "%%", sql)
+
+
 def _assert_read_only_sql(sql: str) -> str:
     clean = _strip_sql(sql)
     if not clean:
@@ -376,10 +383,11 @@ class DBAnalyticsHelper:
     ) -> pd.DataFrame:
         import psycopg
 
+        bound_sql = sql if params else _escape_literal_percent_for_psycopg(sql)
         with psycopg.connect(**self._postgres_connect_kwargs()) as conn:
             self._apply_postgres_session(conn)
             with conn.cursor() as cur:
-                cur.execute(sql, params or ())
+                cur.execute(bound_sql, params or ())
                 rows = cur.fetchall()
                 columns = [desc.name for desc in (cur.description or [])]
         return _normalize_dataframe(pd.DataFrame(rows, columns=columns))
@@ -491,18 +499,103 @@ class DBAnalyticsHelper:
             )
         return result
 
+    def list_all_tables_with_columns(self) -> list[dict[str, Any]]:
+        """Enumerate every schema and return tables with column names (deduplicated)."""
+        combined: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for schema_row in self.list_schemas():
+            schema_name = str(schema_row.get("name") or "").strip()
+            if not schema_name:
+                continue
+            if schema_name.lower() in {"information_schema", "pg_catalog", "pg_toast"}:
+                continue
+            for row in self.list_tables_with_columns(schema_name):
+                table_name = str(row.get("table_name") or "").strip()
+                if not table_name:
+                    continue
+                key = (str(row.get("schema") or schema_name), table_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                combined.append(row)
+        return combined
+
+    def list_effective_tables_with_columns(
+        self,
+        schema: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Tables visible to tools for this connection.
+
+        If ``options.schema`` is set on the connection, only that schema is used
+        (matches PostgreSQL ``search_path``). Otherwise all non-system schemas are
+        enumerated.
+        """
+        if schema is not None:
+            return self.list_tables_with_columns(schema)
+        if self._configured_schema():
+            return self.list_tables_with_columns()
+        return self.list_all_tables_with_columns()
+
+    def list_relationships(self, schema: str | None = None) -> list[dict[str, str]]:
+        target_schema = str(schema or self._default_schema()).strip()
+        adapter = self._catalog_adapter()
+        return [
+            {
+                "from_schema": item.from_schema,
+                "from_table": item.from_table,
+                "from_column": item.from_column,
+                "to_schema": item.to_schema,
+                "to_table": item.to_table,
+                "to_column": item.to_column,
+            }
+            for item in adapter.list_relationships(target_schema)
+        ]
+
+    def list_effective_relationships(self, schema: str | None = None) -> list[dict[str, str]]:
+        if schema is not None:
+            return self.list_relationships(schema)
+        if self._configured_schema():
+            return self.list_relationships()
+        relationships: list[dict[str, str]] = []
+        for schema_row in self.list_schemas():
+            schema_name = str(schema_row.get("name") or "").strip()
+            if not schema_name:
+                continue
+            if schema_name.lower() in {"information_schema", "pg_catalog", "pg_toast"}:
+                continue
+            relationships.extend(self.list_relationships(schema_name))
+        return relationships
+
     def list_tables_result(
         self,
         schema: str | None = None,
         *,
         artifact_name: str | None = None,
     ) -> dict[str, Any]:
-        target_schema = str(schema or self._default_schema()).strip()
+        if schema is not None:
+            target_schema = str(schema).strip()
+        elif self._configured_schema():
+            target_schema = self._configured_schema() or self._default_schema()
+        else:
+            target_schema = ""
+        rows_meta = self.list_effective_tables_with_columns(schema)
+        table_rows = [
+            {
+                "schema": row.get("schema"),
+                "table_name": row.get("table_name"),
+                "table_type": row.get("table_type"),
+                "qualified_name": row.get("qualified_name"),
+            }
+            for row in rows_meta
+        ]
+        if target_schema:
+            resolved_name = artifact_name or f"db_tables_{target_schema}"
+        else:
+            resolved_name = artifact_name or "db_tables"
         rows = pd.DataFrame(
-            self.list_tables(target_schema),
+            table_rows,
             columns=["schema", "table_name", "table_type", "qualified_name"],
         )
-        resolved_name = artifact_name or f"db_tables_{target_schema}"
         return self._table_result(
             rows,
             artifact_name=resolved_name,
@@ -765,10 +858,17 @@ class DBAnalyticsHelper:
             limit=limit,
         )
 
-    def query_dataframe(self, sql: str) -> pd.DataFrame:
+    def query_dataframe(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] | None = None,
+    ) -> pd.DataFrame:
         clean_sql = _assert_read_only_sql(sql)
+        bound_params: tuple[Any, ...] | None = None
+        if params is not None:
+            bound_params = tuple(params)
         if self.runtime.db_type == "postgresql":
-            return self._postgres_query_dataframe(clean_sql)
+            return self._postgres_query_dataframe(clean_sql, bound_params)
         return self._clickhouse_query_dataframe(
             clean_sql,
             database=str(self._configured_schema() or self.runtime.database or self._default_schema()),
@@ -810,5 +910,4 @@ class DemoDBConnectionView:
             "for demo operations, or `db_connection.build_dsn()` / "
             "`db_connection.to_driver_kwargs()` for advanced tool code."
         )
-
 

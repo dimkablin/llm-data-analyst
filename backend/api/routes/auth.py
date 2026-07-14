@@ -62,6 +62,7 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         theme=settings_row.theme,
         default_include_reasoning=settings_row.default_include_reasoning,
         default_answer_style=settings_row.default_answer_style,
+        analysis_mode=settings_row.analysis_mode,
         analysis_depth=settings_row.analysis_depth,
         llm_temperature_chat=settings_row.llm_temperature_chat,
         llm_temperature_tool=settings_row.llm_temperature_tool,
@@ -71,7 +72,14 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         agent_max_steps=settings_row.agent_max_steps,
         agent_step_timeout_sec=settings_row.agent_step_timeout_sec,
         agent_inner_recursion_limit=settings_row.agent_inner_recursion_limit,
+        agent_react_enabled=settings_row.agent_react_enabled,
         ui_scale=settings_row.ui_scale,
+        llm_streaming=settings_row.llm_streaming,
+        show_thinking=settings_row.show_thinking,
+        show_think_planning=settings_row.show_think_planning,
+        show_think_tool=settings_row.show_think_tool,
+        show_think_final=settings_row.show_think_final,
+        show_detailed_tool_steps=settings_row.show_detailed_tool_steps,
     )
 
 
@@ -98,7 +106,9 @@ def auth_login(payload: AuthLoginRequest) -> AuthResponse:
 
 
 @router.get("/auth/me", response_model=AuthUserResponse)
-def auth_me(current_user: Annotated[AuthUser, Depends(get_current_user)]) -> AuthUserResponse:
+def auth_me(
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> AuthUserResponse:
     return _to_user_response(current_user)
 
 
@@ -136,6 +146,7 @@ def auth_update_settings(
             theme=payload.theme,
             default_include_reasoning=payload.default_include_reasoning,
             default_answer_style=payload.default_answer_style,
+            analysis_mode=payload.analysis_mode,
             analysis_depth=payload.analysis_depth,
             llm_temperature_chat=payload.llm_temperature_chat,
             llm_temperature_tool=payload.llm_temperature_tool,
@@ -145,7 +156,14 @@ def auth_update_settings(
             agent_max_steps=payload.agent_max_steps,
             agent_step_timeout_sec=payload.agent_step_timeout_sec,
             agent_inner_recursion_limit=payload.agent_inner_recursion_limit,
+            agent_react_enabled=payload.agent_react_enabled,
             ui_scale=payload.ui_scale,
+            llm_streaming=payload.llm_streaming,
+            show_thinking=payload.show_thinking,
+            show_think_planning=payload.show_think_planning,
+            show_think_tool=payload.show_think_tool,
+            show_think_final=payload.show_think_final,
+            show_detailed_tool_steps=payload.show_detailed_tool_steps,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -153,6 +171,7 @@ def auth_update_settings(
         theme=updated.theme,
         default_include_reasoning=updated.default_include_reasoning,
         default_answer_style=updated.default_answer_style,
+        analysis_mode=updated.analysis_mode,
         analysis_depth=updated.analysis_depth,
         llm_temperature_chat=updated.llm_temperature_chat,
         llm_temperature_tool=updated.llm_temperature_tool,
@@ -162,7 +181,14 @@ def auth_update_settings(
         agent_max_steps=updated.agent_max_steps,
         agent_step_timeout_sec=updated.agent_step_timeout_sec,
         agent_inner_recursion_limit=updated.agent_inner_recursion_limit,
+        agent_react_enabled=updated.agent_react_enabled,
         ui_scale=updated.ui_scale,
+        llm_streaming=updated.llm_streaming,
+        show_thinking=updated.show_thinking,
+        show_think_planning=updated.show_think_planning,
+        show_think_tool=updated.show_think_tool,
+        show_think_final=updated.show_think_final,
+        show_detailed_tool_steps=updated.show_detailed_tool_steps,
     )
 
 
@@ -215,5 +241,3 @@ def auth_update_tool(
 def auth_logout(token: Annotated[str, Depends(_require_token)]) -> MessageResponse:
     _auth_db.revoke_token(token)
     return MessageResponse(message="Logged out")
-
-

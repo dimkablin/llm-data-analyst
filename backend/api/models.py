@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.auth.user_settings_defaults import DEFAULT_USER_SETTINGS
 from backend.core.config import DEPTH_MAX_STEPS
 
 _MAX_STEPS = max(DEPTH_MAX_STEPS.values())
@@ -38,19 +39,48 @@ class AuthChangePasswordRequest(BaseModel):
 
 
 class UserSettingsResponse(BaseModel):
-    theme: str = Field(default="dark", pattern="^(light|dark)$")
-    default_include_reasoning: bool = True
-    default_answer_style: str = Field(default="detailed", pattern="^(concise|detailed)$")
-    analysis_depth: str = Field(default="light", pattern="^(light|medium|deep)$")
-    llm_temperature_chat: float = Field(default=0.5, ge=0.0, le=2.0)
-    llm_temperature_tool: float = Field(default=0.15, ge=0.0, le=2.0)
-    llm_max_tokens_default: int = Field(default=1200, ge=128, le=32768)
-    llm_max_tokens_reasoning: int = Field(default=2200, ge=128, le=32768)
-    backend_query_timeout_sec: int = Field(default=180, ge=15, le=1800)
+    theme: str = Field(default=DEFAULT_USER_SETTINGS.theme, pattern="^(light|dark)$")
+    default_include_reasoning: bool = DEFAULT_USER_SETTINGS.default_include_reasoning
+    default_answer_style: str = Field(
+        default=DEFAULT_USER_SETTINGS.default_answer_style,
+        pattern="^(concise|detailed)$",
+    )
+    analysis_mode: str = Field(
+        default=DEFAULT_USER_SETTINGS.analysis_mode, pattern="^(fast|deep)$"
+    )
+    analysis_depth: str = Field(
+        default=DEFAULT_USER_SETTINGS.analysis_depth, pattern="^(light|medium|deep)$"
+    )
+    llm_temperature_chat: float = Field(
+        default=DEFAULT_USER_SETTINGS.llm_temperature_chat, ge=0.0, le=2.0
+    )
+    llm_temperature_tool: float = Field(
+        default=DEFAULT_USER_SETTINGS.llm_temperature_tool, ge=0.0, le=2.0
+    )
+    llm_max_tokens_default: int = Field(
+        default=DEFAULT_USER_SETTINGS.llm_max_tokens_default, ge=128, le=32768
+    )
+    llm_max_tokens_reasoning: int = Field(
+        default=DEFAULT_USER_SETTINGS.llm_max_tokens_reasoning, ge=128, le=32768
+    )
+    backend_query_timeout_sec: int = Field(
+        default=DEFAULT_USER_SETTINGS.backend_query_timeout_sec, ge=15, le=1800
+    )
     agent_max_steps: int = Field(default=DEPTH_MAX_STEPS["light"], ge=2, le=_MAX_STEPS)
-    agent_step_timeout_sec: int = Field(default=45, ge=5, le=600)
-    agent_inner_recursion_limit: int = Field(default=14, ge=2, le=30)
-    ui_scale: int = Field(default=100, ge=70, le=150)
+    agent_step_timeout_sec: int = Field(
+        default=DEFAULT_USER_SETTINGS.agent_step_timeout_sec, ge=5, le=600
+    )
+    agent_inner_recursion_limit: int = Field(
+        default=DEFAULT_USER_SETTINGS.agent_inner_recursion_limit, ge=2, le=_MAX_STEPS
+    )
+    agent_react_enabled: bool = DEFAULT_USER_SETTINGS.agent_react_enabled
+    ui_scale: int = Field(default=DEFAULT_USER_SETTINGS.ui_scale, ge=70, le=150)
+    llm_streaming: bool = DEFAULT_USER_SETTINGS.llm_streaming
+    show_thinking: bool = DEFAULT_USER_SETTINGS.show_thinking
+    show_think_planning: bool = DEFAULT_USER_SETTINGS.show_think_planning
+    show_think_tool: bool = DEFAULT_USER_SETTINGS.show_think_tool
+    show_think_final: bool = DEFAULT_USER_SETTINGS.show_think_final
+    show_detailed_tool_steps: bool = DEFAULT_USER_SETTINGS.show_detailed_tool_steps
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -59,6 +89,10 @@ class UserSettingsUpdateRequest(BaseModel):
     default_answer_style: str | None = Field(
         default=None,
         pattern="^(concise|detailed)$",
+    )
+    analysis_mode: str | None = Field(
+        default=None,
+        pattern="^(fast|deep|demo)$",
     )
     analysis_depth: str | None = Field(
         default=None,
@@ -71,8 +105,15 @@ class UserSettingsUpdateRequest(BaseModel):
     backend_query_timeout_sec: int | None = Field(default=None, ge=15, le=1800)
     agent_max_steps: int | None = Field(default=None, ge=2, le=_MAX_STEPS)
     agent_step_timeout_sec: int | None = Field(default=None, ge=5, le=600)
-    agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=30)
+    agent_inner_recursion_limit: int | None = Field(default=None, ge=2, le=_MAX_STEPS)
+    agent_react_enabled: bool | None = None
     ui_scale: int | None = Field(default=None, ge=70, le=150)
+    llm_streaming: bool | None = None
+    show_thinking: bool | None = None
+    show_think_planning: bool | None = None
+    show_think_tool: bool | None = None
+    show_think_final: bool | None = None
+    show_detailed_tool_steps: bool | None = None
 
 
 class ToolEnabledUpdateRequest(BaseModel):
@@ -94,6 +135,7 @@ class ToolAvailabilityResponse(BaseModel):
     enabled_globally: bool
     available_globally: bool
     status: str
+    enabled_by_default: bool = True
     enabled_for_user: bool
     effective_enabled: bool
     timeout_hint_sec: float | None = None
@@ -113,6 +155,14 @@ class AdminUpdateUserRequest(BaseModel):
 class MessageResponse(BaseModel):
     ok: bool = True
     message: str
+
+
+class RuntimeModelProfileResponse(BaseModel):
+    provider: str
+    model: str
+    base_url: str
+    max_context_tokens: int | None = Field(default=None, ge=1)
+    context_window_source: str = "unavailable"
 
 
 class SessionSummaryResponse(BaseModel):
@@ -136,6 +186,74 @@ class UploadResponse(BaseModel):
     session_id: str
     rows: int
     columns: int
+
+
+class TabularPreprocessingSummaryResponse(BaseModel):
+    enabled: bool
+    raw_rows: int
+    raw_columns: int
+    cleaned_rows: int
+    cleaned_columns: int
+    detected_header_row: int | None = None
+    removed_rows: int
+    removed_columns: int
+
+
+class UploadedTableResponse(BaseModel):
+    file_name: str
+    file_format: str
+    table_name: str
+    source_alias: str
+    variable_name: str
+    parquet_path: str
+    rows: int
+    columns: int
+    preprocessing: TabularPreprocessingSummaryResponse
+
+
+class BatchUploadResponse(BaseModel):
+    session_id: str
+    csv_session_id: str
+    table_names: list[str] = Field(default_factory=list)
+    files: list[UploadedTableResponse] = Field(default_factory=list)
+    expires_at: int
+    total_rows: int
+    total_columns: int
+    dataset_name: str
+
+
+class RagDocumentUploadResponse(BaseModel):
+    status: str
+    message: str = ""
+    track_id: str
+
+
+class RagDocumentStatusResponse(BaseModel):
+    id: str | None = None
+    file_path: str | None = None
+    status: str
+    track_id: str | None = None
+    chunks_count: int | None = None
+    content_length: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    error_msg: str | None = None
+
+
+class RagTrackStatusResponse(BaseModel):
+    track_id: str
+    documents: list[RagDocumentStatusResponse] = Field(default_factory=list)
+    status_summary: dict[str, int] = Field(default_factory=dict)
+
+
+class RagDocumentsResponse(BaseModel):
+    documents: list[RagDocumentStatusResponse] = Field(default_factory=list)
+
+
+class RagDocumentDeleteResponse(BaseModel):
+    status: str
+    message: str = ""
+    document_id: str
 
 
 class SessionSourceStateResponse(BaseModel):
@@ -164,6 +282,39 @@ class SourceDescriptorResponse(BaseModel):
 class SessionBindDBConnectionSourceRequest(BaseModel):
     connection_id: str = Field(..., min_length=1, max_length=120)
     source_mode: str | None = Field(default=None, max_length=40)
+
+
+class OpenProjectSyncRequest(BaseModel):
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=4096)
+    host_header: str | None = Field(default=None, max_length=255)
+    project: str | None = Field(default=None, max_length=255)
+    all_projects: bool | None = None
+    days: int | None = Field(default=None, ge=1, le=3650)
+    max_items: int | None = Field(default=None, ge=0, le=1_000_000)
+
+
+class OpenProjectProjectResponse(BaseModel):
+    id: str
+    identifier: str
+    name: str
+
+
+class OpenProjectProjectsResponse(BaseModel):
+    projects: list[OpenProjectProjectResponse] = Field(default_factory=list)
+
+
+class OpenProjectSyncResponse(BaseModel):
+    source_type: str = "openproject"
+    source_ref_id: str
+    source_label: str
+    source_mode: str = "postgres_sync"
+    connection_id: str
+    connection_name: str
+    schema_name: str
+    tables: dict[str, int] = Field(default_factory=dict)
+    artifact_ids: list[str] = Field(default_factory=list)
+    synced_at: str
 
 
 class DBConnectionCreateRequest(BaseModel):
@@ -264,6 +415,9 @@ class QueryResponse(BaseModel):
     artifacts: list[ArtifactPayload]
     values: dict[str, Any] | None = None
     metrics: QueryMetrics
+    persistence_failed: bool = (
+        False  # True when post-processing (store/artifact persistence) failed
+    )
 
 
 class SessionSourceResponse(BaseModel):
@@ -277,6 +431,7 @@ class SessionSourceResponse(BaseModel):
     connection_id: str | None = None
     connection_name: str | None = None
     bound_at: str = ""
+    csv_table_names: list[str] = Field(default_factory=list)
     schema_hint: dict[str, str] = Field(default_factory=dict)
 
 
@@ -294,6 +449,7 @@ class SessionStateResponse(BaseModel):
     selected_skill_ids: list[str] = Field(default_factory=list)
     sources: list[SessionSourceResponse] = Field(default_factory=list)
     session_memory: str = ""
+    context_usage: dict[str, Any] | None = None
 
 
 class SkillResponse(BaseModel):
@@ -302,7 +458,32 @@ class SkillResponse(BaseModel):
     description: str
     triggers: list[str] = Field(default_factory=list)
     source_path: str
+    enabled_by_default: bool = True
     enabled_for_user: bool = True
+
+
+class AdminSkillResponse(BaseModel):
+    skill_id: str
+    name: str
+    description: str
+    triggers: list[str] = Field(default_factory=list)
+    source_path: str
+    enabled_by_default: bool = True
+    kind: str
+    tool_key: str | None = None
+    core_markdown: str
+    details_markdown: str | None = None
+    is_overridden: bool = False
+    updated_by: int | None = None
+    updated_at: str | None = None
+
+
+class AdminSkillUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    triggers: list[str] | None = None
+    core_markdown: str | None = None
+    details_markdown: str | None = None
 
 
 class PhoenixOverviewStats(BaseModel):
@@ -366,6 +547,7 @@ class PhoenixOverviewResponse(BaseModel):
 
 # ── User memory ──────────────────────────────────────────────────────────────
 
+
 class UserMemoryResponse(BaseModel):
     profile: str
     notes: str
@@ -374,4 +556,3 @@ class UserMemoryResponse(BaseModel):
 class UserMemoryUpdateRequest(BaseModel):
     profile: str | None = None
     notes: str | None = None
-

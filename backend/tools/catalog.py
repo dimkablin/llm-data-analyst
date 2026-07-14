@@ -4,6 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from backend.instructions import InstructionDocument
+from backend.tools.instructions import ToolInstructionError, get_default_tool_instruction_registry
+
 
 @dataclass(frozen=True)
 class ToolCatalogSpec:
@@ -16,6 +19,7 @@ class ToolCatalogSpec:
     requires_session_data: bool
     kind: str
     source_type: str | None = None
+    enabled_by_default: bool = True
 
 
 BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
@@ -30,21 +34,65 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         kind="builtin",
     ),
     ToolCatalogSpec(
-        tool_key="review_tool",
-        tool_label="Reviewer",
-        display_name_ru="Проверка ответа",
-        description="Hybrid quality check for agent answers: heuristics + optional LLM review.",
-        description_ru="Гибридная проверка качества: эвристики + LLM-ревью для сложных запросов.",
-        capabilities=("quality_check",),
+        tool_key="generate_summary_tool",
+        tool_label="Generate Summary",
+        display_name_ru="Generate summary",
+        description=(
+            "Generic summary generation from current session history, notes, and "
+            "artifact summaries. Does not calculate new metrics."
+        ),
+        description_ru=(
+            "Generic summary generation from current session history, notes, and "
+            "artifact summaries. Does not calculate new metrics."
+        ),
+        capabilities=("summary_generation", "session_context"),
         requires_session_data=False,
+        kind="builtin",
+    ),
+    ToolCatalogSpec(
+        tool_key="generate_report_tool",
+        tool_label="Generate Report",
+        display_name_ru="Generate report",
+        description=(
+            "DOCX report export from persisted session chat history and artifacts."
+        ),
+        description_ru=(
+            "DOCX report export from persisted session chat history and artifacts."
+        ),
+        capabilities=("report_export", "docx"),
+        requires_session_data=False,
+        kind="builtin",
+    ),
+    ToolCatalogSpec(
+        tool_key="data_catalog_tool",
+        tool_label="Data Catalog",
+        display_name_ru="Data catalog",
+        description=(
+            "Structured session inventory: list sources, list tables, search columns, "
+            "and disambiguate duplicate table names before using analytical tools."
+        ),
+        description_ru=(
+            "Structured session inventory: sources, tables, columns, and duplicate "
+            "table-name disambiguation before SQL or dataframe work."
+        ),
+        capabilities=("source_catalog", "schema_discovery", "table_disambiguation"),
+        requires_session_data=True,
         kind="builtin",
     ),
     ToolCatalogSpec(
         tool_key="sql_tool",
         tool_label="SQL tool",
         display_name_ru="SQL по таблицам",
-        description="Natural-language questions over attached DB and/or CSV-in-DuckDB: table pick, safe SELECT, tabular artifact.",  # noqa: E501
-        description_ru="Вопросы на естественном языке по привязанной БД и/или CSV в DuckDB: выбор таблицы, безопасный SELECT, табличный артефакт.",  # noqa: E501
+        description=(
+            "Primary entry point for tabular data extraction from attached DB and/or CSV-in-DuckDB: "
+            "pick table, generate safe SELECT, return a named table artifact. "
+            "Use this first when data must be fetched from the database."
+        ),
+        description_ru=(
+            "Основной вход для получения табличных данных из подключённой БД и/или CSV в DuckDB: "
+            "выбор таблицы, безопасный SELECT, именованный табличный артефакт. "
+            "Используй его первым, когда нужно получить данные из БД."
+        ),
         capabilities=("read_only_sql", "table_artifact", "nl_to_sql"),
         requires_session_data=True,
         kind="builtin",
@@ -63,8 +111,15 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="pandas_tool",
         tool_label="Pandas Tool",
         display_name_ru="Табличная обработка",
-        description="Tabular transformations and aggregations over the active dataframe session data.",
-        description_ru="Табличные преобразования, группировки и вычисления по данным текущей сессии.",
+        description=(
+            "Tabular transformations and aggregations over dataframe variables already present in the session sandbox."  # noqa: E501
+            "Does not fetch data from the database directly."
+        ),
+        description_ru=(
+            "Табличные преобразования, группировки и вычисления по датафреймам, "
+            "которые уже лежат в sandbox текущей сессии. "
+            "Не получает данные из БД напрямую."
+        ),
         capabilities=("dataframe_transform", "aggregation", "table_artifact"),
         requires_session_data=True,
         kind="builtin",
@@ -73,19 +128,15 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="plotly_tool",
         tool_label="Plotly Tool",
         display_name_ru="Графики",
-        description="Chart creation and plot artifacts from tabular data (CSV dataframe or SQL query result).",  # noqa: E501
-        description_ru="Построение графиков по табличным данным (CSV датафрейм или результат SQL-запроса).",
+        description=(
+            "Chart creation from dataframe variables already present in the session sandbox. "
+            "Use after sql_tool or pandas_tool. Does not fetch data from the database directly."
+        ),
+        description_ru=(
+            "Построение графиков по датафреймам, которые уже лежат в sandbox текущей сессии. "
+            "Используй после sql_tool или pandas_tool. Не получает данные из БД напрямую."
+        ),
         capabilities=("chart", "plotly", "chart_artifact"),
-        requires_session_data=True,
-        kind="builtin",
-    ),
-    ToolCatalogSpec(
-        tool_key="value_tool",
-        tool_label="Value Tool",
-        display_name_ru="Метрики",
-        description="Scalar metrics and compact numeric/text outputs from session data.",
-        description_ru="Быстрые одиночные метрики и компактные числовые результаты по данным сессии.",
-        capabilities=("scalar_metric", "value_artifact"),
         requires_session_data=True,
         kind="builtin",
     ),
@@ -107,8 +158,11 @@ INTEGRATION_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="rag_tool",
         tool_label="RAG",
         display_name_ru="База знаний",
-        description="External knowledge-base retrieval and answer generation via RAG.",
-        description_ru="Поиск и ответ по внешней базе знаний через RAG.",
+        description="Semantic retrieval from the configured indexed knowledge base with source references.",
+        description_ru=(
+            "Семантический поиск по настроенной индексированной базе знаний "
+            "с ссылками на источники."
+        ),
         capabilities=("knowledge_base_search", "document_answer"),
         requires_session_data=False,
         kind="integration",
@@ -142,6 +196,23 @@ ALL_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = BUILTIN_TOOL_SPECS + INTEGRATION_T
 KNOWN_TOOL_KEYS: frozenset[str] = frozenset(spec.tool_key for spec in ALL_TOOL_SPECS)
 
 
+def _tool_instruction(tool_key: str) -> InstructionDocument:
+    document = get_default_tool_instruction_registry().get_optional(tool_key)
+    if document is None:
+        raise ToolInstructionError(f"Missing TOOL.md for registered tool: {tool_key}")
+    return document
+
+
+def _tool_description(spec: ToolCatalogSpec) -> str:
+    document = _tool_instruction(spec.tool_key)
+    return document.metadata.description or spec.description
+
+
+def _tool_enabled_by_default(spec: ToolCatalogSpec) -> bool:
+    document = _tool_instruction(spec.tool_key)
+    return bool(document.metadata.enabled_by_default)
+
+
 def build_tool_catalog(
     *,
     source_descriptors: list[dict[str, Any]] | tuple[dict[str, Any], ...],
@@ -156,14 +227,16 @@ def build_tool_catalog(
 
     catalog: list[dict[str, Any]] = []
     for spec in BUILTIN_TOOL_SPECS:
-        enabled_for_user = bool(raw_user_settings.get(spec.tool_key, True))
+        enabled_by_default = _tool_enabled_by_default(spec)
+        description = _tool_description(spec)
+        enabled_for_user = bool(raw_user_settings.get(spec.tool_key, enabled_by_default))
         catalog.append(
             {
                 "tool_key": spec.tool_key,
                 "kind": spec.kind,
                 "tool_label": spec.tool_label,
                 "display_name_ru": spec.display_name_ru,
-                "description": spec.description,
+                "description": description,
                 "description_ru": spec.description_ru,
                 "capabilities": list(spec.capabilities),
                 "requires_session_data": spec.requires_session_data,
@@ -173,6 +246,7 @@ def build_tool_catalog(
                 "enabled_globally": True,
                 "available_globally": True,
                 "status": "available",
+                "enabled_by_default": enabled_by_default,
                 "enabled_for_user": enabled_for_user,
                 "effective_enabled": enabled_for_user,
                 "timeout_hint_sec": None,
@@ -183,7 +257,9 @@ def build_tool_catalog(
         source_descriptor = source_by_type.get(spec.source_type or "", {})
         enabled_globally = bool(source_descriptor.get("enabled", False))
         available_globally = bool(source_descriptor.get("available", False))
-        enabled_for_user = bool(raw_user_settings.get(spec.tool_key, True))
+        enabled_by_default = _tool_enabled_by_default(spec)
+        description = _tool_description(spec)
+        enabled_for_user = bool(raw_user_settings.get(spec.tool_key, enabled_by_default))
         catalog.append(
             {
                 "tool_key": spec.tool_key,
@@ -192,7 +268,7 @@ def build_tool_catalog(
                 "display_name_ru": str(
                     source_descriptor.get("display_name_ru") or spec.display_name_ru
                 ),
-                "description": str(source_descriptor.get("description") or spec.description),
+                "description": str(source_descriptor.get("description") or description),
                 "description_ru": str(
                     source_descriptor.get("description_ru") or spec.description_ru
                 ),
@@ -206,6 +282,7 @@ def build_tool_catalog(
                 "enabled_globally": enabled_globally,
                 "available_globally": available_globally,
                 "status": str(source_descriptor.get("status") or "disabled"),
+                "enabled_by_default": enabled_by_default,
                 "enabled_for_user": enabled_for_user,
                 "effective_enabled": enabled_for_user and available_globally,
                 "timeout_hint_sec": source_descriptor.get("timeout_hint_sec"),
@@ -213,5 +290,3 @@ def build_tool_catalog(
         )
 
     return catalog
-
-

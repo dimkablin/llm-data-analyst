@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -141,17 +142,14 @@ class TestSkillFrontmatterFields:
 # ─── Python examples validation ──────────────────────────────────────────────
 
 class TestSkillPythonExamples:
-    """Проверяет синтаксис Python-примеров в каждом скиле."""
+    """Validate Python examples when a skill chooses to provide them."""
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
-    def test_has_python_examples(self, registry: SkillRegistry, skill_id: str) -> None:
+    def test_python_examples_are_optional(self, registry: SkillRegistry, skill_id: str) -> None:
         skill = registry.get(skill_id)
         assert skill is not None
-        # duckdb_analysis использует SQL блоки, Python опционален
-        if skill_id == "duckdb_analysis":
-            pytest.skip("duckdb_analysis использует SQL-блоки, Python необязателен")
-        assert len(skill.python_examples) >= 1, (
-            f"Скил '{skill_id}': нет Python-примеров"
+        assert skill.instructions_markdown.strip(), (
+            f"Скил '{skill_id}': instructions_markdown пустой"
         )
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
@@ -169,11 +167,8 @@ class TestSkillPythonExamples:
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
     def test_python_examples_end_with_tool_result(self, registry: SkillRegistry, skill_id: str) -> None:
-        """Каждый Python-пример должен заканчиваться на tool_result."""
         skill = registry.get(skill_id)
         assert skill is not None
-        if skill_id in ("duckdb_analysis", "insight_synthesis"):
-            pytest.skip(f"Скил '{skill_id}' использует шаблонный код без tool_result в каждом блоке")
         for i, example in enumerate(skill.python_examples):
             last_line = example.code.strip().splitlines()[-1].strip()
             assert last_line == "tool_result", (
@@ -187,17 +182,17 @@ class TestSkillPythonExamples:
 class TestSkillInstructionsStructure:
     """Проверяет что инструкции содержат обязательные разделы."""
 
-    REQUIRED_SECTIONS = {
-        "csv_summarizer": ["Шаг", "Правила"],
-        "auto_eda": ["Шаг", "Правила", "корреляц"],
-        "ab_test_analysis": ["Шаг", "Правила", "t-test"],
-        "root_cause_investigation": ["Шаг", "Правила", "waterfall"],
-        "data_quality_audit": ["Шаг", "Правила", "severity"],
-        "statistical_analysis": ["Правила", "регресс"],
-        "time_series_analysis": ["Шаг", "Правила", "тренд"],
-        "duckdb_analysis": ["Правила", "sql_tool", "read_csv"],
-        "insight_synthesis": ["Правила", "инсайт"],
-        "cohort_analysis_advanced": ["Шаг", "Правила", "retention"],
+    REQUIRED_SECTIONS: ClassVar[dict] = {
+        "csv_summarizer": ["algorithm", "rules"],
+        "auto_eda": ["algorithm", "rules", "correlation"],
+        "ab_test_analysis": ["algorithm", "rules", "t-test"],
+        "root_cause_investigation": ["algorithm", "rules", "waterfall"],
+        "data_quality_audit": ["algorithm", "rules", "severity"],
+        "statistical_analysis": ["algorithm", "rules", "regression"],
+        "time_series_analysis": ["algorithm", "rules", "trend"],
+        "duckdb_analysis": ["algorithm", "read-only", "sql_tool"],
+        "insight_synthesis": ["algorithm", "rules", "insight"],
+        "cohort_analysis_advanced": ["retention", "ltv", "plotly_tool"],
     }
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
@@ -218,13 +213,11 @@ class TestSkillInstructionsStructure:
 class TestExistingSkillsNotBroken:
     """Убеждаемся что новые скилы не сломали загрузку существующих."""
 
-    EXISTING_SKILLS = [
+    EXISTING_SKILLS: ClassVar[list] = [
         "cohort_analysis",
-        "pandas_tool",
-        "sql_tool",
-        "plotly_tool",
-        "value_tool",
-        "forecast-tool",
+        "general_analytics",
+        "portfolio_risk_analysis",
+        "investment_market_analysis",
     ]
 
     @pytest.mark.parametrize("skill_id", EXISTING_SKILLS)

@@ -6,7 +6,7 @@ For complex analytical SQL queries, use ``sql_tool`` instead.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import pandas as pd
 from langchain_core.tools import BaseTool
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import DBAnalyticsHelper
+from backend.tools.instructions import tool_description
 
 if TYPE_CHECKING:
     from backend.tools.sandbox import SessionSandbox
@@ -48,13 +49,10 @@ class DatabaseTool(BaseTool):
     """Direct DB catalog queries without LLM-generated SQL."""
 
     name: str = "database_tool"
-    description: str = (
-        "Быстрый просмотр структуры БД: список таблиц, описание колонок, "
-        "превью строк, список схем. Не требует SQL — прямые вызовы к каталогу БД. "
-        "Используй для разведки данных перед аналитическими запросами."
-    )
+    description: str = tool_description("database_tool")
     args_schema: type[BaseModel] = DatabaseToolArgs
     response_format: str = "content_and_artifact"
+    parallel_safe: ClassVar[bool] = False
 
     _db_runtime_config: RuntimeDBConnectionConfig = PrivateAttr()
     _sandbox: SessionSandbox | None = PrivateAttr(default=None)
@@ -119,11 +117,11 @@ class DatabaseTool(BaseTool):
     def _action_list_tables(
         self, db: DBAnalyticsHelper, schema: str | None,
     ) -> tuple[str, dict[str, Any]]:
-        rows = db.list_tables_with_columns(schema)
+        rows = db.list_effective_tables_with_columns(schema)
 
-        # Fallback: if the explicitly requested schema is empty,
-        # enumerate all real schemas and collect tables from each.
-        if not rows and schema is not None:
+        # Fallback: only when caller passed an explicit schema (not connection default)
+        # and that schema is empty — scan all schemas.
+        if not rows and schema is not None and not db._configured_schema():  # noqa: SLF001
             rows = self._collect_tables_all_schemas(db)
 
         if not rows:

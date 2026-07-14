@@ -6,39 +6,16 @@ Internally calls LLM with a compact planning prompt + available tool list.
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field, PrivateAttr
 
-from backend.agent.llm_client import ThinkingAwareChatOpenAI
+from backend.agent.llm_client import make_reasoning_llm
+from backend.tools.instructions import tool_description, tool_section_text
 
 logger = logging.getLogger(__name__)
-
-_PLANNER_SYSTEM_PROMPT = (
-    "You are a planning specialist. You receive a user question and available tools, "
-    "then produce a clear analysis plan.\n\n"
-    "You must NOT execute anything. Only analyze and plan.\n\n"
-    "## Goal\n"
-    "One sentence summary of what needs to be done.\n\n"
-    "## Plan\n"
-    "Numbered steps, each small and actionable:\n"
-    "1. Step one - which tool to use and what to get\n"
-    "2. Step two - which tool to use and what to get\n"
-    "3. ...\n\n"
-    "## Tools to Use\n"
-    "- `tool_name` - what for\n\n"
-    "## Risks\n"
-    "Anything to watch out for.\n\n"
-    "Keep the plan concrete. The agent will execute it step by step.\n\n"
-    "Rules:\n"
-    "- Use ONLY tools from the available tools list.\n"
-    "- Minimum steps: don't add unnecessary ones.\n"
-    "- For simple requests (show data, structure) → 1 step.\n"
-    "- For charts → always use `plotly_tool`.\n"
-    "- Don't confuse `value_tool` (df metrics) with `search_tool` (web search).\n"
-)
-
 
 class _Input(BaseModel):
     question: str = Field(
@@ -54,19 +31,16 @@ class PlannerTool(BaseTool):
     """Generates a structured analysis plan by calling LLM with a compact planning prompt."""
 
     name: str = "planner_tool"
-    description: str = (
-        "Составь план анализа перед любой задачей с данными "
-        "(CSV, БД, статистика, графики, метрики, прогноз). "
-        "Вызывай ПЕРВЫМ — до sql_tool, pandas_tool, plotly_tool и других инструментов данных. "
-        "Исключение: тривиальные выборки ('покажи первые строки') и веб-поиск. "
-        "Input: question (вопрос пользователя)."
-    )
+    description: str = tool_description("planner_tool")
     args_schema: type[BaseModel] = _Input
     response_format: str = "content"
+    parallel_safe: ClassVar[bool] = True
 
     _llm_model: str = PrivateAttr()
     _llm_base_url: str = PrivateAttr()
     _llm_api_key: str | None = PrivateAttr()
+    _llm_provider: str | None = PrivateAttr()
+    _llm_chat_template_kwargs_enabled: bool = PrivateAttr()
     _tool_descriptions: str = PrivateAttr()
 
     def __init__(
@@ -75,12 +49,16 @@ class PlannerTool(BaseTool):
         llm_model: str,
         llm_base_url: str,
         llm_api_key: str | None = None,
+        llm_provider: str | None = None,
+        llm_chat_template_kwargs_enabled: bool = False,
         tool_descriptions: str = "",
     ) -> None:
         super().__init__()
         self._llm_model = llm_model
         self._llm_base_url = llm_base_url
         self._llm_api_key = llm_api_key
+        self._llm_provider = llm_provider
+        self._llm_chat_template_kwargs_enabled = llm_chat_template_kwargs_enabled
         self._tool_descriptions = tool_descriptions
 
     def set_tool_descriptions(self, descriptions: str) -> None:
@@ -88,22 +66,26 @@ class PlannerTool(BaseTool):
         self._tool_descriptions = descriptions
 
     def _run(self, question: str, context: str = "") -> str:
-        system_content = _PLANNER_SYSTEM_PROMPT
+        system_content = tool_section_text("planner_tool", "Internal system prompt")
         if self._tool_descriptions:
             system_content += f"\n[ДОСТУПНЫЕ ИНСТРУМЕНТЫ]\n{self._tool_descriptions}\n"
 
-        llm = ThinkingAwareChatOpenAI(
+        llm = make_reasoning_llm(
+            provider=self._llm_provider,
             model=self._llm_model,
             base_url=self._llm_base_url,
             api_key=self._llm_api_key,
-            temperature=0.3,
-            max_tokens=256,
+            enable_thinking=False,
+            temperature=0.0,
+            max_tokens=1024,
             streaming=False,
+            chat_template_kwargs_enabled=self._llm_chat_template_kwargs_enabled,
         )
 
         user_content = question
         if context:
             user_content = f"[Контекст предыдущих сообщений]\n{context}\n\n[Текущий запрос]\n{question}"
+        # no_think_prefix no longer needed — factory sets enable_thinking=False
 
         try:
             response = llm.invoke([

@@ -1,6 +1,6 @@
 import React from "react";
 
-/** Inline markdown: renders `code` spans within plain text. */
+/** Встроенная разметка: рендерит `code` внутри обычного текста. */
 function InlineMarkdown({ text }: { text: string }) {
   const parts = text.split(/`([^`]+)`/);
   return (
@@ -26,7 +26,7 @@ type Props = {
 };
 
 /**
- * A concise text block for intermediate agent narration (pre-tool intent, transitions).
+ * Краткий текстовый блок для промежуточных сообщений агента перед инструментами и между шагами.
  * NOT used for the final answer — that still uses MarkdownBlock in the message bubble.
  */
 export function IntentTextBlock({ content }: Props) {

@@ -266,6 +266,12 @@ release/
 .env.local
 .env.local.*
 .*
+!.gitlab-ci.yml
+
+# Local agent/project instructions
+AGENT.md
 
 test.py
-dump.txt
+test_report_generation.py
+dump*.txt
+docs/superpowers/

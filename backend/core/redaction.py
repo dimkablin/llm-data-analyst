@@ -8,6 +8,8 @@ _SENSITIVE_PARTS = ("password", "secret", "token", "key", "passwd", "pwd")
 _KEY_VALUE_RE = re.compile(
     r"(?i)\b(password|secret|token|api[_-]?key|passwd|pwd)\b\s*[:=]\s*([^\s,;]+)"
 )
+_SENSITIVE_TEXT_RE = re.compile(r"(?i)\b(password|secret|token|api[_-]?key|passwd|pwd)\b")
+_TRACEBACK_FILE_RE = re.compile(r'File ".*?", line (\d+)')
 
 
 def is_sensitive_key(key: str) -> bool:
@@ -34,8 +36,7 @@ def sanitize_error_text(text: str) -> str:
         return "Connection test failed."
 
     sanitized = _KEY_VALUE_RE.sub(r"\1=***REDACTED***", raw)
-    lowered = sanitized.lower()
-    if any(part in lowered for part in _SENSITIVE_PARTS):
+    if _SENSITIVE_TEXT_RE.search(sanitized):
         return "Sensitive details were removed."
 
     if "://" in sanitized and "@" in sanitized:
@@ -54,3 +55,33 @@ def sanitize_error_text(text: str) -> str:
     return sanitized
 
 
+def compact_error_text(text: str, *, limit: int = 900) -> str:
+    sanitized = sanitize_error_text(text).strip()
+    if sanitized.lower().startswith("tool error:"):
+        sanitized = sanitized[len("Tool error:"):].strip()
+    if not sanitized:
+        return "ошибка без подробностей"
+
+    if "Traceback (most recent call last):" in sanitized:
+        line_match = None
+        for match in _TRACEBACK_FILE_RE.finditer(sanitized):
+            line_match = match
+        lines = [line.strip() for line in sanitized.splitlines() if line.strip()]
+        message = next(
+            (
+                line
+                for line in reversed(lines)
+                if not line.startswith("Traceback")
+                and not line.startswith("File ")
+                and not line.startswith("^")
+            ),
+            "ошибка без подробностей",
+        )
+        if line_match is not None:
+            sanitized = f"line {line_match.group(1)}: {message}"
+        else:
+            sanitized = message
+
+    if len(sanitized) <= limit:
+        return sanitized
+    return sanitized[: limit - 3].rstrip() + "..."

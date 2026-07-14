@@ -283,6 +283,7 @@ def build_trace_context(
     db_connection_id: str | None = None,
     csv_session_id: str | None = None,
     csv_duckdb_loaded: bool = False,
+    selected_skill_names: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "session_id": session_id,
@@ -297,6 +298,8 @@ def build_trace_context(
         payload["db_connection_id"] = db_connection_id.strip()
     if isinstance(csv_session_id, str) and csv_session_id.strip():
         payload["csv_session_id"] = csv_session_id.strip()
+    if selected_skill_names:
+        payload["selected_skill_names"] = selected_skill_names
     return payload
 
 
@@ -313,6 +316,7 @@ def query_trace_context(
     db_connection_id: str | None = None,
     csv_session_id: str | None = None,
     csv_duckdb_loaded: bool = False,
+    selected_skill_names: str | None = None,
 ) -> Iterator[None]:
     if not settings.phoenix_enabled:
         yield
@@ -349,6 +353,8 @@ def query_trace_context(
         metadata["data_source"] = "csv_duckdb"
     if isinstance(csv_session_id, str) and csv_session_id.strip():
         metadata["csv_session_id"] = csv_session_id.strip()
+    if selected_skill_names:
+        metadata["selected_skill_names"] = selected_skill_names
     tags = [
         "backend",
         "reason-action",

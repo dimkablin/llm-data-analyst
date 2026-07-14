@@ -60,6 +60,16 @@ class CatalogColumn:
     default_expression: str | None = None
 
 
+@dataclass(frozen=True)
+class CatalogRelationship:
+    from_schema: str
+    from_table: str
+    from_column: str
+    to_schema: str
+    to_table: str
+    to_column: str
+
+
 class BaseConnectionAdapter(ABC):
     def __init__(self, resolved: ResolvedDBConnection, *, timeout_sec: int) -> None:
         self.resolved = resolved
@@ -95,6 +105,9 @@ class BaseConnectionAdapter(ABC):
             cols = self.describe_table(schema, tbl.name)
             result[tbl.name] = (tbl, cols)
         return result
+
+    def list_relationships(self, schema: str) -> list[CatalogRelationship]:
+        return []
 
 
 class PostgresConnectionAdapter(BaseConnectionAdapter):
@@ -294,6 +307,51 @@ class PostgresConnectionAdapter(BaseConnectionAdapter):
                     )
                 )
         return result
+
+    def list_relationships(self, schema: str) -> list[CatalogRelationship]:
+        import psycopg
+
+        query = """
+            SELECT
+                source_ns.nspname AS from_schema,
+                source_tbl.relname AS from_table,
+                source_col.attname AS from_column,
+                target_ns.nspname AS to_schema,
+                target_tbl.relname AS to_table,
+                target_col.attname AS to_column
+            FROM pg_catalog.pg_constraint con
+            JOIN pg_catalog.pg_class source_tbl ON source_tbl.oid = con.conrelid
+            JOIN pg_catalog.pg_namespace source_ns ON source_ns.oid = source_tbl.relnamespace
+            JOIN pg_catalog.pg_class target_tbl ON target_tbl.oid = con.confrelid
+            JOIN pg_catalog.pg_namespace target_ns ON target_ns.oid = target_tbl.relnamespace
+            JOIN unnest(con.conkey) WITH ORDINALITY AS source_key(attnum, ord) ON true
+            JOIN unnest(con.confkey) WITH ORDINALITY AS target_key(attnum, ord)
+              ON target_key.ord = source_key.ord
+            JOIN pg_catalog.pg_attribute source_col
+              ON source_col.attrelid = source_tbl.oid AND source_col.attnum = source_key.attnum
+            JOIN pg_catalog.pg_attribute target_col
+              ON target_col.attrelid = target_tbl.oid AND target_col.attnum = target_key.attnum
+            WHERE con.contype = 'f'
+              AND source_ns.nspname = %s
+            ORDER BY source_tbl.relname, source_col.attnum
+        """
+        with psycopg.connect(**self._connect_kwargs()) as conn:
+            self._apply_session_schema(conn)
+            with conn.cursor() as cur:
+                cur.execute(query, (schema,))
+                rows = cur.fetchall()
+
+        return [
+            CatalogRelationship(
+                from_schema=str(row[0]),
+                from_table=str(row[1]),
+                from_column=str(row[2]),
+                to_schema=str(row[3]),
+                to_table=str(row[4]),
+                to_column=str(row[5]),
+            )
+            for row in rows
+        ]
 
 
 class ClickHouseConnectionAdapter(BaseConnectionAdapter):
@@ -500,5 +558,4 @@ def build_connection_adapter(
     if resolved.db_type == "clickhouse":
         return ClickHouseConnectionAdapter(resolved, timeout_sec=timeout_sec)
     raise RuntimeError(f"Unsupported db_type: {resolved.db_type}")
-
 

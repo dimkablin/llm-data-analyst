@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backend.tools.schema_registry import DataFrameSchemaEntry, DataFrameSchemaRegistry
+
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
@@ -61,7 +63,8 @@ SAFE_BUILTINS: dict[str, Any] = {
 # Union of all libs any tool may need.
 _ALL_ALLOWED_LIBS: frozenset[str] = frozenset({
     "pandas", "numpy", "plotly", "json", "re", "math", "datetime",
-    "collections", "itertools", "functools", "statistics",
+    "collections", "itertools", "functools", "statistics", "time",
+    "_strptime",
 })
 
 # Result-extraction priority (same logic as the old _execute_tool_code).
@@ -134,6 +137,7 @@ class SessionSandbox:
         self._storage_dir: Path | None = None
         self._bound_df: pd.DataFrame | None = None
         self._bound_db_config: Any = None
+        self.schema_registry = DataFrameSchemaRegistry()
         self._persisted_entry_count: int = 0
         self._init_scope()
 
@@ -154,9 +158,6 @@ class SessionSandbox:
 
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
         self._scope.update({"__builtins__": safe, "pd": _pd, "np": _np, "df": df_entry})
-        if self._bound_db_config is not None:
-            self._scope["db_connection"] = self._bound_db_config
-            self._scope["db_runtime"] = self._bound_db_config
 
         # _globals is kept as an alias so callers that reference it still work.
         self._globals = self._scope
@@ -186,8 +187,12 @@ class SessionSandbox:
             self._bound_df = df
             self._bound_db_config = db_runtime_config
             self._scope["df"] = df
-            self._scope["db_connection"] = db_runtime_config
-            self._scope["db_runtime"] = db_runtime_config
+            self.schema_registry.register_dataframe(
+                variable_name="df",
+                df=df,
+                source_kind="session_dataframe",
+                source_name=source_label or "session_dataframe",
+            )
 
             new_shape = df.shape
             if not is_first_load and old_shape != new_shape:
@@ -238,6 +243,23 @@ class SessionSandbox:
 
     # ------ execution ------------------------------------------------
 
+    @staticmethod
+    def _last_assigned_name(node: ast.stmt) -> str | None:
+        target: ast.expr | None = None
+        if isinstance(node, ast.Assign) and node.targets:
+            target = node.targets[-1]
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+        elif isinstance(node, ast.AugAssign):
+            target = node.target
+
+        if not isinstance(target, ast.Name):
+            return None
+        name = target.id
+        if name.startswith("_") or name in _INFRA_KEYS:
+            return None
+        return name
+
     def execute(
         self,
         code: str,
@@ -259,7 +281,17 @@ class SessionSandbox:
         if include_plotly and "px" not in self._scope:
             import plotly.express as _px
             import plotly.graph_objects as _go
-            self._scope.update({"px": _px, "go": _go})
+            from plotly.subplots import make_subplots as _make_subplots
+
+            from backend.tools.plotly_express_compat import wrap_plotly_express
+
+            self._scope.update(
+                {
+                    "px": wrap_plotly_express(_px),
+                    "go": _go,
+                    "make_subplots": _make_subplots,
+                }
+            )
 
         # Merge extra_scope (e.g. tool-specific helpers).
         if extra_scope:
@@ -272,22 +304,55 @@ class SessionSandbox:
 
         # Compile AST — capture last expression as __tool_last_expr__.
         tree = ast.parse(code, filename="<tool_code>", mode="exec")
-        if tree.body and isinstance(tree.body[-1], ast.Expr):
-            tree.body[-1] = ast.Assign(
-                targets=[ast.Name(id="__tool_last_expr__", ctx=ast.Store())],
-                value=tree.body[-1].value,
-            )
-            ast.fix_missing_locations(tree)
+        if tree.body:
+            if isinstance(tree.body[-1], ast.Expr):
+                tree.body[-1] = ast.Assign(
+                    targets=[ast.Name(id="__tool_last_expr__", ctx=ast.Store())],
+                    value=tree.body[-1].value,
+                )
+                ast.fix_missing_locations(tree)
+            else:
+                last_name = self._last_assigned_name(tree.body[-1])
+                if last_name:
+                    tree.body.append(
+                        ast.Assign(
+                            targets=[ast.Name(id="__tool_last_expr__", ctx=ast.Store())],
+                            value=ast.Dict(
+                                keys=[ast.Constant(value=last_name)],
+                                values=[ast.Name(id=last_name, ctx=ast.Load())],
+                            ),
+                        )
+                    )
+                    ast.fix_missing_locations(tree)
         compiled = compile(tree, filename="<tool_code>", mode="exec")
 
         # Run in a daemon thread for timeout enforcement.
         error_box: list[Exception] = []
+        stdout_parts: list[str] = []
 
         def _run():
+            builtins_scope = self._scope.get("__builtins__", {})
+            original_print = (
+                builtins_scope.get("print")
+                if isinstance(builtins_scope, dict)
+                else builtins.print
+            )
+
+            def _capture_print(*args, sep=" ", end="\n", file=None, flush=False):
+                if file is not None:
+                    original_print(*args, sep=sep, end=end, file=file, flush=flush)
+                    return
+                stdout_parts.append(sep.join(str(arg) for arg in args) + end)
+
             try:
+                if isinstance(builtins_scope, dict):
+                    builtins_scope["print"] = _capture_print
                 exec(compiled, self._scope)  # pylint: disable=exec-used
             except Exception as exc:
                 error_box.append(exc)
+            finally:
+                if isinstance(builtins_scope, dict):
+                    builtins_scope["print"] = original_print
 
         with self._lock:
             thread = threading.Thread(target=_run, daemon=True)
@@ -306,11 +371,12 @@ class SessionSandbox:
             if error_box:
                 raise error_box[0]
 
-            result = self._extract_result()
+            result = self._extract_result("".join(stdout_parts))
             self._total_executions += 1
 
             # Log to notebook.
             new_vars = self._detect_new_user_vars()
+            self._register_dataframe_vars(new_vars, source_kind="pandas_result")
             self._notebook.append(NotebookEntry(
                 timestamp=_now_iso(),
                 entry_type="code",
@@ -323,16 +389,22 @@ class SessionSandbox:
         self._persist_notebook()
         return result
 
-    def _extract_result(self) -> Any:
+    def _extract_result(self, stdout_text: str = "") -> Any:
         """Extract tool result from scope using priority candidates."""
         for candidate in _RESULT_CANDIDATES:
             if candidate in self._scope:
-                return self._scope[candidate]
+                value = self._scope[candidate]
+                if candidate == "__tool_last_expr__" and value is None:
+                    continue
+                return value
 
         for key, value in self._scope.items():
             key_lower = str(key).strip().lower()
             if key_lower.endswith("_result") or key_lower == "result":
                 return value
+
+        if stdout_text.strip():
+            return stdout_text.strip()
 
         return None
 
@@ -345,6 +417,20 @@ class SessionSandbox:
             and not callable(self._scope[k])
             and not isinstance(self._scope[k], type)
         ]
+
+    def _register_dataframe_vars(self, names: list[str], *, source_kind: str) -> None:
+        for name in names:
+            value = self._scope.get(name)
+            if not isinstance(value, pd.DataFrame):
+                continue
+            if name == "df":
+                continue
+            self.schema_registry.register_dataframe(
+                variable_name=name,
+                df=value,
+                source_kind=source_kind,  # type: ignore[arg-type]
+                source_name=name,
+            )
 
     # ------ prompt context -------------------------------------------
 
@@ -456,14 +542,43 @@ class SessionSandbox:
 
     # ------ housekeeping ---------------------------------------------
 
-    def put(self, name: str, value: Any) -> None:
+    def get_user_scope(self) -> dict[str, Any]:
+        """Snapshot of user-visible sandbox variables (for code preflight)."""
+        with self._lock:
+            return {
+                key: val
+                for key, val in self._scope.items()
+                if key not in _INFRA_KEYS
+            }
+
+    def put(
+        self,
+        name: str,
+        value: Any,
+        *,
+        schema_entry: DataFrameSchemaEntry | None = None,
+    ) -> None:
         """Inject a named variable into scope without executing code.
 
         Used by non-exec tools (e.g. sql_tool) to make their results
         available to subsequent tools (e.g. plotly_tool, pandas_tool).
         """
+        if isinstance(value, pd.DataFrame):
+            from backend.data_access.dataframe_utils import deduplicate_dataframe_columns
+
+            value = deduplicate_dataframe_columns(value)
         with self._lock:
             self._scope[name] = value
+            if isinstance(value, pd.DataFrame):
+                if schema_entry is not None:
+                    self.schema_registry.register(schema_entry)
+                else:
+                    self.schema_registry.register_dataframe(
+                        variable_name=name,
+                        df=value,
+                        source_kind="unknown",
+                        source_name=name,
+                    )
 
     def clear(self) -> None:
         """Full reset — wipe scope and notebook."""
@@ -472,6 +587,7 @@ class SessionSandbox:
             self._notebook.clear()
             self._total_executions = 0
             self._persisted_entry_count = 0
+            self.schema_registry = DataFrameSchemaRegistry()
             self._init_scope()
 
     @property
@@ -509,17 +625,31 @@ def _describe_value(val: Any) -> str:
     if val is None:
         return "None"
     if isinstance(val, pd.DataFrame):
-        cols = [str(c) for c in val.columns[:8]]
-        return f"DataFrame {val.shape}, columns: {cols}"
+        from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+
+        col_parts: list[str] = []
+        for col in list(val.columns)[:40]:
+            name = str(col)
+            series = val[col]
+            if is_datetime64_any_dtype(series):
+                dtype = "datetime"
+            elif is_numeric_dtype(series):
+                dtype = str(series.dtype)
+            else:
+                dtype = "string"
+            col_parts.append(f"{name} ({dtype})")
+        if len(val.columns) > 40:
+            col_parts.append(f"... +{len(val.columns) - 40} cols")
+        return f"DataFrame {val.shape[0]}×{val.shape[1]}: " + ", ".join(col_parts)
     if isinstance(val, pd.Series):
         return f"Series {val.shape}, name={val.name}"
     if isinstance(val, np.ndarray):
         return f"ndarray {val.shape}"
     if isinstance(val, dict):
         return f"dict ({len(val)} keys)"
-    if isinstance(val, (list, tuple)):
+    if isinstance(val, list | tuple):
         return f"{type(val).__name__} (len={len(val)})"
-    if isinstance(val, (int, float, bool, str)):
+    if isinstance(val, int | float | bool | str):
         r = repr(val)
         return r[:80] if len(r) > 80 else r
     return type(val).__name__

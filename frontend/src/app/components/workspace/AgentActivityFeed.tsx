@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { motion } from "motion/react";
+import { buildAgentStagesFromTools } from "../../lib/agent-stages";
 import type { StreamToolCall } from "../../lib/backend-types";
 import { MarkdownBlock } from "../MarkdownBlock";
 import { SpinnerDisplay } from "../SpinnerDisplay";
+import { AgentStageTimeline } from "./AgentStageTimeline";
 import { ThinkingBlock } from "./blocks/ThinkingBlock";
 
 // ─── Text helpers ─────────────────────────────────────────────────────────────
@@ -38,13 +40,11 @@ function InlineMarkdown({ text }: { text: string }) {
   );
 }
 
-function parseToolInputCode(preview: string): string | null {
-  const trimmed = preview.trim();
-  if (!trimmed) return null;
+function formatToolInput(input_preview?: string, input_code?: string): string | null {
+  const trimmed = input_preview?.trim();
+  if (!trimmed) return input_code?.trim() || null;
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (typeof parsed.code === "string") return parsed.code;
-    if (typeof parsed.query === "string") return parsed.query;
     return JSON.stringify(parsed, null, 2);
   } catch {
     return trimmed;
@@ -95,8 +95,8 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
   }, [isRunning, call.started_at]);
 
   const connector = isLast ? "└─" : "├─";
-  const inputCode = call.input_preview ? parseToolInputCode(call.input_preview) : null;
-  const hasDetail = !!(inputCode || call.output_preview || call.artifact_keys?.length);
+  const inputDetail = formatToolInput(call.input_preview, call.input_code);
+  const hasDetail = !!(inputDetail || call.output_preview || call.artifact_keys?.length);
 
   const dot = isRunning ? (
     <span className="inline-flex items-center"><SpinnerDisplay size="dot" /></span>
@@ -117,7 +117,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
         <span className={`font-semibold ${isRunning ? "text-foreground" : "text-muted-foreground"}`}>
           {call.tool_name}
         </span>
-        {call.input_summary ? (
+        {!expanded && call.input_summary ? (
           <span className="truncate text-muted-foreground/50">
             ({call.input_summary}{call.input_summary.length >= 60 ? "…" : ""})
           </span>
@@ -146,13 +146,13 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
       {/* Expanded: input + output sections */}
       {expanded ? (
         <div className="ml-[3.25rem] mt-1 flex flex-col gap-2">
-          {inputCode ? (
+          {inputDetail ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/35 select-none">
-                Input
+                Вход
               </span>
               <div className="overflow-x-auto rounded border border-border/25 bg-muted/20 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/65 whitespace-pre">
-                {inputCode}
+                {inputDetail}
               </div>
             </div>
           ) : null}
@@ -160,7 +160,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
           {call.output_preview ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/35 select-none">
-                {call.status === "error" ? "Error" : "Output"}
+                {call.status === "error" ? "Ошибка" : "Выход"}
               </span>
               {call.status === "error" ? (
                 <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
@@ -175,7 +175,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
           ) : call.artifact_keys?.length ? (
             <div className="flex flex-col gap-0.5">
               <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/35 select-none">
-                Output
+                Выход
               </span>
               <div className="rounded border border-border/25 bg-muted/20 px-3 py-2 font-mono text-[11px] text-emerald-500/70">
                 {call.artifact_keys.join(", ")}
@@ -188,24 +188,46 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
   );
 }
 
-// ─── Activity list — shared for streaming and completed messages ──────────────
+// ─── Список активности: общий для потока и завершенных сообщений ──────────────
 
 export function ToolCallList({
   tools,
   reasoning,
   isLive,
+  showDetailedTools = false,
+  isSummarizing = false,
 }: {
   tools: StreamToolCall[];
   reasoning?: string;
   isLive?: boolean;
+  showDetailedTools?: boolean;
+  isSummarizing?: boolean;
 }) {
   if (!tools.length && !reasoning?.trim()) return null;
 
   const liveReasoning = reasoning?.trim() ?? "";
 
+  if (!showDetailedTools) {
+    const stages = buildAgentStagesFromTools(tools, {
+      isLive,
+      isSummarizing: isSummarizing || Boolean(isLive && tools.length > 0 && liveReasoning),
+    });
+    if (!stages.length && !liveReasoning) {
+      return null;
+    }
+    return (
+      <div className="flex flex-col gap-2 py-0.5">
+        {stages.length ? <AgentStageTimeline stages={stages} /> : null}
+        {isLive && !tools.length && liveReasoning ? (
+          <LiveReasoningText text={liveReasoning} />
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-0.5 py-0.5">
-      {/* Pure-thinking phase before any tool has fired */}
+      {/* Фаза рассуждения до первого вызова инструмента. */}
       {isLive && !tools.length && liveReasoning ? (
         <LiveReasoningText text={liveReasoning} />
       ) : null}
@@ -220,7 +242,7 @@ export function ToolCallList({
         );
       })}
 
-      {/* Live reasoning streaming after last tool */}
+      {/* Поток рассуждения после последнего инструмента. */}
       {isLive && tools.length > 0 && liveReasoning ? (
         <LiveReasoningText text={liveReasoning} />
       ) : null}
@@ -228,16 +250,22 @@ export function ToolCallList({
   );
 }
 
-// ─── Live streaming feed ──────────────────────────────────────────────────────
+// ─── Живая потоковая лента ────────────────────────────────────────────────────
 
 type Props = {
   tools: StreamToolCall[];
-  /** Live reasoning delta since last tool_start (reset on each tool_start). */
+  /** Дельта рассуждения после последнего tool_start, сбрасывается на каждом tool_start. */
   reasoning: string;
   draft: string;
+  showDetailedTools?: boolean;
 };
 
-export function AgentActivityFeed({ tools, reasoning, draft }: Props) {
+export function AgentActivityFeed({ tools, reasoning, draft, showDetailedTools = false }: Props) {
+  const hasRunningTool = tools.some((tool) => tool.status === "running");
+  const isSummarizing = Boolean(
+    draft.trim() && tools.length > 0 && !hasRunningTool,
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -250,7 +278,13 @@ export function AgentActivityFeed({ tools, reasoning, draft }: Props) {
       </div>
 
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <ToolCallList tools={tools} reasoning={reasoning} isLive />
+        <ToolCallList
+          tools={tools}
+          reasoning={reasoning}
+          isLive
+          showDetailedTools={showDetailedTools}
+          isSummarizing={isSummarizing}
+        />
 
         {/* Streaming answer text */}
         <div className="rounded-2xl rounded-tl-none border border-border/40 bg-card px-4 py-3 text-[13px] leading-relaxed lg:px-5 lg:py-4 lg:text-[14px]">

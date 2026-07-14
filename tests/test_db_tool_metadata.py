@@ -61,17 +61,112 @@ class DBToolMetadataResultTests(unittest.TestCase):
         self.assertEqual(list(rows.columns), ["name", "display_name"])
         self.assertEqual(len(rows), 2)
 
+    def test_list_effective_tables_with_columns_uses_configured_schema_only(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        with (
+            patch.object(DBDemoHelper, "list_tables_with_columns") as list_mock,
+            patch.object(DBDemoHelper, "list_all_tables_with_columns") as all_mock,
+        ):
+            list_mock.return_value = [
+                {
+                    "schema": "public",
+                    "table_name": "orders",
+                    "table_type": "table",
+                    "qualified_name": "public.orders",
+                    "columns": ["id"],
+                }
+            ]
+            rows = helper.list_effective_tables_with_columns()
+
+        list_mock.assert_called_once_with()
+        all_mock.assert_not_called()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["schema"], "public")
+
+    def test_list_effective_tables_with_columns_scans_all_when_no_schema_config(self) -> None:
+        runtime = RuntimeDBConnectionConfig(
+            connection_id="conn-2",
+            user_id=7,
+            name="Wide DB",
+            db_type="postgresql",
+            host="localhost",
+            port=5432,
+            database="analytics",
+            username="analyst",
+            password="secret",
+            options={},
+        )
+        helper = DBDemoHelper(runtime=runtime)
+        with (
+            patch.object(DBDemoHelper, "list_all_tables_with_columns") as all_mock,
+            patch.object(DBDemoHelper, "list_tables_with_columns") as list_mock,
+        ):
+            all_mock.return_value = [
+                {
+                    "schema": "demo_invest",
+                    "table_name": "instrument_snapshot_demo",
+                    "table_type": "table",
+                    "qualified_name": "demo_invest.instrument_snapshot_demo",
+                    "columns": ["ticker"],
+                }
+            ]
+            rows = helper.list_effective_tables_with_columns()
+
+        all_mock.assert_called_once_with()
+        list_mock.assert_not_called()
+        self.assertEqual(rows[0]["schema"], "demo_invest")
+
+    def test_list_all_tables_with_columns_deduplicates(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        with (
+            patch.object(
+                DBDemoHelper,
+                "list_schemas",
+                return_value=[{"name": "demo_invest"}, {"name": "public"}],
+            ),
+            patch.object(
+                DBDemoHelper,
+                "list_tables_with_columns",
+                side_effect=[
+                    [
+                        {
+                            "schema": "demo_invest",
+                            "table_name": "instrument_snapshot_demo",
+                            "table_type": "table",
+                            "qualified_name": "demo_invest.instrument_snapshot_demo",
+                            "columns": ["ticker"],
+                        }
+                    ],
+                    [
+                        {
+                            "schema": "public",
+                            "table_name": "instrument_snapshot_demo",
+                            "table_type": "table",
+                            "qualified_name": "public.instrument_snapshot_demo",
+                            "columns": ["ticker"],
+                        }
+                    ],
+                ],
+            ),
+        ):
+            rows = helper.list_all_tables_with_columns()
+
+        self.assertEqual(len(rows), 2)
+        schemas = {row["schema"] for row in rows}
+        self.assertEqual(schemas, {"demo_invest", "public"})
+
     def test_list_tables_result_uses_schema_specific_artifact_name(self) -> None:
         helper = DBDemoHelper(runtime=_runtime())
         with patch.object(
             DBDemoHelper,
-            "list_tables",
+            "list_effective_tables_with_columns",
             return_value=[
                 {
                     "schema": "public",
                     "table_name": "orders",
                     "table_type": "table",
                     "qualified_name": "public.orders",
+                    "columns": ["order_id"],
                 }
             ],
         ):
@@ -147,7 +242,3 @@ class DBToolMetadataResultTests(unittest.TestCase):
         self.assertEqual(result["meta"]["query"]["returned_rows"], 2)
         self.assertTrue(result["meta"]["query"]["truncated"])
         self.assertTrue(result["meta"]["warnings"])
-
-
-if __name__ == "__main__":
-    unittest.main()

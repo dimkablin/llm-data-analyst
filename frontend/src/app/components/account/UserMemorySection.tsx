@@ -220,7 +220,7 @@ function MemoryBlock({
             className="w-full rounded-md border bg-background px-3 py-2 text-sm
                        placeholder:text-muted-foreground focus:outline-none focus:ring-1
                        focus:ring-ring resize-y font-mono"
-            placeholder="Введите текст в формате markdown…"
+            placeholder="Введите текст в формате разметки…"
           />
           <div className="flex gap-2">
             <Button size="sm" onClick={onSave} disabled={isSaving}>

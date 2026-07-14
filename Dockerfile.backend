@@ -2,6 +2,10 @@ FROM python:3.11 AS runtime
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /opt/certs
 
 COPY backend/requirements.runtime.txt /tmp/requirements.runtime.txt
@@ -10,7 +14,12 @@ COPY certs/ca/ /opt/certs/
 # Install backend runtime dependencies in a separate cacheable layer.
 # This avoids reinstalling dependencies on every source code change.
 RUN set -eux; \
-    python -m pip install --no-cache-dir --upgrade pip; \
+    for attempt in 1 2 3; do \
+      python -m pip install --no-cache-dir --upgrade pip && break; \
+      if [ "${attempt}" -eq 3 ]; then exit 1; fi; \
+      echo "pip upgrade failed, retrying (${attempt}/3)..." >&2; \
+      sleep 5; \
+    done; \
     for attempt in 1 2 3; do \
       pip install --no-cache-dir --retries 10 --timeout 120 -r /tmp/requirements.runtime.txt && break; \
       if [ "${attempt}" -eq 3 ]; then exit 1; fi; \
@@ -28,6 +37,7 @@ RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_stora
 
 COPY backend ./backend
 COPY skills ./skills
+COPY tools ./tools
 
 RUN chown -R appuser:appuser /app /opt/certs
 USER appuser

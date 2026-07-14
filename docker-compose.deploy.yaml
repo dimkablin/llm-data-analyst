@@ -22,7 +22,7 @@ services:
       - BACKEND_CORS_ALLOW_ORIGINS=${BACKEND_CORS_ALLOW_ORIGINS:-http://10.9.168.20:8606}
       - PHOENIX_ENABLED=${PHOENIX_ENABLED:-true}
       - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-llm-data-analyst}
-      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://10.9.168.20:8607/v1/traces}
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
       - PHOENIX_AUTO_INSTRUMENT=${PHOENIX_AUTO_INSTRUMENT:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -42,8 +42,8 @@ services:
     ports:
       - "${FRONTEND_PORT:-8606}:8603"
     environment:
-      - BACKEND_URL=${BACKEND_URL:-http://10.9.168.20:8605}
-      - PHOENIX_URL=${PHOENIX_URL:-http://10.9.168.20:8607}
+      - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
+      - PHOENIX_URL=${PHOENIX_URL:-http://phoenix:6006}
       - APP_BASE_PATH=${APP_BASE_PATH:-/}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8603/"]

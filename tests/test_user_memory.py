@@ -208,7 +208,3 @@ class UserMemoryConsolidationTests(unittest.TestCase):
         asyncio.run(_run())
         stored = self._db.get_user_memory(self._user.id, MEM_NOTES)
         self.assertEqual(stored, "- Safe note")
-
-
-if __name__ == "__main__":
-    unittest.main()

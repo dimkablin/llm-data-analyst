@@ -1,0 +1,153 @@
+{
+  "name": "global_common",
+  "enabled_by_default": true,
+  "domains": ["common"],
+  "terms": [
+    {
+      "name": "Revenue",
+      "description": "Total money earned before discounts, returns, taxes, or costs unless the source defines it differently. Formula: SUM(revenue/amount/sales).",
+      "synonyms": ["выручка", "оборот", "продажи", "revenue", "sales"],
+      "entity_refs": ["metric:revenue"]
+    },
+    {
+      "name": "Orders",
+      "description": "Number of orders or transactions. Formula: COUNT(DISTINCT order_id) or COUNT(*) when no order id exists.",
+      "synonyms": ["заказы", "сделки", "orders", "transactions"],
+      "entity_refs": ["metric:orders"]
+    },
+    {
+      "name": "Customers",
+      "description": "Unique buyers, clients, or users. Formula: COUNT(DISTINCT customer_id/user_id/client_id).",
+      "synonyms": ["клиенты", "покупатели", "customers", "users"],
+      "entity_refs": ["metric:customers"]
+    },
+    {
+      "name": "Average order value",
+      "description": "Average revenue per order. Formula: revenue / orders.",
+      "synonyms": ["средний чек", "aov", "avg order value"],
+      "entity_refs": ["metric:average_order_value"]
+    },
+    {
+      "name": "Units sold",
+      "description": "Number of sold items. Formula: SUM(quantity/qty/units).",
+      "synonyms": ["штуки", "количество", "units", "quantity"],
+      "entity_refs": ["metric:units_sold"]
+    },
+    {
+      "name": "Gross profit",
+      "description": "Revenue left after direct cost. Formula: revenue - cost or SUM(profit) when profit exists.",
+      "synonyms": ["валовая прибыль", "gross profit", "profit"],
+      "entity_refs": ["metric:gross_profit"]
+    },
+    {
+      "name": "Margin",
+      "description": "Profit share of revenue. Formula: gross_profit / revenue.",
+      "synonyms": ["маржа", "рентабельность", "margin", "profit margin"],
+      "entity_refs": ["metric:margin_pct"]
+    },
+    {
+      "name": "Cost",
+      "description": "Direct expense or cost of goods sold. Formula: SUM(cost/cogs).",
+      "synonyms": ["затраты", "себестоимость", "cost", "cogs"],
+      "entity_refs": ["metric:cost"]
+    },
+    {
+      "name": "Discount",
+      "description": "Discount amount or rate applied to a transaction. Formula: SUM(discount) or AVG(discount_rate).",
+      "synonyms": ["скидка", "discount", "promo"],
+      "entity_refs": ["metric:discount_amount"]
+    },
+    {
+      "name": "Conversion rate",
+      "description": "Share of visitors or leads that converted. Formula: conversions / visitors.",
+      "synonyms": ["конверсия", "conversion", "conversion rate", "cr"],
+      "entity_refs": ["metric:conversion_rate"]
+    }
+  ],
+  "metric_columns": {
+    "revenue": ["revenue", "amount", "sales", "total", "gmv", "value"],
+    "order_id": ["order_id", "orderid", "transaction_id", "transactionid", "deal_id", "invoice_id"],
+    "customer_id": ["customer_id", "userid", "user_id", "client_id", "buyer_id"],
+    "quantity": ["quantity", "qty", "units", "unit_count", "items"],
+    "profit": ["gross_profit", "profit", "margin_amount"],
+    "cost": ["cost", "cogs", "expense"],
+    "discount": ["discount", "discount_amount", "promo_amount"],
+    "conversion": ["conversions", "converted", "orders"],
+    "visitors": ["visitors", "sessions", "leads", "users"]
+  },
+  "metric_templates": [
+    {
+      "key": "orders",
+      "name": "Orders",
+      "kind": "count_rows",
+      "distinct_group": "order_id",
+      "synonyms": ["заказы", "сделки", "orders", "transactions"]
+    },
+    {
+      "key": "revenue",
+      "name": "Revenue",
+      "kind": "sum",
+      "column_group": "revenue",
+      "synonyms": ["выручка", "оборот", "продажи", "revenue", "sales"]
+    },
+    {
+      "key": "average_order_value",
+      "name": "Average order value",
+      "kind": "sum_per_count",
+      "numerator_group": "revenue",
+      "distinct_group": "order_id",
+      "synonyms": ["средний чек", "aov", "avg order value"]
+    },
+    {
+      "key": "customers",
+      "name": "Customers",
+      "kind": "count_distinct",
+      "column_group": "customer_id",
+      "synonyms": ["клиенты", "покупатели", "customers", "users"]
+    },
+    {
+      "key": "units_sold",
+      "name": "Units sold",
+      "kind": "sum",
+      "column_group": "quantity",
+      "synonyms": ["штуки", "количество", "units", "quantity"]
+    },
+    {
+      "key": "gross_profit",
+      "name": "Gross profit",
+      "kind": "sum",
+      "column_group": "profit",
+      "synonyms": ["валовая прибыль", "gross profit", "profit"]
+    },
+    {
+      "key": "cost",
+      "name": "Cost",
+      "kind": "sum",
+      "column_group": "cost",
+      "synonyms": ["затраты", "себестоимость", "cost", "cogs"]
+    },
+    {
+      "key": "margin_pct",
+      "name": "Margin",
+      "kind": "ratio_sum",
+      "numerator_group": "profit",
+      "denominator_group": "revenue",
+      "synonyms": ["маржа", "рентабельность", "margin", "profit margin"],
+      "format": "percent"
+    },
+    {
+      "key": "discount_amount",
+      "name": "Discount amount",
+      "kind": "sum",
+      "column_group": "discount",
+      "synonyms": ["скидка", "discount", "promo"]
+    },
+    {
+      "key": "average_discount",
+      "name": "Average discount",
+      "kind": "avg",
+      "column_group": "discount",
+      "synonyms": ["средняя скидка", "avg discount"]
+    }
+  ]
+}

@@ -97,38 +97,32 @@ export function ArchitectureDiagram() {
   return (
     <DiagramCard
       title="Схема компонентов"
-      subtitle="Frontend управляет пользовательским сценарием, backend берет на себя auth, session state и агентный контур, а LLM и инструменты формируют проверяемый результат."
+      subtitle="Фронтенд управляет пользовательским сценарием, сервисный слой FastAPI держит продуктовые гарантии, обобщённая среда LangGraph выполняет агентный цикл, слой расширений добавляет доменные возможности."
     >
       <div className="min-w-[1060px] space-y-6">
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <FlowPill icon={Sparkles} label="REST / SSE stream" />
-          <FlowPill icon={Database} label="Session-aware backend" />
-          <FlowPill icon={Wrench} label="Tool-driven artifacts" />
+          <FlowPill icon={Sparkles} label="REST / SSE-поток" />
+          <FlowPill icon={Database} label="QueryExecutionService" />
+          <FlowPill icon={Wrench} label="Типизированные инструменты + MCP" />
         </div>
 
-        <div className="grid grid-cols-[220px_40px_220px_40px_240px_44px_240px_44px_240px_44px_140px] items-center gap-y-5">
+        <div className="grid grid-cols-[170px_36px_190px_36px_220px_36px_220px_36px_210px_36px_180px] items-center gap-y-5">
           <Node title="Пользователь" subtitle="Браузер" />
           <LineArrow />
-          <Node title="Frontend" subtitle="React UI" accent="soft" />
+          <Node title="Фронтенд" subtitle="Пользовательский слой React" accent="soft" />
           <LineArrow />
-          <Node title="FastAPI" subtitle="Backend" accent="strong" />
+          <Node title="Маршруты FastAPI" subtitle="Тонкая граница API" />
           <LineArrow />
-
-          <div className="space-y-4">
-            <Node title="Auth БД" subtitle="SQLite" />
-            <Node title="Хранилище" subtitle="Сессий" />
-            <Node title="Reason-Action" subtitle="Agent" accent="soft" />
-          </div>
-
+          <Node title="QueryExecutionService" subtitle="Вход, источники, сохранение" accent="strong" />
+          <LineArrow />
+          <Node title="AgentRunner" subtitle="Среда LangGraph" accent="soft" />
           <LineArrow />
 
           <div className="space-y-4">
-            <Node title="Инструменты" subtitle="Pandas + Plotly" />
-            <Node title="LLM" subtitle="Ollama / vLLM" />
+            <Node title="Типизированные инструменты" subtitle="Pandas, Plotly, SQL, RAG" />
+            <Node title="Навыки / MCP" subtitle="Доменные расширения" />
+            <Node title="LLM-провайдер" subtitle="OpenAI-совместимый" />
           </div>
-
-          <LineArrow />
-          <Node title="Артефакты" subtitle="Вывод" accent="strong" />
         </div>
       </div>
     </DiagramCard>
@@ -138,37 +132,37 @@ export function ArchitectureDiagram() {
 export function AgentCycleDiagram() {
   return (
     <DiagramCard
-      title="Reason-Action цикл"
-      subtitle="Агент повторяет шаги до завершения задачи или достижения системных лимитов. Это дает прозрачность и контролируемую глубину анализа."
+      title="LangGraph/ReAct цикл"
+      subtitle="Граф остаётся маленьким и доменно-нейтральным: подготовка контекста, типизированный цикл инструментов и финальная оркестрация ответа."
     >
       <div className="min-w-[1020px] space-y-6">
         <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-          <FlowPill icon={Sparkles} label="Reasoning + streaming" />
-          <FlowPill icon={Wrench} label="Controlled tool loop" />
+          <FlowPill icon={Sparkles} label="prepare_context -> agent -> finalize" />
+          <FlowPill icon={Wrench} label="События выполнения + типизированные артефакты" />
         </div>
 
-        <div className="grid grid-cols-[180px_40px_180px_40px_210px_40px_210px_40px_170px] items-center">
+        <div className="grid grid-cols-[170px_40px_220px_40px_190px_40px_220px_40px_160px] items-center">
           <Node title="Запрос" subtitle="Пользователя" />
           <LineArrow />
-          <Node title="Plan" subtitle="Следующий шаг" accent="soft" />
+          <Node title="prepare_context" subtitle="источники, навыки, инструменты" accent="soft" />
           <LineArrow />
-          <Node title="LLM" subtitle="Рассуждение" accent="soft" />
+          <Node title="agent" subtitle="LLM-цикл инструментов" accent="soft" />
           <LineArrow />
-          <Node title="Act / Observe" subtitle="Инструмент и результат" />
+          <Node title="типизированные инструменты" subtitle="сообщения, события, артефакты" />
           <LineArrow />
-          <Node title="Finalize" subtitle="Ответ" accent="strong" />
+          <Node title="finalize" subtitle="Ответ" accent="strong" />
         </div>
 
         <div className="rounded-[24px] border border-blue-400/25 bg-background/50 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium text-foreground">
             <Check className="h-4 w-4 text-blue-400" />
-            Повтор цикла до результата
+            Граница среды выполнения
           </div>
           <div className="grid grid-cols-4 gap-4 text-sm text-muted-foreground">
-            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">План формирует следующий шаг анализа.</div>
-            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Модель определяет действие и интерпретирует контекст.</div>
-            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Инструменты возвращают данные в нормализованном контракте.</div>
-            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Финальный ответ сохраняется вместе с артефактами и метриками.</div>
+            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Построитель контекста собирает метаданные выполнения без ключевых обходных путей.</div>
+            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">LLM вызывает только разрешённые типизированные инструменты.</div>
+            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Инструменты возвращают нормализованные артефакты и события.</div>
+            <div className="rounded-2xl border border-border/40 bg-background/60 p-4">Финализация формирует ответ без доменных шаблонов в исполнителе.</div>
           </div>
         </div>
       </div>
@@ -179,13 +173,13 @@ export function AgentCycleDiagram() {
 export function SecurityDiagram() {
   return (
     <DiagramCard
-      title="Auth и ownership-check"
+      title="Вход и проверка владельца"
       subtitle="Каждый доступ к сессии проходит через валидацию токена и проверку владельца. Это изолирует пользовательские данные без сложного UI-слоя."
     >
       <div className="min-w-[1060px] space-y-6">
         <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <FlowPill icon={Shield} label="Bearer auth" />
-          <FlowPill icon={FolderKanban} label="Session ownership" />
+          <FlowPill icon={Shield} label="Вход по токену" />
+          <FlowPill icon={FolderKanban} label="Владение сессией" />
         </div>
 
         <div className="grid grid-cols-[170px_40px_170px_56px_180px_56px_220px_56px_180px] items-center">
@@ -211,13 +205,13 @@ export function SecurityDiagram() {
 
         <div className="grid grid-cols-4 gap-4 text-sm">
           <div className="rounded-2xl border border-border/40 bg-background/60 p-4 text-muted-foreground">
-            Валидный токен допускает запрос к backend-контроллеру.
+            Валидный токен допускает запрос к контроллеру бэкенда.
           </div>
           <div className="rounded-2xl border border-border/40 bg-background/60 p-4 text-muted-foreground">
             Невалидный токен сразу завершает сценарий с `401`.
           </div>
           <div className="rounded-2xl border border-border/40 bg-background/60 p-4 text-muted-foreground">
-            Для валидного пользователя выполняется ownership-check по сессии.
+            Для валидного пользователя выполняется проверка владельца сессии.
           </div>
           <div className="rounded-2xl border border-border/40 bg-background/60 p-4 text-muted-foreground">
             Только владелец получает доступ к чтению и записи данных.

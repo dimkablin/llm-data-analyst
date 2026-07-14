@@ -38,6 +38,11 @@ def artifact_type_label(artifact_type_val: Any) -> str:
     ).strip().lower()
 
 
+def is_tabular_artifact_type(artifact_type_val: Any) -> bool:
+    """True for table-like artifacts (dataframe, sql result, legacy table label)."""
+    return artifact_type_label(artifact_type_val) in ("table", "dataframe", "sql_result")
+
+
 @dataclass(frozen=False)
 class ExecArtifactSchema:
     """Lightweight schema descriptor for tabular artifacts."""

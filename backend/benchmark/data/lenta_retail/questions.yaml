@@ -1,0 +1,271 @@
+cases:
+- id: lenta_format_economics
+  question: 'Сравни форматы магазинов Ленты: где больше заказов и выручки, где выше скидки, логистика, списания, маржа и маржинальность. Покажи все форматы отдельно.'
+  must_include_numbers:
+  - 520
+  - 4720000
+  - 733000
+  - 15.53
+  - 410
+  - 2260000
+  - 416000
+  - 18.41
+  - 260
+  - 1640000
+  - -67000
+  - -4.09
+  - 180
+  - 690000
+  - 230000
+  - 33.33
+  expected_facts:
+  - 'Giper Lenta: 520 заказов, gross_sales 4 720 000, net_margin 733 000, margin_rate 15,53%.'
+  - 'Super Lenta: 410 заказов, gross_sales 2 260 000, net_margin 416 000, margin_rate 18,41%.'
+  - 'Lenta Online: 260 заказов, gross_sales 1 640 000, logistics_cost 408 000, net_margin -67 000, margin_rate -4,09%.'
+  - 'Ulybka Radugi: 180 заказов, gross_sales 690 000, net_margin 230 000, margin_rate 33,33%.'
+  expected_insights:
+  - Giper Lenta дает максимальный оборот и максимальную абсолютную net_margin.
+  - Lenta Online убыточна из-за высокой логистики и скидок.
+  - Ulybka Radugi меньше по обороту, но имеет самую высокую маржинальность.
+- id: lenta_online_delivery_problem
+  question: 'Разбери онлайн-каналы Ленты: доставка и самовывоз. Сравни выручку, скидки, логистику, маржу и опоздания. Отдельно проверь экспресс-промо EXPRESS60 и самовывоз PICKUP5.'
+  must_include_numbers:
+  - 210
+  - 1360000
+  - 388000
+  - -92000
+  - 58
+  - 50
+  - 280000
+  - 20000
+  - 25000
+  - 0
+  - 95
+  - 720000
+  - 151000
+  - 218000
+  - -118000
+  - 37
+  expected_facts:
+  - 'online_delivery: 210 заказов, gross_sales 1 360 000, discount_amount 196 000, logistics_cost 388 000, net_margin -92 000, late_count 58.'
+  - 'online_pickup: 50 заказов, gross_sales 280 000, logistics_cost 20 000, net_margin 25 000, late_count 0.'
+  - 'EXPRESS60: 95 заказов, gross_sales 720 000, discount_amount 151 000, logistics_cost 218 000, net_margin -118 000, late_count 37.'
+  - 'online_delivery без промо none: 115 заказов, net_margin 26 000.'
+  expected_insights:
+  - Главная проблема онлайн-канала - доставка, а не самовывоз.
+  - EXPRESS60 разгоняет оборот, но создает убыток из-за скидок и логистики.
+  - Без EXPRESS60 online_delivery уже положителен по net_margin, значит причина именно в экспресс-промо.
+- id: lenta_shrinkage_stockouts
+  question: Какие товарные категории создают больше всего списаний и дефицита? Сравни их по заказам, списаниям, дефициту, жалобам и марже.
+  must_include_numbers:
+  - 330
+  - 94000
+  - 60
+  - 153000
+  - 170
+  - 31000
+  - 35
+  - -19000
+  - 275
+  - 17000
+  - 10
+  - 359000
+  - 390
+  - 37000
+  - 21
+  - 266000
+  expected_facts:
+  - 'fresh_fruit_veg: 330 заказов, shrinkage_loss 94 000, stockout_count 60, net_margin 153 000.'
+  - 'ready_food: 170 заказов, shrinkage_loss 31 000, stockout_count 35, complaint_count 35, net_margin -19 000.'
+  - 'household: 275 заказов, shrinkage_loss 17 000, stockout_count 10, net_margin 359 000.'
+  - 'dry_grocery: 390 заказов, shrinkage_loss 37 000, stockout_count 21, net_margin 266 000.'
+  expected_insights:
+  - fresh_fruit_veg - главный источник списаний по абсолютному shrinkage_loss.
+  - 'ready_food особенно проблемна: отрицательная net_margin и много complaints/stockouts.'
+  - 'household выглядит операционно устойчивой категорией: низкие списания и высокая маржа.'
+- id: lenta_promo_effectiveness
+  question: 'Оцени промо-механики Ленты: как они влияют на заказы, выручку, скидки, логистику, списания и маржу. Какие промо работают, а какие убыточны?'
+  must_include_numbers:
+  - 95
+  - 720000
+  - 151000
+  - 218000
+  - -118000
+  - 585
+  - 3720000
+  - 335000
+  - 597000
+  - 110
+  - 470000
+  - 56000
+  - 705
+  - 3210000
+  - 670000
+  expected_facts:
+  - 'EXPRESS60: 95 заказов, gross_sales 720 000, discount_amount 151 000, logistics_cost 218 000, net_margin -118 000.'
+  - 'club_price: 585 заказов, gross_sales 3 720 000, discount_amount 335 000, net_margin 597 000.'
+  - 'markdown_evening: 110 заказов, gross_sales 470 000, shrinkage_loss 21 000, net_margin 56 000.'
+  - 'none: 705 заказов, gross_sales 3 210 000, net_margin 670 000.'
+  expected_insights:
+  - EXPRESS60 - убыточная промо-механика.
+  - club_price дает большой оборот и положительную net_margin.
+  - markdown_evening положителен, но связан с ready_food и остается операционно рискованным.
+- id: lenta_region_format_priorities
+  question: Где Ленте стоит расти в первую очередь? Сравни города и форматы по заказам, выручке, марже и маржинальности. Дай приоритеты для роста прибыли.
+  must_include_numbers:
+  - 560
+  - 3760000
+  - 494000
+  - 425
+  - 2730000
+  - 344000
+  - 220
+  - 1590000
+  - 310000
+  - 360
+  - 780000
+  - 161000
+  - 260
+  - 1640000
+  - -67000
+  expected_facts:
+  - 'moscow: 560 заказов, gross_sales 3 760 000, net_margin 494 000.'
+  - 'spb: 425 заказов, gross_sales 2 730 000, net_margin 344 000.'
+  - 'kazan: 220 заказов, gross_sales 1 590 000, net_margin 310 000.'
+  - 'Monetka: 360 заказов, gross_sales 780 000, net_margin 161 000.'
+  - 'Lenta Online: 260 заказов, gross_sales 1 640 000, net_margin -67 000.'
+  expected_insights:
+  - Москва дает крупнейший оборот и прибыль, но часть эффекта съедает Lenta Online.
+  - Kazan имеет хорошую маржинальность при меньшем обороте.
+  - Для роста прибыли важно исправить Lenta Online и масштабировать прибыльные офлайн-форматы.
+- id: lenta_private_label
+  question: 'Сравни товары собственной марки с остальным ассортиментом: заказы, выручка, скидки, логистика, списания, маржа и маржинальность. Выгоднее ли собственная марка?'
+  must_include_numbers:
+  - 725
+  - 3510000
+  - 320000
+  - 217000
+  - 71000
+  - 538000
+  - 15.33
+  - 1005
+  - 6580000
+  - 587000
+  - 418000
+  - 189000
+  - 935000
+  - 14.21
+  expected_facts:
+  - 'private_label=1: 725 заказов, gross_sales 3 510 000, discount_amount 320 000, logistics_cost 217 000, shrinkage_loss 71 000, net_margin 538 000, margin_rate 15,33%.'
+  - 'private_label=0: 1005 заказов, gross_sales 6 580 000, discount_amount 587 000, logistics_cost 418 000, shrinkage_loss 189 000, net_margin 935 000, margin_rate 14,21%.'
+  expected_insights:
+  - Private label меньше по обороту и абсолютной марже.
+  - Private label немного лучше по margin_rate.
+  - Собственная марка выглядит эффективной по относительной маржинальности, но не заменяет масштаб branded/non-private товаров.
+- id: lenta_format_city_hotspots
+  question: Найди лучшие и худшие сочетания формата магазина и города по марже и маржинальности. Отдельно проверь, что происходит с Lenta Online в Москве и Санкт-Петербурге.
+  must_include_numbers:
+  - 155
+  - 1670000
+  - 281000
+  - 230
+  - 1740000
+  - 236000
+  - 185
+  - 930000
+  - 177000
+  - 35
+  - 300000
+  - -43000
+  - 160
+  - 950000
+  - -36000
+  expected_facts:
+  - 'Giper Lenta + moscow: 155 заказов, gross_sales 1 670 000, net_margin 281 000.'
+  - 'Giper Lenta + spb: 230 заказов, gross_sales 1 740 000, net_margin 236 000.'
+  - 'Super Lenta + moscow: 185 заказов, gross_sales 930 000, net_margin 177 000.'
+  - 'Lenta Online + spb: 35 заказов, gross_sales 300 000, net_margin -43 000.'
+  - 'Lenta Online + moscow: 160 заказов, gross_sales 950 000, net_margin -36 000.'
+  expected_insights:
+  - Лучшие пары по абсолютной марже - офлайн-форматы в Москве и Санкт-Петербурге.
+  - Худшие пары - Lenta Online в spb и moscow.
+  - Проблема онлайн-доставки видна не только в одном городе.
+- id: lenta_complaints_returns
+  question: 'Проанализируй качество сервиса: в каких товарных категориях и каналах больше жалоб и возвратов? Сравни их доли и маржу.'
+  must_include_numbers:
+  - 170
+  - 35
+  - 8
+  - -19000
+  - 330
+  - 31
+  - 5
+  - 153000
+  - 210
+  - 43
+  - 9
+  - -92000
+  - 1470
+  - 68
+  - 14
+  - 1540000
+  expected_facts:
+  - 'ready_food: 170 заказов, complaint_count 35, return_count 8, net_margin -19 000.'
+  - 'fresh_fruit_veg: 330 заказов, complaint_count 31, return_count 5, net_margin 153 000.'
+  - 'online_delivery: 210 заказов, complaint_count 43, return_count 9, net_margin -92 000.'
+  - 'offline_store: 1470 заказов, complaint_count 68, return_count 14, net_margin 1 540 000.'
+  expected_insights:
+  - ready_food и online_delivery имеют худший профиль качества.
+  - Высокие complaints совпадают с отрицательной net_margin у ready_food/online_delivery.
+  - Офлайн-канал масштабный и прибыльный, несмотря на абсолютное число жалоб.
+- id: lenta_online_delivery_sla
+  question: 'Оцени SLA онлайн-заказов: сколько опозданий, сколько заказов вовремя, какое среднее время доставки, выручка, логистика и маржа. Отдельно сравни EXPRESS60 с обычной доставкой без промо и с самовывозом.'
+  must_include_numbers:
+  - 95
+  - 37
+  - 56.02
+  - -118000
+  - 115
+  - 21
+  - 48.57
+  - 26000
+  - 50
+  - 0
+  - 25.0
+  - 25000
+  expected_facts:
+  - 'online_delivery + EXPRESS60: 95 заказов, late_count 37, avg_delivery_minutes 56,02, net_margin -118 000.'
+  - 'online_delivery + none: 115 заказов, late_count 21, avg_delivery_minutes 48,57, net_margin 26 000.'
+  - 'online_pickup + PICKUP5: 50 заказов, late_count 0, avg_delivery_minutes 25,00, net_margin 25 000.'
+  expected_insights:
+  - EXPRESS60 хуже по SLA и по net_margin.
+  - Самовывоз стабилен по SLA и положителен по марже.
+  - Проблема доставки связана не только с логистикой, но и с экспресс-промо.
+- id: lenta_category_margin_leaders
+  question: Какие товарные категории лидируют и какие проседают по абсолютной марже и маржинальности? Не смешивай выручку, маржу и процент маржи.
+  must_include_numbers:
+  - 275
+  - 1540000
+  - 359000
+  - 23.31
+  - 305
+  - 1510000
+  - 276000
+  - 18.28
+  - 390
+  - 2110000
+  - 266000
+  - 12.61
+  - 170
+  - 890000
+  - -19000
+  - -2.13
+  expected_facts:
+  - 'household: 275 заказов, gross_sales 1 540 000, net_margin 359 000, margin_rate 23,31%.'
+  - 'dairy: 305 заказов, gross_sales 1 510 000, net_margin 276 000, margin_rate 18,28%.'
+  - 'dry_grocery: 390 заказов, gross_sales 2 110 000, net_margin 266 000, margin_rate 12,61%.'
+  - 'ready_food: 170 заказов, gross_sales 890 000, net_margin -19 000, margin_rate -2,13%.'
+  expected_insights:
+  - household лидер по абсолютной net_margin.
+  - dry_grocery лидер по обороту среди перечисленных, но не по margin_rate.
+  - ready_food - явный аутсайдер с отрицательной маржей.

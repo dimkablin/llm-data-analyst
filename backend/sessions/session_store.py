@@ -7,14 +7,19 @@ import tempfile
 import threading
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from backend.data_access.semantic_models import SemanticCatalog
+    from backend.sessions.session_memory import StructuredSessionMemory
 
 import pandas as pd
 
 from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
+from backend.data_access.data_catalog import DataCatalogSnapshot, snapshot_from_json, snapshot_to_json
 
 _DF_CACHE_MAX_SIZE = 20
 
@@ -38,6 +43,12 @@ class SessionState:
     csv_table_names: list[str] | None = None
     csv_expires_at: int | None = None
     session_memory: str = ""
+    artifact_index_json: str = ""
+    key_findings: list[str] = field(default_factory=list)
+    session_turn_count: int = 0
+    context_summary: str = ""
+    compacted_message_count: int = 0
+    context_usage: dict[str, Any] | None = None
 
 
 class SessionStore:
@@ -65,6 +76,12 @@ class SessionStore:
     def _data_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "data.parquet"
 
+    def _catalog_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "data_catalog.json"
+
+    def _semantic_catalog_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "semantic_catalog.json"
+
     def _now_iso(self) -> str:
         return datetime.now(UTC).isoformat()
 
@@ -77,7 +94,7 @@ class SessionStore:
             if not state_path.exists():
                 continue
             try:
-                state = json.loads(state_path.read_text())
+                state = json.loads(state_path.read_text(encoding="utf-8"))
                 last_access = datetime.fromisoformat(state.get("last_access"))
                 if last_access.tzinfo is None:
                     last_access = last_access.replace(tzinfo=UTC)
@@ -109,6 +126,7 @@ class SessionStore:
             csv_table_names=[],
             csv_expires_at=None,
             session_memory="",
+            context_usage=None,
         )
         self._save_state(state)
         return state
@@ -118,7 +136,7 @@ class SessionStore:
         state_path = self._state_path(session_id)
         if not state_path.exists():
             return None
-        raw = json.loads(state_path.read_text())
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
         return SessionState(
             session_id=raw["session_id"],
             created_at=raw["created_at"],
@@ -137,6 +155,12 @@ class SessionStore:
             csv_table_names=list(raw.get("csv_table_names") or []),
             csv_expires_at=raw.get("csv_expires_at"),
             session_memory=str(raw.get("session_memory", "")),
+            artifact_index_json=str(raw.get("artifact_index_json", "")),
+            key_findings=list(raw.get("key_findings", []) or []),
+            session_turn_count=int(raw.get("session_turn_count", 0) or 0),
+            context_summary=str(raw.get("context_summary", "")),
+            compacted_message_count=max(0, int(raw.get("compacted_message_count", 0) or 0)),
+            context_usage=raw.get("context_usage") if isinstance(raw.get("context_usage"), dict) else None,
         )
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -167,6 +191,12 @@ class SessionStore:
             "csv_table_names": list(state.csv_table_names or []),
             "csv_expires_at": state.csv_expires_at,
             "session_memory": state.session_memory or "",
+            "artifact_index_json": state.artifact_index_json or "",
+            "key_findings": list(state.key_findings or []),
+            "session_turn_count": int(state.session_turn_count or 0),
+            "context_summary": state.context_summary or "",
+            "compacted_message_count": max(0, int(state.compacted_message_count or 0)),
+            "context_usage": state.context_usage,
         }
         # Atomic write: flush to a temp file in the same directory, then rename.
         # This prevents a truncated/empty state file if the process is interrupted
@@ -185,6 +215,44 @@ class SessionStore:
                 pass
             raise
 
+    def save_data_catalog(self, session_id: str, snapshot: DataCatalogSnapshot) -> None:
+        path = self._catalog_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(snapshot_to_json(snapshot), encoding="utf-8")
+
+    def load_data_catalog(self, session_id: str) -> DataCatalogSnapshot | None:
+        path = self._catalog_path(session_id)
+        if not path.exists():
+            return None
+        try:
+            return snapshot_from_json(path.read_text(encoding="utf-8"))
+        except OSError:
+            return None
+
+    def save_semantic_catalog(self, session_id: str, catalog: SemanticCatalog) -> None:
+        from backend.data_access.semantic_catalog_service import catalog_to_json
+
+        path = self._semantic_catalog_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(catalog_to_json(catalog), encoding="utf-8")
+
+    def load_semantic_catalog(self, session_id: str) -> SemanticCatalog | None:
+        from backend.data_access.semantic_catalog_service import catalog_from_json
+
+        path = self._semantic_catalog_path(session_id)
+        if not path.exists():
+            return None
+        try:
+            return catalog_from_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+
+    def clear_semantic_catalog(self, session_id: str) -> None:
+        try:
+            self._semantic_catalog_path(session_id).unlink()
+        except FileNotFoundError:
+            pass
+
     def save_dataframe(self, session_id: str, df: pd.DataFrame) -> None:
         data_path = self._data_path(session_id)
         df.to_parquet(data_path, engine="pyarrow")
@@ -194,6 +262,22 @@ class SessionStore:
             if state is None:
                 return
             state.df_path = str(data_path)
+            self._save_state(state)
+
+    def clear_dataframe(self, session_id: str) -> None:
+        data_path = self._data_path(session_id)
+        try:
+            data_path.unlink()
+        except FileNotFoundError:
+            pass
+        self._df_cache.pop(session_id, None)
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.df_path = None
+            state.dataset_name = None
+            state.last_access = self._now_iso()
             self._save_state(state)
 
     def set_dataset_name(self, session_id: str, dataset_name: str | None) -> None:
@@ -247,13 +331,15 @@ class SessionStore:
         session_id: str,
         *,
         filename: str | None,
+        source_ref_id: str | None = None,
         source_mode: str | None = None,
     ) -> None:
         clean_name = str(filename or "").strip() or None
+        clean_ref_id = str(source_ref_id or "").strip() or clean_name
         self.set_source(
             session_id,
             source_type="csv",
-            source_ref_id=clean_name,
+            source_ref_id=clean_ref_id,
             source_label=clean_name,
             source_mode=source_mode,
         )
@@ -274,6 +360,15 @@ class SessionStore:
             if state is None:
                 return
             state.selected_skill_ids = deduped
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
+    def set_context_usage(self, session_id: str, snapshot: dict[str, Any] | None) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.context_usage = dict(snapshot) if isinstance(snapshot, dict) else None
             state.last_access = self._now_iso()
             self._save_state(state)
 
@@ -342,6 +437,34 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
+    def add_serialized_artifacts(
+        self,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> None:
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            existing_ids = {
+                str(item.get("id"))
+                for item in state.artifacts
+                if isinstance(item, dict) and item.get("id")
+            }
+            for artifact in artifacts:
+                artifact_id = str(artifact.get("id") or "").strip()
+                if artifact_id and artifact_id in existing_ids:
+                    state.artifacts = [
+                        artifact if str(item.get("id") or "") == artifact_id else item
+                        for item in state.artifacts
+                    ]
+                else:
+                    state.artifacts.append(artifact)
+                    if artifact_id:
+                        existing_ids.add(artifact_id)
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
 
     def set_csv_runtime_state(
         self,
@@ -382,6 +505,66 @@ class SessionStore:
             state.last_access = self._now_iso()
             self._save_state(state)
 
+    def get_structured_memory(self, session_id: str) -> StructuredSessionMemory:
+        """Load StructuredSessionMemory from session state. Returns empty if session not found."""
+        import json as _json
+
+        from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
+        state = self._load_state(session_id)
+        if state is None:
+            return StructuredSessionMemory()
+
+        artifact_index: list[SessionArtifactRef] = []
+        if state.artifact_index_json:
+            try:
+                raw_list = _json.loads(state.artifact_index_json)
+                for item in raw_list:
+                    if isinstance(item, dict):
+                        try:
+                            artifact_index.append(SessionArtifactRef(**item))
+                        except Exception:
+                            pass  # skip malformed entries
+            except Exception:
+                pass  # malformed JSON — start fresh
+
+        return StructuredSessionMemory(
+            notes=state.session_memory or "",
+            artifact_index=artifact_index,
+            key_findings=list(state.key_findings or []),
+            turn_count=int(state.session_turn_count or 0),
+            context_summary=state.context_summary or "",
+            compacted_message_count=max(0, int(state.compacted_message_count or 0)),
+        )
+
+    def set_structured_memory(self, session_id: str, memory: StructuredSessionMemory) -> None:
+        """Persist StructuredSessionMemory to session state."""
+        import json as _json
+        with self._get_session_lock(session_id):
+            state = self._load_state(session_id)
+            if state is None:
+                return
+            state.session_memory = memory.notes.strip()
+            # Serialize artifact_index to JSON
+            refs_as_dicts = [
+                {
+                    "id": ref.id,
+                    "name": ref.name,
+                    "type": ref.type,
+                    "turn_index": ref.turn_index,
+                    "schema": ref.schema,
+                    "row_count": ref.row_count,
+                    "summary": ref.summary,
+                }
+                for ref in memory.artifact_index
+            ]
+            state.artifact_index_json = _json.dumps(refs_as_dicts, ensure_ascii=False)
+            state.key_findings = list(memory.key_findings)
+            state.session_turn_count = int(memory.turn_count)
+            state.context_summary = memory.context_summary.strip()
+            state.compacted_message_count = max(0, int(memory.compacted_message_count or 0))
+            state.last_access = self._now_iso()
+            self._save_state(state)
+
     def clear_csv_runtime_state(self, session_id: str) -> None:
         self.set_csv_runtime_state(
             session_id,
@@ -409,7 +592,11 @@ class SessionStore:
             if cut_index is None:
                 return 0
             removed = len(history) - cut_index
+            compacted_count = max(0, int(state.compacted_message_count or 0))
             state.chat_history = history[:cut_index]
+            if cut_index < compacted_count:
+                state.context_summary = ""
+                state.compacted_message_count = 0
             state.last_access = self._now_iso()
             self._save_state(state)
             return removed
@@ -418,5 +605,3 @@ class SessionStore:
         session_dir = self._session_dir(session_id)
         shutil.rmtree(session_dir, ignore_errors=True)
         self._df_cache.pop(session_id, None)
-
-

@@ -43,7 +43,3 @@ class UserMemoryUpdateRequestTests(unittest.TestCase):
         req = UserMemoryUpdateRequest(profile="p", notes="n")
         self.assertEqual(req.profile, "p")
         self.assertEqual(req.notes, "n")
-
-
-if __name__ == "__main__":
-    unittest.main()

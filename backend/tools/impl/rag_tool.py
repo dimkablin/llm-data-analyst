@@ -10,35 +10,27 @@ is generated or run, just an HTTP call to the RAG service.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import anyio
 from langchain_core.tools import BaseTool
+from pydantic import BaseModel, Field
 
 from backend.integrations.rag import RAGService
+from backend.tools.instructions import tool_description
 
-_DESCRIPTION = """\
-Search the internal knowledge base for documented information: processes,
-policies, domain knowledge, product descriptions, or any topic covered
-by the organisation's documentation.
 
-Use this tool when the user asks a question that requires factual
-information from documentation rather than computation over data.
-
-Input: a clear search query in natural language.
-Output: an answer from the knowledge base, optionally with source links.
-
-Examples:
-  rag_tool("How does the monthly billing reconciliation work?")
-  rag_tool("What are the SLA requirements for priority incidents?")
-"""
+class _RagInput(BaseModel):
+    query: str = Field(description="Поисковый запрос на естественном языке для поиска в базе знаний.")
 
 
 class RagTool(BaseTool):
     """Query an external RAG service and return the knowledge-base answer."""
 
     name: str = "rag_tool"
-    description: str = _DESCRIPTION
+    description: str = tool_description("rag_tool")
+    args_schema: type[BaseModel] = _RagInput
+    parallel_safe: ClassVar[bool] = True
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -61,6 +53,10 @@ class RagTool(BaseTool):
         if not answer:
             return "The knowledge base returned no context for this query."
 
+        references = [str(item).strip() for item in result.references if str(item).strip()]
+        if references:
+            sources = "\n".join(f"- {reference}" for reference in references)
+            return f"{answer}\n\nSources:\n{sources}"
         return answer
 
     async def _arun(self, query: str, *args: Any, **_kwargs: Any) -> str:

@@ -20,6 +20,8 @@ from backend.artifacts.execution import (
     ExecArtifactType,
     ExecutionArtifact,
 )
+from backend.core.json_utils import make_json_safe
+from backend.data_access.dataframe_utils import numeric_summary_rows
 
 
 class PresentationType(StrEnum):
@@ -105,7 +107,11 @@ def _serialize_table_data(artifact: ExecutionArtifact) -> dict[str, Any]:
     if not isinstance(df, pd.DataFrame):
         return {"format": "text", "data": str(df)}
     try:
-        return {"format": "split", "data": df.to_dict(orient="split")}
+        payload = {"format": "split", "data": make_json_safe(df.to_dict(orient="split"))}
+        summary_rows = numeric_summary_rows(df)
+        if summary_rows:
+            payload["summary_rows"] = make_json_safe(summary_rows)
+        return payload
     except Exception:
         return {"format": "text", "data": str(df)}
 
@@ -127,17 +133,18 @@ def _serialize_chart_data(artifact: ExecutionArtifact) -> dict[str, Any]:
 def _serialize_value_data(artifact: ExecutionArtifact) -> dict[str, Any]:
     data = artifact.data
     if isinstance(data, dict):
-        return {"format": "value", "data": data}
-    return {"format": "value", "data": {"value": data}}
+        return {"format": "value", "data": make_json_safe(data)}
+    return {"format": "value", "data": make_json_safe({"value": data})}
 
 
 def _serialize_json_data(artifact: ExecutionArtifact) -> dict[str, Any]:
     import json as _json
     data = artifact.data
     if isinstance(data, dict):
+        safe = make_json_safe(data)
         try:
-            _json.dumps(data, default=str)  # validate serialisability
-            return {"format": "json", "data": data}
+            _json.dumps(safe, default=str)  # validate serialisability
+            return {"format": "json", "data": safe}
         except Exception:
             pass
     return {"format": "json", "data": {"value": str(data)}}

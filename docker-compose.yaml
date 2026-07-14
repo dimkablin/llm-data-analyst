@@ -1,45 +1,45 @@
 services:
 
   # ─── SearXNG metasearch engine ──────────────────────────────────────────────
-  searxng:
-    image: searxng/searxng:latest
-    container_name: searxng
-    volumes:
-      - ./.search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      - SEARXNG_BASE_URL=http://searxng:8080
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    restart: unless-stopped
+  # searxng:
+  #   image: searxng/searxng:latest
+  #   container_name: searxng
+  #   volumes:
+  #     - ./.search_service/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
+  #   environment:
+  #     - SEARXNG_BASE_URL=http://searxng:8080
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 15s
+  #   restart: unless-stopped
 
   # ─── Search Service (SearXNG bridge) ────────────────────────────────────────
-  search_service:
-    image: llm-data-analyst-search:latest
-    build:
-      context: ./.search_service
-      dockerfile: Dockerfile
-    environment:
-      - SEARXNG_API_URL=http://searxng:8080
-      - SEARXNG_MIN_SCORE=${SEARXNG_MIN_SCORE:-0.0}
-      - SEARCH_TIMEOUT_SEC=${SEARCH_TIMEOUT_SEC:-20.0}
-      - FETCH_TIMEOUT_SEC=${FETCH_TIMEOUT_SEC:-15.0}
-      - SEARCH_FETCH_MAX_CHARS=${SEARCH_FETCH_MAX_CHARS:-10000}
-    ports:
-      - "${SEARCH_SERVICE_PORT:-8610}:8000"
-    depends_on:
-      searxng:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    restart: unless-stopped
+  # search_service:
+  #   image: llm-data-analyst-search:latest
+  #   build:
+  #     context: ./.search_service
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     - SEARXNG_API_URL=http://searxng:8080
+  #     - SEARXNG_MIN_SCORE=${SEARXNG_MIN_SCORE:-0.0}
+  #     - SEARCH_TIMEOUT_SEC=${SEARCH_TIMEOUT_SEC:-20.0}
+  #     - FETCH_TIMEOUT_SEC=${FETCH_TIMEOUT_SEC:-15.0}
+  #     - SEARCH_FETCH_MAX_CHARS=${SEARCH_FETCH_MAX_CHARS:-10000}
+  #   ports:
+  #     - "${SEARCH_SERVICE_PORT:-9610}:8000"
+  #   depends_on:
+  #     searxng:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 20s
+  #   restart: unless-stopped
 
   # ─── Postgres (test / examples datasets) ───────────────────────────────────
   # Loads examples/*/dataset.csv into schema `examples` on first data volume init.
@@ -57,7 +57,7 @@ services:
     volumes:
       - postgres_examples_data:/var/lib/postgresql/data
       - ./examples:/examples:ro
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./backend/docker/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_EXAMPLES_USER:-analyst} -d ${POSTGRES_EXAMPLES_DB:-examples}"]
       interval: 10s
@@ -67,6 +67,31 @@ services:
     restart: unless-stopped
 
   # ─── Backend ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.4-alpine
+    container_name: llm-analyst-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.4
+    container_name: llm-analyst-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
   backend:
     image: llm-data-analyst-backend:latest
     build:
@@ -78,13 +103,16 @@ services:
         MIRROR_PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL}
         MIRROR_PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST}
     ports:
-      - "${BACKEND_PORT:-8605}:8000"
+      - "${BACKEND_PORT:-9605}:8000"
     volumes:
       - ./backend_storage:/app/backend_storage
     env_file:
       - .env
     environment:
       # Search: env_file may omit SEARCH_*; defaults target search_service in this compose file
+      - SSL_CERT_FILE=
+      - REQUESTS_CA_BUNDLE=
+      - CURL_CA_BUNDLE=
       - SEARCH_ENABLED=${SEARCH_ENABLED:-true}
       - SEARCH_BACKEND_URL=${SEARCH_BACKEND_URL:-http://search_service:8000}
       - SEARCH_ENDPOINT=${SEARCH_ENDPOINT:-/api/v1/search/}
@@ -100,7 +128,21 @@ services:
       - AUTH_DB_PATH=${AUTH_DB_PATH_DOCKER:-/app/backend_storage/app.db}
       - AUTH_TOKEN_TTL_DAYS=${AUTH_TOKEN_TTL_DAYS:-30}
       - AUTH_DEFAULT_ADMIN_USERNAME=${AUTH_DEFAULT_ADMIN_USERNAME:-admin}
-      - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-admin}
+      - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-tdapadmin}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - SEMANTIC_LAYER_ENABLED=${SEMANTIC_LAYER_ENABLED:-true}
+      - SEMANTIC_PROFILE_MAX_TABLES=${SEMANTIC_PROFILE_MAX_TABLES:-100}
+      - SEMANTIC_PROFILE_MAX_COLUMNS_PER_TABLE=${SEMANTIC_PROFILE_MAX_COLUMNS_PER_TABLE:-200}
+      - SEMANTIC_PROFILE_SAMPLE_ROWS=${SEMANTIC_PROFILE_SAMPLE_ROWS:-1000}
+      - SEMANTIC_PROFILE_TOP_VALUES=${SEMANTIC_PROFILE_TOP_VALUES:-20}
+      - SEMANTIC_PROFILE_TIMEOUT_SEC=${SEMANTIC_PROFILE_TIMEOUT_SEC:-60}
+      - SEMANTIC_CATALOG_STORE=${SEMANTIC_CATALOG_STORE:-postgres}
+      - SEMANTIC_CATALOG_POSTGRES_DSN=${SEMANTIC_CATALOG_POSTGRES_DSN:-postgresql://analyst:analyst@postgres_examples:5432/examples}
+      - SEMANTIC_VECTOR_ENABLED=${SEMANTIC_VECTOR_ENABLED:-true}
+      - SEMANTIC_QDRANT_URL=${SEMANTIC_QDRANT_URL:-http://qdrant:6333}
+      - SEMANTIC_QDRANT_API_KEY=${SEMANTIC_QDRANT_API_KEY:-}
+      - SEMANTIC_QDRANT_COLLECTION=${SEMANTIC_QDRANT_COLLECTION:-semantic_catalog_chunks}
+      - SEMANTIC_EMBEDDING_PROVIDER=${SEMANTIC_EMBEDDING_PROVIDER:-local}
       - PHOENIX_ENABLED=${PHOENIX_ENABLED:-true}
       - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-llm-data-analyst}
       # Backend шлёт трейсы в Phoenix по внутренней сети; в контейнере Phoenix всегда порт 6006 (не PHOENIX_UI_PORT с хоста)
@@ -115,10 +157,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      redis:
+        condition: service_healthy
+      postgres_examples:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
       phoenix:
         condition: service_healthy
-      search_service:
-        condition: service_healthy
+      #search_service:
+      #  condition: service_healthy
     restart: unless-stopped
 
   frontend:
@@ -135,7 +183,7 @@ services:
       - PHOENIX_URL=${PHOENIX_URL:-http://phoenix:6006}
       - APP_BASE_PATH=${APP_BASE_PATH:-/}
     ports:
-      - "${FRONTEND_PORT:-8603}:8603"
+      - "${FRONTEND_PORT:-9603}:8603"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8603/"]
       interval: 30s
@@ -152,8 +200,8 @@ services:
   phoenix:
     image: arizephoenix/phoenix:version-10.13.2
     ports:
-      - "${PHOENIX_UI_PORT:-6006}:6006"
-      - "${PHOENIX_GRPC_PORT:-4317}:4317"
+      - "${PHOENIX_UI_PORT:-9607}:6006"
+      - "${PHOENIX_GRPC_PORT:-9608}:4317"
     environment:
       - PHOENIX_WORKING_DIR=${PHOENIX_WORKING_DIR:-/mnt/data}
       - PHOENIX_HOST_ROOT_PATH=${PHOENIX_HOST_ROOT_PATH:-/phoenix}
@@ -170,3 +218,5 @@ services:
 volumes:
   phoenix_data:
   postgres_examples_data:
+  qdrant_data:
+  redis_data:

@@ -20,20 +20,23 @@ from backend.tools.catalog import ALL_TOOL_SPECS, ToolCatalogSpec
 from backend.tools.impl.factory import (
     AnomalyPlanfactToolFactory,
     DatabaseToolFactory,
+    DataCatalogToolFactory,
     ForecastToolFactory,
+    GenerateReportToolFactory,
+    GenerateSummaryToolFactory,
     GetToolInstructionsToolFactory,
     MemoryToolFactory,
     PandasToolFactory,
     PlannerToolFactory,
     PlotlyToolFactory,
     RagToolFactory,
-    ReviewToolFactory,
     SearchToolFactory,
     SessionNoteToolFactory,
     SQLToolFactory,
     ToolFactory,
-    ValueToolFactory,
 )
+from backend.tools.impl.mcp_tool import MCPToolFactory
+from backend.tools.instructions import get_default_tool_instruction_registry
 
 if TYPE_CHECKING:
     from backend.integrations import (
@@ -42,13 +45,10 @@ if TYPE_CHECKING:
         SearchIntegrationService,
     )
     from backend.integrations.rag import RAGService
+    from backend.mcp.models import MCPServerConfig, MCPToolDescriptor
+    from backend.mcp.service import MCPToolProvider
     from backend.skills.registry import SkillRegistry
     from backend.tools.context import ToolBuildContext
-
-# Pre-build a lookup from tool_key → short Russian description for planner prompts.
-_TOOL_DESCRIPTIONS_RU: dict[str, str] = {
-    spec.tool_key: spec.description_ru for spec in ALL_TOOL_SPECS
-}
 
 _TOOL_SPECS_BY_KEY: dict[str, ToolCatalogSpec] = {
     spec.tool_key: spec for spec in ALL_TOOL_SPECS
@@ -76,11 +76,21 @@ class ToolRegistry:
     def describe_available_tools(self, ctx: ToolBuildContext) -> str:
         """Return a compact multi-line block describing each available tool for the planner."""
         lines: list[str] = []
+        instruction_registry = get_default_tool_instruction_registry()
         for factory in self._factories.values():
             if not factory.is_available(ctx):
                 continue
-            desc = _TOOL_DESCRIPTIONS_RU.get(factory.key, "")
             spec = _TOOL_SPECS_BY_KEY.get(factory.key)
+            document = instruction_registry.get_optional(factory.key)
+            desc = (
+                document.metadata.description
+                if document is not None
+                else (
+                    spec.description
+                    if spec is not None
+                    else str(getattr(factory, "description", "") or "")
+                )
+            )
             if spec:
                 caps = ", ".join(spec.capabilities)
                 lines.append(f"- `{factory.key}`: {desc} [{caps}]")
@@ -103,6 +113,9 @@ class ToolRegistry:
         memory_note_callback: Callable[[str], None] | None = None,
         session_note_callback: Callable[[str], None] | None = None,
         skill_registry: SkillRegistry | None = None,
+        mcp_tool_provider: MCPToolProvider | None = None,
+        mcp_server_configs: dict[str, MCPServerConfig] | None = None,
+        mcp_tool_descriptors: list[MCPToolDescriptor] | None = None,
     ) -> ToolRegistry:
         """Assemble a registry from optional integration services plus all built-in tools."""
         factories: list[ToolFactory] = []
@@ -117,16 +130,30 @@ class ToolRegistry:
         if rag_service is not None:
             factories.append(RagToolFactory(rag_service))
 
+        if mcp_tool_provider is not None and mcp_server_configs:
+            for descriptor in mcp_tool_descriptors or []:
+                config = mcp_server_configs.get(descriptor.server_id)
+                if config is None:
+                    continue
+                factories.append(
+                    MCPToolFactory(
+                        config=config,
+                        descriptor=descriptor,
+                        provider=mcp_tool_provider,
+                    )
+                )
+
         # Built-in tools are always registered; their own is_available guards handle
         # data-context requirements (df / db_runtime_config / allowed_tool_keys).
         factories.extend([
             PlannerToolFactory(),
-            ReviewToolFactory(),
+            GenerateSummaryToolFactory(),
+            GenerateReportToolFactory(),
+            DataCatalogToolFactory(),
             SQLToolFactory(),
             DatabaseToolFactory(),
             PlotlyToolFactory(),
             PandasToolFactory(),
-            ValueToolFactory(),
         ])
 
         # get_tool_instructions: always available when a skill registry is provided.
@@ -138,5 +165,3 @@ class ToolRegistry:
         factories.append(SessionNoteToolFactory(session_note_callback or (lambda _: None)))
 
         return cls(factories)
-
-

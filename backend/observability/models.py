@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -42,10 +44,42 @@ class PhoenixTraceRow(BaseModel):
     tool_calls: int
     span_count: int
     model: str | None = None
+    skill_ids: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
     started_at: str
+
+
+class PhoenixSpanSnapshotItem(BaseModel):
+    span_id: str
+    parent_id: str | None = None
+    name: str
+    span_kind: str
+    status_code: str
+    status_message: str = ""
+    duration_ms: int
+    start_time: str
+    end_time: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    input_value: str | None = None
+    output_value: str | None = None
+    skill_ids: str | None = None
+    attributes: dict[str, Any] = {}
+
+
+class PhoenixTraceDetailResponse(BaseModel):
+    trace_id: str
+    project_id: str | None = None
+    project_name: str | None = None
+    spans: list[PhoenixSpanSnapshotItem]
+
+
+class PhoenixTracesResponse(BaseModel):
+    total: int
+    traces: list[PhoenixTraceRow]
 
 
 class PhoenixOverviewResponse(BaseModel):

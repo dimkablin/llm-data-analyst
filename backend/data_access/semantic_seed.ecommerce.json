@@ -1,0 +1,26 @@
+{
+  "name": "ecommerce",
+  "enabled_by_default": true,
+  "domains": ["ecommerce", "retail"],
+  "terms": [],
+  "metric_columns": {
+    "gmv": ["gmv", "gross_merchandise_value", "order_value", "amount", "total"],
+    "refund": ["refund", "refund_amount", "returned_amount"],
+    "discount": ["discount", "discount_amount", "promo_amount"],
+    "quantity": ["quantity", "qty", "units", "items"],
+    "order_id": ["order_id", "transaction_id", "invoice_id"],
+    "customer_id": ["customer_id", "user_id", "buyer_id"],
+    "cart": ["cart_id", "cart_count", "carts"],
+    "checkout": ["checkout_id", "checkout_count", "checkouts"],
+    "return": ["returns", "return_count", "returned_items"]
+  },
+  "metric_templates": [
+    { "key": "gmv", "name": "GMV", "kind": "sum", "column_group": "gmv", "synonyms": ["gmv", "gross merchandise value", "валовый оборот"] },
+    { "key": "refunds", "name": "Refunds", "kind": "sum", "column_group": "refund", "synonyms": ["возвраты", "refunds"] },
+    { "key": "discounts", "name": "Discounts", "kind": "sum", "column_group": "discount", "synonyms": ["скидки", "discounts"] },
+    { "key": "units_sold", "name": "Units sold", "kind": "sum", "column_group": "quantity", "synonyms": ["проданные штуки", "units sold"] },
+    { "key": "cart_conversion", "name": "Cart conversion", "kind": "ratio_sum", "numerator_group": "order_id", "denominator_group": "cart", "synonyms": ["cart conversion"], "format": "percent" },
+    { "key": "checkout_conversion", "name": "Checkout conversion", "kind": "ratio_sum", "numerator_group": "order_id", "denominator_group": "checkout", "synonyms": ["checkout conversion"], "format": "percent" },
+    { "key": "return_rate", "name": "Return rate", "kind": "ratio_sum", "numerator_group": "return", "denominator_group": "quantity", "synonyms": ["процент возвратов", "return rate"], "format": "percent" }
+  ]
+}

@@ -9,6 +9,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from backend.data_access.dataframe_utils import numeric_summary_rows
+
 
 @dataclass
 class Artifact:
@@ -150,7 +152,12 @@ class TableArtifact(Artifact):
         self, max_table_rows: int = 5, **kwargs
     ) -> BaseMessage | None:
         table_md = self.normalized.head(max_table_rows).to_markdown()
+        summary_rows = numeric_summary_rows(self.normalized)
+        summary_block = ""
+        if summary_rows:
+            summary_block = "\n\nnumeric_summary_rows_appended:\n" + pd.DataFrame(summary_rows).to_markdown(index=False)
         content = f"Первые {max_table_rows} строчек таблицы '{self.text}':\n{table_md}"
+        content = content + summary_block
         return AIMessage(content=content)
 
 
@@ -333,5 +340,3 @@ class ArtifactStore:
         for a in self.artifacts:
             if a.meta.get("dashboard", False):
                 a.meta["dashboard"] = False
-
-
