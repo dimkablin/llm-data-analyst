@@ -4,6 +4,7 @@ E2E user-story tests for the B3 context state pipeline.
 These tests use real components (no LLM calls). They verify user-observable
 behavior from tool result → handle → session memory → prompt block.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,6 +30,7 @@ from backend.sessions.session_store import SessionStore
 #           in the next turn.
 # ---------------------------------------------------------------------------
 
+
 def test_table_handle_created_and_flushed_to_session():
     """
     User story: After the agent runs a SQL/pandas tool and produces a table,
@@ -40,11 +42,7 @@ def test_table_handle_created_and_flushed_to_session():
     artifact = {
         "schema_version": "1.0",
         "artifact_type": "table",
-        "items": {
-            "revenue_by_region": pd.DataFrame(
-                {"region": ["A", "B"], "revenue": [100, 200]}
-            )
-        },
+        "items": {"revenue_by_region": pd.DataFrame({"region": ["A", "B"], "revenue": [100, 200]})},
     }
 
     # 2. Wrap it in a mock result object with content="" and artifact=...
@@ -94,13 +92,14 @@ def test_table_handle_created_and_flushed_to_session():
     assert "revenue_by_region" in block
     assert "table" in block
     # Raw row values should NOT appear inline
-    assert "\"A\"" not in block and "'A'" not in block
-    assert "\"B\"" not in block and "'B'" not in block
+    assert '"A"' not in block and "'A'" not in block
+    assert '"B"' not in block and "'B'" not in block
 
 
 # ---------------------------------------------------------------------------
 # Story 2: Findings accumulate across multiple turns.
 # ---------------------------------------------------------------------------
+
 
 def test_key_findings_accumulate_across_turns():
     """
@@ -165,6 +164,7 @@ def test_key_findings_accumulate_across_turns():
 # Story 3: Old session (string-only notes) migrates transparently.
 # ---------------------------------------------------------------------------
 
+
 def test_old_session_migrates_to_structured_memory(tmp_path: Path):
     """
     User story: A user with an existing session (created before this feature)
@@ -203,6 +203,7 @@ def test_old_session_migrates_to_structured_memory(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Story 4: Session memory persists and reloads correctly across queries.
 # ---------------------------------------------------------------------------
+
 
 def test_structured_memory_persists_and_reloads(tmp_path: Path):
     """
@@ -251,6 +252,7 @@ def test_structured_memory_persists_and_reloads(tmp_path: Path):
 # Story 5: Observation masking: after 4+ tool calls, early messages are compact.
 # ---------------------------------------------------------------------------
 
+
 def test_observation_masking_compresses_early_tool_messages():
     """
     User story: When the agent runs many tools in sequence, the message history
@@ -282,8 +284,7 @@ def test_observation_masking_compresses_early_tool_messages():
     # 4. Build 5 ToolMessage objects with long content (200+ chars each)
     long_content = "x" * 250
     messages = [
-        ToolMessage(content=f"tc{i}_full_data: {long_content}", tool_call_id=f"tc{i}")
-        for i in range(5)
+        ToolMessage(content=f"tc{i}_full_data: {long_content}", tool_call_id=f"tc{i}") for i in range(5)
     ]
 
     # 5. Create masked_tc_ids set
@@ -291,7 +292,9 @@ def test_observation_masking_compresses_early_tool_messages():
 
     # 6. Call _apply_observation_masking with current_step=5
     _apply_observation_masking(
-        messages, tc_id_to_handle, tc_id_to_step,
+        messages,
+        tc_id_to_handle,
+        tc_id_to_step,
         current_step=5,
         masked_tc_ids=masked_tc_ids,
     )
@@ -300,14 +303,14 @@ def test_observation_masking_compresses_early_tool_messages():
     # steps_ago = 5 - step_index
     # step 0 → steps_ago=5 >= 3 → masked
     # step 1 → steps_ago=4 >= 3 → masked
-    # step 2 → steps_ago=3 >= 3 → masked (boundary: masked when steps_ago >= KEEP_LAST_N)
+    # step 2 → latest old table remains visible for final synthesis
     # step 3 → steps_ago=2 < 3 → kept
     # step 4 → steps_ago=1 < 3 → kept
-    for i in range(3):
+    for i in range(2):
         assert messages[i].content.startswith("[artifact:"), (
             f"tc{i} (steps_ago={5 - i}) should be masked, got: {messages[i].content!r}"
         )
-    for i in range(3, 5):
+    for i in range(2, 5):
         assert not messages[i].content.startswith("[artifact:"), (
             f"tc{i} (steps_ago={5 - i}) should NOT be masked, got: {messages[i].content!r}"
         )
@@ -322,6 +325,7 @@ def test_observation_masking_compresses_early_tool_messages():
 # Story 6: Infra tool calls don't pollute findings.
 # ---------------------------------------------------------------------------
 
+
 def test_infrastructure_tool_calls_excluded_from_findings():
     """
     User story: When the agent uses infrastructure tools (database_tool,
@@ -331,6 +335,7 @@ def test_infrastructure_tool_calls_excluded_from_findings():
     actions = [
         "database_tool → schema",
         "planner_tool → [5-step plan]",
+        "update_plan → 1/3 steps completed",
         "sql_tool → monthly_revenue (1200 rows)",
         "pandas_tool → aggregated_df",
         "get_tool_instructions → auto_eda",
@@ -350,4 +355,5 @@ def test_infrastructure_tool_calls_excluded_from_findings():
     findings_str = " ".join(findings)
     assert "database_tool" not in findings_str
     assert "planner_tool" not in findings_str
+    assert "update_plan" not in findings_str
     assert "get_tool_instructions" not in findings_str

@@ -15,6 +15,7 @@ import { useChatAgentContext } from "../context/ChatAgentContext";
 import {
   createSession,
   getRuntimeModelProfile,
+  getSemanticCatalogStatus,
   getSession,
   listSessions,
   uploadTabularFiles,
@@ -24,6 +25,7 @@ import type {
   ArtifactPayload,
   ChatMessage,
   RuntimeModelProfile,
+  SemanticCatalogStatusResponse,
   SessionSource,
   SessionSourceState,
   SessionState,
@@ -45,6 +47,7 @@ const RESTORED_ARTIFACTS_MESSAGE = "Артефакты восстановлен�
 
 /** Auto-pin only charts; analytical note is pinned when the stream ends. Tables — manually. */
 const AUTO_BOARD_ARTIFACT_TYPES = new Set(["plot"]);
+const EMPTY_SEMANTIC_STATE: SemanticCatalogStatusResponse = { status: "empty" };
 
 function shouldAutoPinToBoard(artifact: ArtifactPayload): boolean {
   return AUTO_BOARD_ARTIFACT_TYPES.has(artifact.type);
@@ -95,6 +98,7 @@ export function Workspace() {
   const wasStreamingCurrentSessionRef = useRef(false);
   const lastAutoNoteMessageIdRef = useRef<string>("");
   const [modelProfile, setModelProfile] = useState<RuntimeModelProfile | null>(null);
+  const [semanticState, setSemanticState] = useState<SemanticCatalogStatusResponse>(EMPTY_SEMANTIC_STATE);
   const [isUploading, setIsUploading] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
 
@@ -190,6 +194,52 @@ export function Workspace() {
     },
     [applySessionState],
   );
+
+  const hasSemanticSource = Boolean(
+    sessionId
+      && ["csv", "db_connection", "planfact", "openproject"].includes(String(activeSource.source_type || "")),
+  );
+
+  const refreshSemanticState = useCallback(async (): Promise<SemanticCatalogStatusResponse> => {
+    if (!hasSemanticSource) {
+      setSemanticState(EMPTY_SEMANTIC_STATE);
+      return EMPTY_SEMANTIC_STATE;
+    }
+    const next = await getSemanticCatalogStatus(sessionId);
+    setSemanticState(next);
+    return next;
+  }, [hasSemanticSource, sessionId]);
+
+  useEffect(() => {
+    if (!hasSemanticSource) {
+      setSemanticState(EMPTY_SEMANTIC_STATE);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      try {
+        const next = await refreshSemanticState();
+        if (cancelled) return;
+        if (next.operation?.status === "running" || next.status === "pending" || next.status === "indexing") {
+          timer = window.setTimeout(() => void poll(), 3000);
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(() => void poll(), 3000);
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    hasSemanticSource,
+    refreshSemanticState,
+    semanticState.operation?.operation_id,
+    semanticState.operation?.status,
+    semanticState.status,
+  ]);
 
   useEffect(() => {
     if (!user) {
@@ -590,10 +640,12 @@ return (
                 activeSource={activeSource}
                 sources={sessionSources}
                 showCode
+                showRagErrors={settings.show_rag_errors}
                 onUpload={handleUpload}
                 onRefreshSession={() => loadSession(sessionId)}
                 onPinArtifactIds={handlePinArtifactIds}
                 onUnpinArtifact={handleUnpinArtifact}
+                onAsk={sendQuery}
               />
             </motion.div>
           </ResizablePanel>
@@ -627,6 +679,8 @@ return (
                 isUploading={isUploading}
                 hasDataset={hasDataset}
                 activeSource={activeSource}
+                semanticStatus={semanticState.status}
+                semanticOperation={semanticState.operation}
                 onSubmit={sendQuery}
                 onDraftChange={setChatDraft}
                 onStop={stopStreaming}
@@ -663,6 +717,13 @@ return (
                       isAdmin={user.is_admin}
                       onSave={handleSaveSettings}
                       isStreaming={isStreaming}
+                      semanticConnectionId={
+                        activeSource.source_type === "db_connection"
+                          ? activeSource.source_ref_id ?? null
+                          : null
+                      }
+                      semanticState={semanticState}
+                      onSemanticStateRefresh={refreshSemanticState}
                     />
                   </motion.div>
                 ) : null}

@@ -1,0 +1,73 @@
+name: searxng-mcp-dev
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks:
+      - analyst
+    restart: unless-stopped
+
+  searxng-mcp:
+    image: searxng-mcp:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      SEARXNG_INSTANCE_URL: http://searxng:8080
+      SEARCH_SERVICE_URL: http://search-service:8000
+      HOST: 0.0.0.0
+      PORT: 8811
+      TRANSPORT: http
+      CORS_ORIGIN: ${SEARXNG_MCP_CORS_ORIGIN:-*}
+      MCP_ALLOWED_HOSTS: ${SEARXNG_MCP_ALLOWED_HOSTS:-searxng-mcp:8811,host.docker.internal:8811}
+    command:
+      - /bin/sh
+      - -c
+      - export MCP_HTTP_BEARER="$$(cat /run/secrets/searxng_mcp_api_key)" && exec mcp-searxng-bridge
+    secrets:
+      - searxng_mcp_api_key
+    depends_on:
+      searxng:
+        condition: service_healthy
+      search-service:
+        condition: service_healthy
+    networks:
+      - analyst
+    restart: unless-stopped
+
+  search-service:
+    image: searxng-search-service:${IMAGE_TAG:?IMAGE_TAG is required}
+    environment:
+      SEARXNG_API_URL: http://searxng:8080
+      SEARXNG_MIN_SCORE: ${SEARXNG_MIN_SCORE:-0.0}
+      SEARCH_TIMEOUT_SEC: ${SEARCH_TIMEOUT_SEC:-20.0}
+      FETCH_TIMEOUT_SEC: ${FETCH_TIMEOUT_SEC:-15.0}
+      SEARCH_FETCH_MAX_CHARS: ${SEARCH_FETCH_MAX_CHARS:-10000}
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      - analyst
+    restart: unless-stopped
+
+secrets:
+  searxng_mcp_api_key:
+    file: ./secrets/searxng_mcp_api_key
+
+networks:
+  analyst:
+    external: true
+    name: ${MCP_DOCKER_NETWORK:-llm-data-analyst-dev_default}

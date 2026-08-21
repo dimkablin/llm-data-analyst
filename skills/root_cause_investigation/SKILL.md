@@ -2,7 +2,7 @@
 name: Root Cause Investigation
 description: Systematic metric change investigation — z-score validation, dimension drill-down, top contributors, hypothesis testing with chi-square, waterfall.
 enabled_by_default: true
-triggers: root cause, first cause, why dropped, why grew, what changed, drill down, segment contribution, metric change, investigation, decomposition, первопричина, почему упало, почему выросло, что изменилось, расследование, почему упали, просад, упали продажи, марте, обувь, трафик, конверси
+triggers: root cause, first cause, why dropped, why grew, what changed, drill down, segment contribution, metric change, investigation, decomposition, первопричина, почему упало, почему выросло, что изменилось, расследование, почему упали, просад
 ---
 
 ## Root Cause Investigation

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 import plotly.graph_objects as go
 
-from backend.tools.impl.plotly_tool import PlotlyTool
+from backend.tools.impl.plotly_tool import PlotlyTool, _figure_has_data_points
 from backend.tools.sandbox import SessionSandbox
 
 
@@ -27,6 +27,15 @@ class PlotlyToolContractTests(unittest.TestCase):
             tool_cache_size=0,
             sandbox=self.sandbox,
         )
+
+    def test_single_axis_and_matrix_traces_are_valid_figures(self) -> None:
+        figures = [
+            go.Figure(go.Histogram(x=[1, 2, 3])),
+            go.Figure(go.Box(y=[1, 2, 3])),
+            go.Figure(go.Heatmap(z=[[1, 2], [3, 4]])),
+        ]
+
+        self.assertTrue(all(_figure_has_data_points(fig) for fig in figures))
 
     def test_invalid_string_result_is_rejected(self) -> None:
         code = """
@@ -87,6 +96,18 @@ tool_result
 
         self.assertIn("plotly_tool", text)
         self.assertIsInstance(payload["plot"]["comparison_plot"], go.Figure)
+
+    def test_fig_show_without_tool_result_uses_created_figure(self) -> None:
+        code = """
+fig = px.bar(df, x="category", y="value", title="Value comparison")
+fig.show()
+"""
+
+        with patch.object(go.Figure, "show", return_value=None):
+            text, payload = self.tool._run(code)
+
+        self.assertIn("plotly_tool", text)
+        self.assertIsInstance(payload["plot"]["plot"], go.Figure)
 
     def test_positional_artifact_name_passes(self) -> None:
         code = """

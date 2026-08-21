@@ -10,6 +10,7 @@ The lifecycle is:
                                                     ↓
                                           PresentationArtifact (for UI)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -33,9 +34,11 @@ class ExecArtifactType(StrEnum):
 
 def artifact_type_label(artifact_type_val: Any) -> str:
     """Return the string label for an artifact_type field (enum value or raw string)."""
-    return str(
-        artifact_type_val.value if isinstance(artifact_type_val, ExecArtifactType) else artifact_type_val
-    ).strip().lower()
+    return (
+        str(artifact_type_val.value if isinstance(artifact_type_val, ExecArtifactType) else artifact_type_val)
+        .strip()
+        .lower()
+    )
 
 
 def is_tabular_artifact_type(artifact_type_val: Any) -> bool:
@@ -46,6 +49,7 @@ def is_tabular_artifact_type(artifact_type_val: Any) -> bool:
 @dataclass(frozen=False)
 class ExecArtifactSchema:
     """Lightweight schema descriptor for tabular artifacts."""
+
     columns: list[str] = field(default_factory=list)
     dtypes: dict[str, str] = field(default_factory=dict)
     row_count: int = 0
@@ -70,6 +74,7 @@ class ExecutionArtifact:
         version:        Monotonic version within the same logical name.
         reusable:       Whether this artifact can be served from cache.
     """
+
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = ""
     artifact_type: ExecArtifactType = ExecArtifactType.DATAFRAME
@@ -80,9 +85,7 @@ class ExecutionArtifact:
     schema: ExecArtifactSchema | None = None
     content_hash: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
-    created_at: str = field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     version: int = 1
     reusable: bool = True
 
@@ -98,6 +101,7 @@ class ExecutionArtifact:
     def _hash_input(self) -> str:
         if self.artifact_type == ExecArtifactType.DATAFRAME:
             import pandas as pd
+
             if isinstance(self.data, pd.DataFrame):
                 return pd.util.hash_pandas_object(self.data).sum().__str__()
         if self.artifact_type in (ExecArtifactType.SCALAR, ExecArtifactType.JSON):
@@ -115,6 +119,7 @@ class ExecutionArtifact:
         if self.artifact_type != ExecArtifactType.DATAFRAME:
             return None
         import pandas as pd
+
         if not isinstance(self.data, pd.DataFrame):
             return None
         self.schema = ExecArtifactSchema(
@@ -130,7 +135,6 @@ class ExecutionStore:
 
     Provides:
     - Put / get by ID or by (name, producer_tool)
-    - Content-hash deduplication (reuse instead of recompute)
     - Lineage queries: parents, children, full ancestry chain
     - Deterministic reuse rules
     """
@@ -139,25 +143,33 @@ class ExecutionStore:
         self.session_id = session_id
         self._by_id: dict[str, ExecutionArtifact] = {}
         self._by_name: dict[str, list[ExecutionArtifact]] = {}
-        self._by_hash: dict[str, ExecutionArtifact] = {}
 
     def put(self, artifact: ExecutionArtifact) -> ExecutionArtifact:
-        """Register an execution artifact.  Deduplicates by content_hash."""
+        """Register an execution artifact and preserve its invocation identity."""
         artifact.session_id = self.session_id
+        lineage = artifact.meta.get("lineage") if isinstance(artifact.meta, dict) else None
+        source_names = lineage.get("source_artifact_names", []) if isinstance(lineage, dict) else []
+        source_ids = lineage.get("source_artifact_ids", []) if isinstance(lineage, dict) else []
+        if isinstance(source_names, str):
+            source_names = [source_names]
+        if isinstance(source_ids, str):
+            source_ids = [source_ids]
+        parents = [
+            parent.id for name in source_names if (parent := self.get_latest(str(name).strip())) is not None
+        ]
+        artifact.parent_ids = list(
+            dict.fromkeys(
+                [
+                    *artifact.parent_ids,
+                    *(str(item).strip() for item in source_ids if str(item).strip()),
+                    *parents,
+                ]
+            )
+        )
 
         if artifact.artifact_type == ExecArtifactType.DATAFRAME:
             artifact.build_schema()
         artifact.compute_content_hash()
-
-        # Content-hash dedup: return existing if identical
-        if artifact.content_hash and artifact.content_hash in self._by_hash:
-            existing = self._by_hash[artifact.content_hash]
-            if (
-                existing.reusable
-                and existing.producer_tool == artifact.producer_tool
-                and existing.name == artifact.name
-            ):
-                return existing
 
         # Version bump for same logical name
         existing_versions = self._by_name.get(artifact.name, [])
@@ -166,8 +178,6 @@ class ExecutionStore:
 
         self._by_id[artifact.id] = artifact
         self._by_name.setdefault(artifact.name, []).append(artifact)
-        if artifact.content_hash:
-            self._by_hash[artifact.content_hash] = artifact
         return artifact
 
     def get(self, artifact_id: str) -> ExecutionArtifact | None:
@@ -215,4 +225,3 @@ class ExecutionStore:
     def clear(self) -> None:
         self._by_id.clear()
         self._by_name.clear()
-        self._by_hash.clear()

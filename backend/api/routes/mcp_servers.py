@@ -28,6 +28,13 @@ def setup(auth_db: AuthDB, mcp_service: MCPServerService) -> None:
     _mcp_service = mcp_service
 
 
+def _admin_response(config) -> AdminMCPServerConfigResponse:
+    return AdminMCPServerConfigResponse(
+        **config.model_dump(),
+        secret_configured=bool(config.bearer_token),
+    )
+
+
 @router.get("/mcp/servers", response_model=list[MCPServerCatalogItem])
 def list_mcp_servers(
     current_user: Annotated[AuthUser, Depends(get_current_user)],
@@ -68,10 +75,7 @@ def update_mcp_server_enabled(
 def admin_list_mcp_servers(
     _: Annotated[AuthUser, Depends(get_admin_user)],
 ) -> list[AdminMCPServerConfigResponse]:
-    return [
-        AdminMCPServerConfigResponse(**config.model_dump())
-        for config in _mcp_service.list_configs()
-    ]
+    return [_admin_response(config) for config in _mcp_service.list_configs()]
 
 
 @router.post("/admin/mcp/servers", response_model=AdminMCPServerConfigResponse)
@@ -80,7 +84,7 @@ def admin_upsert_mcp_server(
     current_admin: Annotated[AuthUser, Depends(get_admin_user)],
 ) -> AdminMCPServerConfigResponse:
     saved = _mcp_service.upsert_config(payload, updated_by=current_admin.id)
-    return AdminMCPServerConfigResponse(**saved.model_dump())
+    return _admin_response(saved)
 
 
 @router.patch("/admin/mcp/servers/{server_id}", response_model=AdminMCPServerConfigResponse)
@@ -96,7 +100,22 @@ def admin_update_mcp_server(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="MCP server not found")
-    return AdminMCPServerConfigResponse(**updated.model_dump())
+    return _admin_response(updated)
+
+
+@router.post("/admin/mcp/servers/{server_id}/test", response_model=MessageResponse)
+def admin_test_mcp_server(
+    server_id: str,
+    payload: MCPServerUpdateRequest,
+    _: Annotated[AuthUser, Depends(get_admin_user)],
+) -> MessageResponse:
+    try:
+        tool_count = _mcp_service.test_connection(server_id, payload)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"MCP connection failed: {exc}") from exc
+    if tool_count is None:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return MessageResponse(message=f"MCP server connected; tools: {tool_count}")
 
 
 @router.delete("/admin/mcp/servers/{server_id}", response_model=MessageResponse)

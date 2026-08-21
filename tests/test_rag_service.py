@@ -269,12 +269,8 @@ class RAGServiceTests(unittest.TestCase):
             _ = (timeout_sec, verify_ssl)
             return {
                 "statuses": {
-                    "processed": [
-                        {"id": "doc-1", "file_path": "a.txt", "status": "processed"}
-                    ],
-                    "failed": [
-                        {"id": "doc-2", "file_path": "b.txt", "error_msg": "boom"}
-                    ],
+                    "processed": [{"id": "doc-1", "file_path": "a.txt", "status": "processed"}],
+                    "failed": [{"id": "doc-2", "file_path": "b.txt", "error_msg": "boom"}],
                 }
             }
 

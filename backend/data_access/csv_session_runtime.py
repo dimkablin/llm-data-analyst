@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -17,7 +18,12 @@ import pandas as pd
 _TABLE_RE = re.compile(r"[^A-Za-z0-9_]+")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DEFAULT_TTL_SEC = int(os.getenv("CSV_SESSION_TTL_SEC", "7200"))
-_BASE_DIR = Path(os.getenv("CSV_SESSION_BASE_DIR", ".runtime/csv_sessions")).resolve()
+_BASE_DIR = Path(
+    os.getenv(
+        "CSV_SESSION_BASE_DIR",
+        str(Path(tempfile.gettempdir()) / "llm-data-analyst" / "csv_sessions"),
+    )
+).resolve()
 
 
 @dataclass
@@ -435,7 +441,10 @@ class CSVSessionRuntime:
         self._touch_session(session_id)
         con = duckdb.connect(str(self._db_path(session_id)), read_only=True)
         try:
-            return con.execute(sql).fetchdf()
+            df = con.execute(sql).fetchdf()
+            for column in df.select_dtypes(include=["object", "string"]).columns:
+                df[column] = df[column].astype(object).where(pd.notna(df[column]), None)
+            return df
         finally:
             con.close()
 

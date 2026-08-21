@@ -1,11 +1,15 @@
 """Tests for SessionSandbox — persistent per-session execution environment."""
+
 from __future__ import annotations
 
+import multiprocessing
+import time
 import unittest
 
 import pandas as pd
 
 from backend.tools.sandbox import SessionSandbox
+from backend.tools.sandbox_manager import SandboxManager
 
 
 class SandboxScopePersistenceTests(unittest.TestCase):
@@ -28,6 +32,67 @@ class SandboxScopePersistenceTests(unittest.TestCase):
 
         result = sb.execute("tool_result = {'v': {'rows': len(df)}}", tool_name="pandas_tool")
         assert result["v"]["rows"] == 3
+
+    def test_source_change_clears_derived_variables(self) -> None:
+        sb = SessionSandbox()
+        sb.bind_dataframe(pd.DataFrame({"a": [1]}), source_label="first.csv")
+        sb.execute("stale_total = df['a'].sum()", tool_name="pandas_tool")
+
+        replacement = pd.DataFrame({"b": [2]})
+        sb.bind_dataframe(replacement, source_label="second.csv")
+
+        assert "stale_total" not in sb.get_user_scope()
+        assert sb.execute("tool_result = df", tool_name="pandas_tool").equals(replacement)
+
+    def test_manager_reuses_sandbox_only_for_same_source_identity(self) -> None:
+        manager = SandboxManager()
+        first = manager.get_or_create_for_source(
+            "session",
+            {"source_type": "db_connection", "source_ref_id": "db-a"},
+        )
+        first.put("derived", pd.DataFrame({"value": [1]}))
+
+        same = manager.get_or_create_for_source(
+            "session",
+            {
+                "source_type": "db_connection",
+                "source_ref_id": "db-a",
+                "source_label": "renamed display label",
+            },
+        )
+
+        assert same is first
+        assert "derived" in same.get_user_scope()
+
+        changed = manager.get_or_create_for_source(
+            "session",
+            {"source_type": "db_connection", "source_ref_id": "db-b"},
+        )
+
+        assert changed is not first
+        assert "derived" not in changed.get_user_scope()
+
+    def test_manager_clears_sandbox_when_source_is_unbound(self) -> None:
+        manager = SandboxManager()
+        bound = manager.get_or_create_for_source(
+            "session",
+            {"source_type": "csv", "source_ref_id": "dataset-a"},
+        )
+        bound.put("derived", pd.DataFrame({"value": [1]}))
+
+        cleared = manager.get_or_create_for_source("session", {})
+
+        assert cleared is not bound
+        assert "derived" not in cleared.get_user_scope()
+
+    def test_put_cannot_overwrite_infrastructure_dataframe(self) -> None:
+        sb = SessionSandbox()
+        original = pd.DataFrame({"source": [1]})
+        sb.bind_dataframe(original)
+
+        sb.put("df", pd.DataFrame({"foreign": [2]}))
+
+        assert sb.execute("tool_result = df", tool_name="pandas_tool").equals(original)
 
     def test_plotly_available_when_include_plotly(self) -> None:
         sb = SessionSandbox()
@@ -72,17 +137,31 @@ class SandboxDescribeForPromptTests(unittest.TestCase):
 
 
 class SandboxTimeoutTests(unittest.TestCase):
-    def test_timeout_raises_and_resets(self) -> None:
+    def test_timeout_terminates_worker_and_remains_usable(self) -> None:
         sb = SessionSandbox()
         sb.bind_dataframe(pd.DataFrame({"a": [1]}))
+        children_before = {child.pid for child in multiprocessing.active_children()}
 
         with self.assertRaises(TimeoutError):
             # Use a busy-wait loop (no import needed) to trigger timeout.
             sb.execute("i = 0\nwhile True: i += 1", tool_name="test", timeout_sec=0.5)
 
-        # Sandbox should still work after timeout (scope was reset).
-        result = sb.execute("tool_result = 42", tool_name="test")
-        assert result == 42
+        assert {child.pid for child in multiprocessing.active_children()} <= children_before
+        result = sb.execute("tool_result = df['a'].sum()", tool_name="test")
+        assert result == 1
+
+    def test_late_timeout_write_cannot_reenter_new_scope(self) -> None:
+        sb = SessionSandbox()
+        with self.assertRaises(TimeoutError):
+            sb.execute(
+                "import time\ntime.sleep(0.05)\nlate_value = 99",
+                tool_name="test",
+                timeout_sec=0.01,
+            )
+
+        time.sleep(0.08)
+
+        assert "late_value" not in sb.get_user_scope()
 
 
 class SandboxResultExtractionTests(unittest.TestCase):
@@ -177,9 +256,7 @@ class SkillsIntegrationTests(unittest.TestCase):
     def test_tool_prompt_block_includes_plotly_instructions(self) -> None:
         from backend.tools.instructions import get_default_tool_instruction_registry
 
-        block = get_default_tool_instruction_registry().build_brief_block(
-            {"plotly_tool", "sql_tool"}
-        )
+        block = get_default_tool_instruction_registry().build_brief_block({"plotly_tool", "sql_tool"})
 
         assert "get_tool_instructions" in block
         assert "plotly_tool" in block

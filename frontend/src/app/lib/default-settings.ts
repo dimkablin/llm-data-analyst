@@ -7,7 +7,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   analysis_depth: "light",
   llm_temperature_chat: 0.7,
   llm_temperature_tool: 0.5,
-  llm_max_tokens_default: 2048,
+  llm_max_tokens_default: 4096,
   llm_max_tokens_reasoning: 4096,
   backend_query_timeout_sec: 180,
   agent_max_steps: 32,
@@ -19,7 +19,10 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   show_think_planning: true,
   show_think_tool: true,
   show_think_final: true,
+  always_use_analysis_plan: false,
   show_detailed_tool_steps: false,
+  show_rag_errors: true,
+  anomaly_check_enabled: false,
 };
 
 export const USER_SETTING_KEYS = Object.keys(DEFAULT_USER_SETTINGS) as Array<keyof UserSettings>;

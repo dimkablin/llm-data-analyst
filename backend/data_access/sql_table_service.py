@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pandas as pd
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from backend.agent.callbacks import strip_thinking
-from backend.agent.dataset_profiles import build_sql_generation_hints
-from backend.agent.llm_client import make_reasoning_llm
 from backend.artifacts.artifact_meta import build_db_metadata_recipe_step, build_sql_recipe_step
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.data_access.semantic_models import SemanticCatalog
-from backend.data_access.semantic_query import SemanticQueryCompiler, semantic_query_from_hints
+from backend.data_access.semantic_query import (
+    SemanticQuery,
+    SemanticQueryCompiler,
+)
 from backend.data_access.session_catalog_cache import get_or_build_candidates
 from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.session_source import is_duckdb_source_type
 from backend.tools.impl.db_helpers import (
-    IDENTIFIER_RE,
     MAX_RESULT_CELLS,
     DBAnalyticsHelper,
     _assert_read_only_sql,
@@ -30,29 +28,6 @@ from backend.tools.impl.db_helpers import (
 )
 
 _SQL_START = re.compile(r"\b(SELECT|WITH)\b", re.IGNORECASE)
-# Questions that only ask for table names from the catalog (no analytic SQL / LLM).
-_CATALOG_TABLE_LIST_RE = re.compile(
-    r"(?is)^\s*("
-    r"показать\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"покажи\s+все\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"покажи\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
-    r"показать\s+таблицы(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?\s*|"
-    r"покажи\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"показать\s+список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"получи(ть)?\s+список\s+(всех\s+)?таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"список\s+таблиц(\s+(в|из)\s+(базе?(\s+данных)?|бд|базы(\s+данных)?|db))?|"
-    r"перечень\s+таблиц|"
-    r"перечисли\s+таблицы|"
-    r"какие\s+таблицы\s+(есть|в\s+(базе|бд|базе\s+данных))|"
-    r"какие\s+есть\s+таблицы|"
-    r"выведи\s+список\s+таблиц|"
-    r"назови\s+таблицы|"
-    r"(show|list)\s+tables(\s+(in|from)\s+[\w\s]+)?|"
-    r"(what|which)\s+tables\s+(are\s+there|exist|do\s+i\s+have|in\s+the\s+database)"
-    r"|таблицы\.?\s*$|"
-    r"tables\.?\s*$"
-    r")\s*\??\s*$"
-)
 _SQL_STOP_MARKERS = [
     "\n```",
     "\n####",
@@ -85,41 +60,6 @@ class TableCandidate:
     column_count: int | None = None
 
 
-def _message_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text:
-                    parts.append(text)
-            elif isinstance(item, str):
-                parts.append(item)
-        return "\n".join(parts)
-    return str(content or "")
-
-
-def _extract_json_obj(text: str) -> str | None:
-    t = str(text or "").strip()
-    match = re.search(r"\{[\s\S]*\}", t)
-    return match.group(0) if match else None
-
-
-def _safe_json_loads(text: str) -> dict[str, Any] | None:
-    try:
-        return json.loads(text)
-    except Exception:
-        raw = _extract_json_obj(text)
-        if not raw:
-            return None
-        try:
-            return json.loads(raw)
-        except Exception:
-            return None
-
-
 def clean_sql(raw: str) -> str:
     text = str(raw or "").strip()
     text = re.sub(r"^```sql\s*", "", text, flags=re.IGNORECASE).strip()
@@ -131,7 +71,7 @@ def clean_sql(raw: str) -> str:
     if not match:
         return text.split("```")[0].strip().strip(";").strip()
 
-    sql = text[match.start():]
+    sql = text[match.start() :]
     cut_pos: int | None = None
     for marker in _SQL_STOP_MARKERS:
         pos = sql.find(marker)
@@ -157,10 +97,6 @@ def wrap_limit0(sql: str) -> str:
     return f"SELECT * FROM ({sql}) AS q LIMIT 0"
 
 
-def wrap_sample(sql: str, n: int = 5) -> str:
-    return f"SELECT * FROM ({sql}) AS q LIMIT {int(n)}"
-
-
 def _cap_dataframe_rows(rows: pd.DataFrame, *, max_rows: int) -> tuple[pd.DataFrame, bool]:
     if len(rows) <= max_rows:
         return rows, False
@@ -181,53 +117,32 @@ def _shrink_for_cell_budget(
 
 
 class SQLTableService:
-    # Thinking default for SQL generation LLM calls.
-    # Effective thinking = settings.llm_enable_thinking AND TOOL_ENABLE_THINKING.
-    TOOL_ENABLE_THINKING: ClassVar[bool] = False
-
     def __init__(
         self,
         *,
-        llm_base_url: str,
-        llm_model: str,
-        llm_api_key: str | None,
-        llm_enable_thinking: bool = False,
-        llm_chat_template_kwargs_enabled: bool = True,
-        llm_provider: str = "",
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         csv_loaded: bool = False,
         csv_session_id: str | None = None,
         max_rows: int = 200,
+        query_timeout_sec: float = 30.0,
         candidates_cache_key: str | None = None,
         storage_dir: str | Path | None = None,
-        semantic_context_prompt: str = "",
+        manifest_store: ManifestStore | None = None,
         semantic_hints: dict[str, Any] | None = None,
     ) -> None:
         self.db_runtime_config = db_runtime_config
         self.csv_loaded = bool(csv_loaded)
         self.csv_session_id = str(csv_session_id or "").strip() or None
         self.max_rows = max(1, min(int(max_rows), 1000))
+        self.query_timeout_sec = max(1.0, float(query_timeout_sec))
         self.csv_runtime = CSVSessionRuntime()
         self._cached_db_helper: DBAnalyticsHelper | None = None
         self._cached_candidates: list[TableCandidate] | None = None
         self._candidates_cache_key = str(candidates_cache_key or "").strip() or None
         self.storage_dir = Path(storage_dir).resolve() if storage_dir is not None else None
+        self.manifest_store = manifest_store
         self._cached_csv_source_metadata: dict[str, dict[str, Any]] | None = None
-        self.semantic_context_prompt = str(semantic_context_prompt or "").strip()
         self.semantic_hints = dict(semantic_hints or {})
-
-        self.llm = make_reasoning_llm(
-            provider=llm_provider,
-            model=llm_model,
-            base_url=llm_base_url,
-            api_key=llm_api_key,
-            enable_thinking=llm_enable_thinking and SQLTableService.TOOL_ENABLE_THINKING,
-            temperature=0.0,
-            max_tokens=2048,
-            streaming=False,
-            timeout=120.0,
-            chat_template_kwargs_enabled=llm_chat_template_kwargs_enabled,
-        )
 
     @staticmethod
     def _sanitize_artifact_name(value: str | None) -> str | None:
@@ -250,7 +165,10 @@ class SQLTableService:
         if self.db_runtime_config is None:
             raise ValueError("DB runtime is not configured")
         if self._cached_db_helper is None:
-            self._cached_db_helper = DBAnalyticsHelper(runtime=self.db_runtime_config, timeout_sec=15.0)
+            self._cached_db_helper = DBAnalyticsHelper(
+                runtime=self.db_runtime_config,
+                timeout_sec=self.query_timeout_sec,
+            )
         return self._cached_db_helper
 
     def _collect_db_candidates(self) -> list[TableCandidate]:
@@ -290,13 +208,15 @@ class SQLTableService:
             self._cached_csv_source_metadata = metadata
             return metadata
         try:
-            manifest = ManifestStore(self.storage_dir).load(self.csv_session_id)
+            manifest = (self.manifest_store or ManifestStore(self.storage_dir)).load(
+                self.csv_session_id
+            )
         except Exception:
             self._cached_csv_source_metadata = metadata
             return metadata
 
         for source in manifest.sources:
-            if source.source_type != "csv":
+            if not is_duckdb_source_type(source.source_type):
                 continue
             for table_name in source.csv_table_names:
                 clean_name = str(table_name or "").strip()
@@ -373,11 +293,6 @@ class SQLTableService:
         else:
             self._cached_candidates = _build()
         return self._cached_candidates
-
-    @staticmethod
-    def _wants_catalog_table_list(question: str) -> bool:
-        q = re.sub(r"\s+", " ", str(question or "").strip())
-        return bool(_CATALOG_TABLE_LIST_RE.match(q))
 
     def _csv_list_tables_catalog_payload(self) -> dict[str, Any]:
         sid = str(self.csv_session_id or "").strip()
@@ -465,6 +380,11 @@ class SQLTableService:
 
     @staticmethod
     def _candidate_descriptor(candidate: TableCandidate) -> dict[str, Any]:
+        preprocessing_summary = {
+            key: value
+            for key, value in dict(candidate.preprocessing_summary or {}).items()
+            if key != "planfact_config"
+        }
         return {
             "source_kind": candidate.source_kind,
             "dialect": candidate.dialect,
@@ -478,7 +398,7 @@ class SQLTableService:
             "display_name": candidate.display_name,
             "source_alias": candidate.source_alias,
             "schema_hint": dict(candidate.schema_hint or {}),
-            "preprocessing_summary": dict(candidate.preprocessing_summary or {}),
+            "preprocessing_summary": preprocessing_summary,
             "row_count": candidate.row_count,
             "column_count": candidate.column_count,
         }
@@ -629,559 +549,59 @@ class SQLTableService:
             return schema.strip()
         return ""
 
-    def _join_related_candidates(
+    def _execute_semantic_query(
         self,
-        question: str,
-        primary: TableCandidate,
-        candidates: list[TableCandidate],
-    ) -> list[TableCandidate]:
-        q = self._normalized_question(question)
-        join_intent = any(
-            token in q
-            for token in (
-                "join",
-                "merge",
-                "using",
-                "объедин",
-                "соедин",
-                "связ",
-                "сопостав",
-                "соотнес",
-                "джойн",
-                "джоин",
-                "по столбц",
-                "по колон",
-            )
-        )
-        primary_columns = {
-            str(column).strip().lower() for column in primary.columns if str(column).strip()
-        }
-        scored: list[tuple[int, TableCandidate]] = []
-        for candidate in candidates:
-            if (
-                candidate.source_kind == primary.source_kind
-                and candidate.qualified_name == primary.qualified_name
-            ):
-                continue
-
-            score = 0
-            table_names = (candidate.table_name.lower(), candidate.qualified_name.lower())
-            if any(name and name in q for name in table_names):
-                score += 30
-
-            candidate_columns = {
-                str(column).strip().lower()
-                for column in candidate.columns
-                if str(column).strip()
-            }
-            shared_columns = primary_columns & candidate_columns
-            if shared_columns:
-                score += 20 + min(len(shared_columns), 5)
-            primary_column_mentions = sum(
-                1
-                for column in primary_columns
-                if len(column) >= 3 and column in q
-            )
-            for column in candidate_columns:
-                if len(column) >= 3 and column in q:
-                    score += 10
-            if primary_column_mentions and any(
-                len(column) >= 3 and column in q for column in candidate_columns
-            ):
-                score += 12
-
-            if score > 0 and (join_intent or any(name and name in q for name in table_names)):
-                scored.append((score, candidate))
-
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [candidate for _, candidate in scored[:4]]
-
-    def _additional_candidates_for_question(
-        self,
-        question: str,
-        primary: TableCandidate,
-        candidates: list[TableCandidate],
-    ) -> list[TableCandidate]:
-        result: list[TableCandidate] = []
-        seen: set[tuple[str, str, str]] = set()
-        for candidate in self._join_related_candidates(question, primary, candidates):
-            key = (candidate.source_kind, candidate.source_ref_id, candidate.qualified_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(candidate)
-        for candidate in self._semantic_related_candidates(primary, candidates):
-            key = (candidate.source_kind, candidate.source_ref_id, candidate.qualified_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(candidate)
-        return result
-
-    def _semantic_table_hint(self, candidates: list[TableCandidate]) -> TableCandidate | None:
-        names: list[str] = []
-        hints = self.semantic_hints if isinstance(self.semantic_hints, dict) else {}
-        for metric in hints.get("metrics") or []:
-            if isinstance(metric, dict):
-                names.append(str(metric.get("base_table") or ""))
-        for table in hints.get("tables") or []:
-            if isinstance(table, dict):
-                names.append(str(table.get("qualified_name") or ""))
-                names.append(str(table.get("table_name") or ""))
-        for raw_name in names:
-            name = raw_name.strip().lower()
-            if not name:
-                continue
-            for candidate in candidates:
-                if name in {
-                    str(candidate.qualified_name or "").lower(),
-                    str(candidate.table_name or "").lower(),
-                }:
-                    return candidate
-        return None
-
-    def _semantic_related_candidates(
-        self,
-        primary: TableCandidate,
-        candidates: list[TableCandidate],
-    ) -> list[TableCandidate]:
-        hints = self.semantic_hints if isinstance(self.semantic_hints, dict) else {}
-        related_names: set[str] = set()
-        primary_names = {
-            str(primary.qualified_name or "").lower(),
-            str(primary.table_name or "").lower(),
-        }
-        for rel in hints.get("relationships") or []:
-            if not isinstance(rel, dict):
-                continue
-            from_table = str(rel.get("from_table") or "").lower()
-            to_table = str(rel.get("to_table") or "").lower()
-            if from_table in primary_names:
-                related_names.add(to_table)
-            if to_table in primary_names:
-                related_names.add(from_table)
-        result: list[TableCandidate] = []
-        for candidate in candidates:
-            candidate_names = {
-                str(candidate.qualified_name or "").lower(),
-                str(candidate.table_name or "").lower(),
-            }
-            if related_names & candidate_names:
-                result.append(candidate)
-        return result
-
-    def _semantic_prompt_block(self) -> str:
-        if not self.semantic_context_prompt:
-            return ""
-        return "\n\nSEMANTIC_HINTS:\n" + self.semantic_context_prompt[:4000]
-
-    def _try_compile_semantic_sql(self, question: str) -> str | None:
+        query: SemanticQuery,
+        *,
+        artifact_name: str | None,
+        purpose: str,
+    ) -> dict[str, Any]:
         hints = self.semantic_hints if isinstance(self.semantic_hints, dict) else {}
         catalog_payload = hints.get("catalog")
         if not isinstance(catalog_payload, dict):
-            return None
-        try:
-            catalog = SemanticCatalog.model_validate(catalog_payload)
-            semantic_query = semantic_query_from_hints(hints, question=question, catalog=catalog)
-            if semantic_query is None:
-                return None
-            dialect = "duckdb" if self.csv_loaded else str(getattr(self.db_runtime_config, "db_type", "postgres") or "postgres")
-            return SemanticQueryCompiler(catalog, dialect=dialect).compile(semantic_query)
-        except Exception:
-            return None
-
-    def _find_explicit_table(self, question: str, candidates: list[TableCandidate]) -> TableCandidate | None:
-        normalized_question = self._normalized_question(question)
-        for candidate in candidates:
-            qualified = str(candidate.qualified_name or "").lower()
-            if qualified and self._contains_identifier(normalized_question, qualified):
-                return candidate
-        for candidate in candidates:
-            table_name = str(candidate.table_name or "").lower()
-            if table_name and self._contains_identifier(normalized_question, table_name):
-                return candidate
-        return None
-
-    @staticmethod
-    def _score_table_candidate(question: str, candidate: TableCandidate) -> int:
-        """Rank tables so analytic questions prefer relevant schemas over import/meta noise."""
-        q = re.sub(r"\s+", " ", str(question or "").lower()).strip()
-        score = 0
-        schema = str(candidate.schema or "").lower()
-        if schema.endswith("_meta") or schema in {"information_schema", "pg_catalog"}:
-            score -= 80
-
-        for col in candidate.columns:
-            col_l = str(col).lower()
-            if len(col_l) >= 4 and col_l in q:
-                score += 10
-
-        if candidate.table_name.lower() in q:
-            score += 25
-        if candidate.qualified_name.lower() in q:
-            score += 30
-
-        return score
-
-    def _rank_candidates(self, question: str, candidates: list[TableCandidate]) -> list[TableCandidate]:
-        return sorted(
-            candidates,
-            key=lambda c: self._score_table_candidate(question, c),
-            reverse=True,
+            raise ValueError("Semantic catalog is unavailable for the requested metric")
+        catalog = SemanticCatalog.model_validate(catalog_payload)
+        metrics_by_key = {metric.key: metric for metric in catalog.metrics if metric.is_active}
+        selected_metrics = [metrics_by_key[key] for key in query.metrics if key in metrics_by_key]
+        dialect = (
+            "duckdb"
+            if self.csv_loaded
+            else str(getattr(self.db_runtime_config, "db_type", "postgres") or "postgres")
         )
-
-    def _choose_table_via_llm(self, question: str, candidates: list[TableCandidate]) -> TableCandidate:
-        ranked = self._rank_candidates(question, candidates)
-        preview_rows = []
-        for idx, candidate in enumerate(ranked[:40], start=1):
-            preview_rows.append(
+        compiler = SemanticQueryCompiler(catalog, dialect=dialect)
+        default_time_dimension = compiler.shared_default_time_dimension(selected_metrics)
+        effective_query = query
+        if query.time_grain and not query.time_dimension and default_time_dimension:
+            effective_query = query.model_copy(update={"time_dimension": default_time_dimension})
+        semantic_sql = compiler.compile(effective_query)
+        payload = self.execute_sql_artifact(
+            semantic_sql,
+            artifact_name=artifact_name,
+            purpose=purpose,
+        )
+        meta = dict(payload.get("meta") or {})
+        meta["semantic_metric"] = {
+            "catalog_id": catalog.catalog_id,
+            "metric_keys": list(effective_query.metrics),
+            "metrics": [
                 {
-                    "idx": idx,
-                    "source_kind": candidate.source_kind,
-                    "dialect": candidate.dialect,
-                    "table_name": candidate.table_name,
-                    "qualified_name": candidate.qualified_name,
-                    "columns": candidate.columns[:15],
-                    "source_label": candidate.source_label,
+                    "key": metric.key,
+                    "name": metric.name,
+                    "formula": metric.formula,
+                    "format": metric.format,
+                    "base_table": metric.base_table,
+                    "default_time_dimension": metric.default_time_dimension,
+                    "allowed_dimensions": list(metric.allowed_dimensions),
+                    "filters": [item.model_dump(mode="json") for item in metric.filters],
                 }
-            )
-
-        prompt = f"""
-Выбери ОДНУ таблицу, которая лучше всего подходит для вопроса пользователя.
-Верни только JSON вида {{"idx": number, "reason": "short"}}.
-
-QUESTION:
-{question}
-
-CANDIDATES:
-{json.dumps(preview_rows, ensure_ascii=False)}
-""".strip()
-
-        resp = self.llm.invoke(
-            [
-                SystemMessage(content="Верни только валидный JSON."),
-                HumanMessage(content=prompt),
-            ]
-        )
-        obj = _safe_json_loads(_message_text(resp.content))
-        if obj and isinstance(obj.get("idx"), int):
-            idx = int(obj["idx"])
-            if 1 <= idx <= len(preview_rows):
-                return ranked[idx - 1]
-
-        return ranked[0]
-
-    def resolve_table(self, question: str) -> TableCandidate:
-        candidates = self.collect_candidates()
-        if not candidates:
-            raise ValueError("Нет доступных таблиц ни из DB runtime, ни из CSV session.")
-
-        # Single candidate — no disambiguation needed.
-        if len(candidates) == 1:
-            return candidates[0]
-
-        explicit = self._find_explicit_table(question, candidates)
-        if explicit is not None:
-            return explicit
-
-        semantic = self._semantic_table_hint(candidates)
-        if semantic is not None:
-            return semantic
-
-        return self._choose_table_via_llm(question, candidates)
-
-    def _run_query_no_throw(
-        self,
-        candidate: TableCandidate,
-        sql: str,
-    ) -> tuple[list[dict[str, Any]] | None, str | None]:
-        try:
-            if candidate.source_kind == "db":
-                rows = self._db_helper().query_dataframe(sql)
-            else:
-                rows = self.csv_runtime.query_dataframe(str(candidate.csv_session_id), sql)
-            return rows.to_dict(orient="records"), None
-        except Exception as exc:
-            return None, str(exc)
-
-    def _safe_sample_sql(self, candidate: TableCandidate) -> str:
-        """Build a safe LIMIT-5 sample query with properly quoted identifiers.
-
-        Never interpolate ``qualified_name`` directly — it originates from the
-        database catalog and could contain unexpected characters.
-        """
-        if candidate.source_kind == "db":
-            helper = self._db_helper()
-            schema = candidate.schema
-            table = candidate.table_name
-            quoted_table = helper._quote_identifier(table)  # noqa: SLF001
-            if schema:
-                quoted_schema = helper._quote_identifier(schema)  # noqa: SLF001
-                qualified = f"{quoted_schema}.{quoted_table}"
-            else:
-                qualified = quoted_table
-        else:
-            # DuckDB / CSV session — table names come from our own catalog.
-            table = candidate.table_name
-            if not IDENTIFIER_RE.match(table):
-                raise ValueError(f"Unsafe CSV table identifier: {table!r}")
-            qualified = f'"{table}"'
-        return f"SELECT * FROM {qualified} LIMIT 5"
-
-    def _table_sample(self, candidate: TableCandidate) -> dict[str, Any]:
-        try:
-            sample_sql = self._safe_sample_sql(candidate)
-            _assert_read_only_sql(sample_sql)
-            if candidate.source_kind == "db":
-                rows = self._db_helper().query_dataframe(sample_sql)
-            else:
-                rows = self.csv_runtime.query_dataframe(str(candidate.csv_session_id), sample_sql)
-            return {"first_rows": rows.to_dict(orient="records")}
-        except Exception:
-            return {"first_rows": []}
-
-    @staticmethod
-    def _quoted_columns_str(columns: list[str], dialect: str) -> str:
-        """Return column names in the safest syntax for the SQL dialect."""
-        needs_sql_quotes = dialect.lower() in ("postgresql", "postgres", "duckdb")
-        parts: list[str] = []
-        for col in columns:
-            name = str(col)
-            if needs_sql_quotes:
-                escaped = name.replace('"', '""')
-                parts.append(f'"{escaped}"')
-            elif IDENTIFIER_RE.fullmatch(name):
-                parts.append(name)
-            else:
-                escaped = name.replace('"', '""')
-                parts.append(f'"{escaped}"')
-        return ", ".join(parts)
-
-    def _call_llm_sql_only(
-        self,
-        *,
-        question: str,
-        candidate: TableCandidate,
-        sample: dict[str, Any] | None = None,
-        previous_sql: str | None = None,
-        feedback: str | None = None,
-        additional_candidates: list[TableCandidate] | None = None,
-    ) -> str:
-        table_name = candidate.qualified_name
-        columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
-        schema_hints_block = build_sql_generation_hints(
-            candidate.columns,
-            db_schema=self._configured_db_schema(),
-        )
-        semantic_block = self._semantic_prompt_block()
-
-        extra_tables_block = ""
-        if additional_candidates:
-            parts = []
-            for ac in additional_candidates:
-                ac_cols = self._quoted_columns_str(ac.columns, ac.dialect)
-                source_hint = (
-                    f" (source: {ac.display_name or ac.file_name or ac.source_label})"
-                    if (ac.display_name or ac.file_name or ac.source_label)
-                    else ""
-                )
-                parts.append(f"- {ac.qualified_name}{source_hint}: {ac_cols}")
-            extra_tables_intro = "\nAdditional table context for JOIN when multiple sources are needed:\n"
-            extra_tables_block = extra_tables_intro + "\n".join(parts)
-        primary_source_hint = (
-            f" (source: {candidate.display_name or candidate.file_name or candidate.source_label})"
-            if (candidate.display_name or candidate.file_name or candidate.source_label)
-            else ""
-        )
-
-        if previous_sql and feedback:
-            user_prompt = f"""
-Оригинальный вопрос:
-{question}
-
-Предыдущий SQL:
-{previous_sql}
-
-Проблема:
-{feedback}
-
-Сгенерируй исправленный SQL для {candidate.dialect}.
-
-Правила:
-- верни только SQL
-- только SELECT/WITH
- - стартовая таблица: {table_name}{primary_source_hint}
- - колонки основной таблицы: {columns_str}{extra_tables_block}{schema_hints_block}
- - If the question needs comparison or JOIN across tables, use all relevant context tables.
- - старайся вернуть компактный результат
-""".strip()
-        else:
-            user_prompt = f"""
-Сгенерируй один SQL-запрос для {candidate.dialect}.
-
-Правила:
-- верни только SQL
-- только SELECT/WITH
- - стартовая таблица: {table_name}{primary_source_hint}
- - колонки основной таблицы: {columns_str}{extra_tables_block}{schema_hints_block}
- - If the question needs comparison or JOIN across tables, use all relevant context tables.
- - старайся вернуть компактный результат
-
-Вопрос:
-{question}
-""".strip()
-
-        if semantic_block:
-            user_prompt += semantic_block
-
-        if sample and sample.get("first_rows"):
-            user_prompt += "\n\nSAMPLE_ROWS:\n" + json.dumps(sample["first_rows"], ensure_ascii=False)
-
-        resp = self.llm.invoke(
-            [
-                SystemMessage(content="Ты SQL-генератор. Верни только SQL SELECT/WITH."),
-                HumanMessage(content=user_prompt),
-            ]
-        )
-        return clean_sql(strip_thinking(_message_text(resp.content)))
-
-    @staticmethod
-    def _is_trivial_sql(sql: str) -> bool:
-        """Detect trivial queries that don't need LLM judge validation."""
-        s = re.sub(r"\s+", " ", sql.strip().upper())
-        # Only one SELECT (no subqueries)
-        if s.count("SELECT") != 1:
-            return False
-        # Simple SELECT ... FROM ... with optional WHERE/ORDER BY/LIMIT/GROUP BY/HAVING (no JOINs)
-        _trivial_pattern = r"^SELECT\s+.+?\s+FROM\s+\S+(\s+(WHERE|LIMIT|ORDER\s+BY|OFFSET|GROUP\s+BY|HAVING)\s+.*)?\s*;?\s*$"  # noqa: E501
-        if re.match(_trivial_pattern, s):
-            if "JOIN" not in s:
-                return True
-        # Simple aggregate: SELECT COUNT/SUM/AVG/MIN/MAX(...) [optional GROUP BY]
-        if re.match(r"^SELECT\s+(COUNT|SUM|AVG|MIN|MAX)\s*\(", s):
-            return True
-        # Multi-aggregate: SELECT COUNT(...), SUM(...) etc. from single table
-        if re.match(r"^SELECT\s+((COUNT|SUM|AVG|MIN|MAX)\s*\([^)]*\)\s*,?\s*)+\s*FROM\s+\S+", s):
-            return True
-        return False
-
-    def _judge_sql(
-        self,
-        *,
-        question: str,
-        candidate: TableCandidate,
-        sql: str,
-        sample_result: list[dict[str, Any]],
-    ) -> tuple[bool, str, str]:
-        columns_str = self._quoted_columns_str(candidate.columns, candidate.dialect)
-        prompt = f"""
-Ты строгий ревьюер SQL ({candidate.dialect}).
-Проверь, решает ли SQL вопрос пользователя.
-Верни только JSON формата {{"ok": true/false, "reason": "...", "fix_hint": "..."}}.
-
-TABLE: {candidate.qualified_name}
-COLUMNS: {columns_str}
-
-QUESTION:
-{question}
-
-SQL:
-{sql}
-
-SAMPLE_RESULT:
-{json.dumps(sample_result, ensure_ascii=False)}
-""".strip()
-
-        resp = self.llm.invoke(
-            [
-                SystemMessage(content="Верни только JSON."),
-                HumanMessage(content=prompt),
-            ]
-        )
-        obj = _safe_json_loads(_message_text(resp.content))
-        if not obj:
-            return False, "Judge parsing failed", "Верни JSON строго формата ok/reason/fix_hint"
-
-        return (
-            bool(obj.get("ok", False)),
-            str(obj.get("reason", "")),
-            str(obj.get("fix_hint", "")),
-        )
-
-    def generate_sql_with_retries(
-        self,
-        *,
-        question: str,
-        candidate: TableCandidate,
-        max_attempts: int = 3,
-        sample_rows: int = 5,
-        additional_candidates: list[TableCandidate] | None = None,
-    ) -> dict[str, Any]:
-        previous_sql: str | None = None
-        feedback: str | None = None
-
-        # Fetch sample rows once (reused across retries and LLM prompts).
-        cached_sample = self._table_sample(candidate)
-
-        for attempt in range(1, max_attempts + 1):
-            sql = self._call_llm_sql_only(
-                question=question,
-                candidate=candidate,
-                sample=cached_sample,
-                previous_sql=previous_sql,
-                feedback=feedback,
-                additional_candidates=additional_candidates,
-            )
-            sql = clean_sql(sql)
-            previous_sql = sql
-
-            if not is_select_or_with(sql):
-                feedback = "Разрешены только SELECT/WITH."
-                continue
-
-            try:
-                _assert_read_only_sql(sql)
-            except Exception as exc:
-                feedback = f"SQL validation error: {exc}"
-                continue
-
-            # Run sample query directly — it validates both syntax and data.
-            sample_res, err = self._run_query_no_throw(candidate, wrap_sample(sql, sample_rows))
-            if err:
-                feedback = f"DB error: {err}"
-                continue
-
-            # Skip judge for trivial queries that compiled and returned data.
-            if sample_res and self._is_trivial_sql(sql):
-                return {
-                    "ok": True,
-                    "sql": sql,
-                    "attempts": attempt,
-                    "judge_reason": "trivial_skip",
-                }
-
-            ok, reason, fix_hint = self._judge_sql(
-                question=question,
-                candidate=candidate,
-                sql=sql,
-                sample_result=sample_res or [],
-            )
-            if ok:
-                return {
-                    "ok": True,
-                    "sql": sql,
-                    "attempts": attempt,
-                    "judge_reason": reason,
-                }
-
-            feedback = f"Judge reject: {reason}" + (f" | hint: {fix_hint}" if fix_hint else "")
-
-        return {
-            "ok": False,
-            "sql": previous_sql,
-            "attempts": max_attempts,
-            "error": feedback or "SQL generation failed",
+                for key in effective_query.metrics
+                if (metric := metrics_by_key.get(key)) is not None
+            ],
+            "query": effective_query.model_dump(mode="json"),
+            "compiled_sql": semantic_sql,
         }
+        payload["meta"] = meta
+        return payload
 
     def _csv_source_ref(self, candidate: TableCandidate) -> dict[str, Any]:
         return {
@@ -1377,18 +797,13 @@ SAMPLE_RESULT:
                 artifact_name=final_artifact_name,
             )
             referenced_candidates = self._referenced_candidates_for_sql(clean)
-            referenced_tables = [
-                self._candidate_descriptor(candidate)
-                for candidate in referenced_candidates
-            ]
+            referenced_tables = [self._candidate_descriptor(candidate) for candidate in referenced_candidates]
             meta = dict(payload.get("meta") or {})
             meta["direct_sql"] = True
             if referenced_tables:
                 meta["lineage"] = {
                     "source_tables": referenced_tables,
-                    "source_table_names": [
-                        item["qualified_name"] for item in referenced_tables
-                    ],
+                    "source_table_names": [item["qualified_name"] for item in referenced_tables],
                 }
             payload["meta"] = meta
             return payload
@@ -1419,15 +834,10 @@ SAMPLE_RESULT:
             referenced_candidates = self._referenced_candidates_for_sql(sql)
             if not referenced_candidates:
                 referenced_candidates = [candidate]
-            referenced_tables = [
-                self._candidate_descriptor(item)
-                for item in referenced_candidates
-            ]
+            referenced_tables = [self._candidate_descriptor(item) for item in referenced_candidates]
             meta["lineage"] = {
                 "source_tables": referenced_tables,
-                "source_table_names": [
-                    item["qualified_name"] for item in referenced_tables
-                ],
+                "source_table_names": [item["qualified_name"] for item in referenced_tables],
             }
             payload["meta"] = meta
             return payload
@@ -1447,15 +857,16 @@ SAMPLE_RESULT:
         mode: str | None = None,
         sql: str | None = None,
         table_names: list[str] | None = None,
+        semantic_query: SemanticQuery | None = None,
     ) -> dict[str, Any]:
         effective_mode = str(mode or "").strip() or None
         if effective_mode is None:
-            if sql or is_select_or_with(str(question or "")):
+            if semantic_query is not None:
+                effective_mode = "semantic_query"
+            elif sql or is_select_or_with(str(question or "")):
                 effective_mode = "execute_sql"
-            elif self._wants_catalog_table_list(question):
-                effective_mode = "catalog_tables"
             else:
-                effective_mode = "nl_query"
+                raise ValueError("SQL tool mode is required")
 
         if effective_mode == "catalog_tables":
             return self._build_catalog_table_list_artifact()
@@ -1473,33 +884,13 @@ SAMPLE_RESULT:
                 purpose=question or sql,
             )
 
-        if effective_mode != "nl_query":
-            raise ValueError(f"Unsupported SQL tool mode: {effective_mode}")
-
-        semantic_sql = self._try_compile_semantic_sql(question)
-        if semantic_sql:
-            return self.execute_sql_artifact(
-                semantic_sql,
+        if effective_mode == "semantic_query":
+            if semantic_query is None:
+                raise ValueError("semantic_query mode requires semantic_query")
+            return self._execute_semantic_query(
+                semantic_query,
                 artifact_name=artifact_name,
-                purpose=question,
+                purpose=question or f"Semantic query: {', '.join(semantic_query.metrics)}",
             )
 
-        candidate = self.resolve_table(question)
-        additional = self._additional_candidates_for_question(
-            question,
-            candidate,
-            self.collect_candidates(),
-        )
-        gen = self.generate_sql_with_retries(
-            question=question,
-            candidate=candidate,
-            additional_candidates=additional or None,
-        )
-        if not gen["ok"]:
-            raise ValueError(str(gen.get("error") or "SQL generation failed"))
-        return self.execute_final_query(
-            question=question,
-            candidate=candidate,
-            sql=str(gen["sql"]),
-            artifact_name=artifact_name,
-        )
+        raise ValueError(f"Unsupported SQL tool mode: {effective_mode}")

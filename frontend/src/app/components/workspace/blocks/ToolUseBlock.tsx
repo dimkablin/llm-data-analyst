@@ -57,7 +57,7 @@ export function ToolUseBlock({
   const statusIcon = isRunning ? (
     <Loader2 className="h-3 w-3 shrink-0 animate-spin text-primary" />
   ) : status === "error" ? (
-    <span className="flex h-3 w-3 shrink-0 items-center justify-center text-[10px] text-destructive">●</span>
+    <span className="flex h-3 w-3 shrink-0 items-center justify-center text-[10px] text-muted-foreground/50">●</span>
   ) : (
     <span className="flex h-3 w-3 shrink-0 items-center justify-center text-[10px] text-emerald-500">●</span>
   );
@@ -101,7 +101,7 @@ export function ToolUseBlock({
 
         {/* Result summary inline */}
         {!isRunning && !artifact_keys?.length && result_summary ? (
-          <span className={`ml-auto shrink-0 truncate font-mono text-[11px] ${status === "error" ? "text-destructive/70" : "text-muted-foreground/40"}`}>
+          <span className="ml-auto shrink-0 truncate font-mono text-[11px] text-muted-foreground/40">
             {result_summary}
           </span>
         ) : null}
@@ -135,7 +135,7 @@ export function ToolUseBlock({
                 {status === "error" ? "Ошибка" : "Выход"}
               </span>
               {status === "error" ? (
-                <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
+                <div className="max-w-full overflow-hidden rounded border border-border/20 bg-muted/15 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/70 break-words">
                   {output_preview}
                 </div>
               ) : (

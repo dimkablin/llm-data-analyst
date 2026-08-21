@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from backend.agent.contracts import AnalysisTaskContract, RequiredOutput
 from backend.agent.graph.nodes.finalize import finalize_node
 from backend.agent.models import AgentResponse
-from backend.skills.contracts import SkillExecutionContract, SkillExecutionRequirement
 
 
 def test_finalize_preserves_answer_when_review_would_fail() -> None:
@@ -33,7 +31,7 @@ def test_finalize_preserves_answer_when_review_would_fail() -> None:
     assert finalized.reasoning == "agent reasoning"
 
 
-def test_finalize_preserves_answer_when_task_contract_would_fail() -> None:
+def test_finalize_ignores_legacy_task_contract_requirements() -> None:
     response = AgentResponse(
         final_text="Revenue increased by 10% in Q2 after the pricing change.",
         reasoning="agent reasoning",
@@ -47,11 +45,12 @@ def test_finalize_preserves_answer_when_task_contract_would_fail() -> None:
         {
             "response": response,
             "prompt": "Explain revenue change",
-            "task_contract": AnalysisTaskContract(
-                required_outputs=[
-                    RequiredOutput(kind="brief", reason="user asked for explanation")
-                ]
-            ),
+            "task_contract": {
+                "required_outputs": [
+                    {"kind": "plot", "reason": "user asked for a plot"}
+                ],
+                "required_capabilities": ["chart"],
+            },
             "callbacks": [],
             "trace_context": {},
             "step_index": 1,
@@ -65,7 +64,7 @@ def test_finalize_preserves_answer_when_task_contract_would_fail() -> None:
     assert finalized.reasoning == "agent reasoning"
 
 
-def test_finalize_preserves_answer_when_skill_contract_would_fail() -> None:
+def test_finalize_ignores_legacy_skill_contract_requirements() -> None:
     response = AgentResponse(
         final_text="Revenue increased by 10% in Q2 after the pricing change.",
         reasoning="agent reasoning",
@@ -80,12 +79,11 @@ def test_finalize_preserves_answer_when_skill_contract_would_fail() -> None:
             "response": response,
             "prompt": "Analyze revenue change",
             "skill_execution_requirements": [
-                SkillExecutionRequirement(
-                    skill_id="revenue_skill",
-                    execution_contract=SkillExecutionContract(
-                        required_tools=("missing_tool",),
-                    ),
-                )
+                {
+                    "skill_id": "revenue_skill",
+                    "required_tools": ["missing_tool"],
+                    "required_artifacts": ["plot"],
+                }
             ],
             "callbacks": [],
             "trace_context": {},

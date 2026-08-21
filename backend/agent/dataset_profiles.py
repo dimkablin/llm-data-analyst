@@ -127,9 +127,7 @@ def build_universal_analytics_playbook(
         if db_name:
             type_suffix = f" ({db_type})" if db_type else ""
             lines.append(f"- Connection: {db_name}{type_suffix}")
-        configured_schema = str(
-            db_schema or (source.get("db_options") or {}).get("schema") or ""
-        ).strip()
+        configured_schema = str(db_schema or (source.get("db_options") or {}).get("schema") or "").strip()
         if configured_schema:
             lines.append(f"- Configured schema: `{configured_schema}`.")
         else:
@@ -160,7 +158,8 @@ def build_universal_analytics_playbook(
             "| Segment comparison | group by the requested dimension and compare the same metric |",
             "| Composition / share | compute numerator and denominator explicitly from the same source |",
             "| Plan vs actual | compare verified plan/target and actual metrics; call tools when available |",
-            "| Forecast | use forecast_tool when the user asks for projection/horizon |",
+            "| Forecast | resolve the specialized forecasting capability "
+            "through the current active capability catalog |",
             "| Report or summary | use generate_summary_tool/generate_report_tool when requested |",
             "",
             "### Required Rules",
@@ -169,7 +168,8 @@ def build_universal_analytics_playbook(
             "- Preview/sample rows are not the full dataset; absence claims require full-source counts.",
             "- Percent/share metrics must state their denominator.",
             "- Numbers in the final answer must come from tool output.",
-            "- For complex analysis, start with get_tool_instructions(\"general_analytics\").",
+            "- Load specialized instructions only for a concrete workflow gap; "
+            "the active prompt already contains the base workflow.",
             "- Final answer structure: essence, key numbers, insights, artifacts, what to verify.",
         ]
     )

@@ -3,15 +3,15 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
 import backend.tools.impl  # noqa: F401 - side-effect import avoids sql_table_service circular import
-from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.auth.blob_store import BlobWrite, StoredBlob
 from backend.data_access.csv_runtime_state_service import CSVRuntimeStateService
+from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.sql_table_service import SQLTableService
 from backend.data_access.tabular_upload_service import (
     TabularUploadError,
@@ -104,13 +104,102 @@ def test_ingest_multiple_csv_files_registers_joinable_tables_in_one_duckdb(tmp_p
     assert all(cell.is_source_binding for cell in notebook.code_cells)
 
 
+def test_ingest_links_manifest_source_to_durable_original(tmp_path: Path) -> None:
+    class FakeBlobStore:
+        def __init__(self) -> None:
+            self.items: list[BlobWrite] = []
+
+        def put_many(self, **kwargs) -> list[str]:
+            self.items = kwargs["items"]
+            return ["blob-1"]
+
+        def delete_many(self, **_kwargs) -> None:
+            raise AssertionError("successful ingest must not delete its original")
+
+    blob_store = FakeBlobStore()
+    store = SessionStore(str(tmp_path / "legacy"), ttl_days=7)
+    session_id = store.create_session().session_id
+    service = TabularUploadService(
+        store=store,
+        csv_runtime=CSVSessionRuntime(base_dir=tmp_path / "duckdb", default_ttl_sec=3600),
+        manifest_store=ManifestStore(tmp_path),
+        notebook_orchestrator=NotebookOrchestrator(NotebookStore(tmp_path)),
+        storage_dir=tmp_path,
+        blob_store=blob_store,  # type: ignore[arg-type]
+    )
+
+    service.ingest_files(
+        session_id=session_id,
+        user_id=7,
+        files=[TabularUploadFile(file_name="orders.csv", content=b"id,amount\n1,10\n")],
+    )
+
+    source = ManifestStore(tmp_path).load(session_id).sources[0]
+    assert source.blob_id == "blob-1"
+    assert blob_store.items[0].content == b"id,amount\n1,10\n"
+
+
+def test_csv_runtime_restores_from_postgres_original_after_local_files_are_lost(
+    tmp_path: Path,
+) -> None:
+    class FakeBlobStore:
+        content = b"id,amount\n1,10\n2,20\n"
+
+        def put_many(self, **_kwargs) -> list[str]:
+            return ["blob-1"]
+
+        def delete_many(self, **_kwargs) -> None:
+            return None
+
+        def get_for_session(self, **_kwargs) -> StoredBlob:
+            return StoredBlob(
+                blob_id="blob-1",
+                logical_name="orders.csv",
+                media_type="text/csv",
+                content=self.content,
+            )
+
+    store = SessionStore(str(tmp_path / "legacy"), ttl_days=7)
+    session_id = store.create_session().session_id
+    csv_runtime = CSVSessionRuntime(base_dir=tmp_path / "duckdb", default_ttl_sec=3600)
+    manifest_store = ManifestStore(tmp_path)
+    blob_store = FakeBlobStore()
+    service = TabularUploadService(
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=NotebookOrchestrator(NotebookStore(tmp_path)),
+        storage_dir=tmp_path,
+        blob_store=blob_store,  # type: ignore[arg-type]
+    )
+    service.ingest_files(
+        session_id=session_id,
+        user_id=7,
+        files=[TabularUploadFile(file_name="orders.csv", content=blob_store.content)],
+    )
+    source = manifest_store.load(session_id).sources[0]
+    (tmp_path / "sessions" / session_id / str(source.parquet_path)).unlink()
+    csv_runtime.delete_session(session_id)
+
+    CSVRuntimeStateService(
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        storage_dir=tmp_path,
+        blob_store=blob_store,  # type: ignore[arg-type]
+    ).ensure_csv_runtime(session_id=session_id)
+
+    frame = csv_runtime.query_dataframe(session_id, "SELECT * FROM orders ORDER BY id")
+    assert frame.to_dict(orient="records") == [{"id": 1, "amount": 10}, {"id": 2, "amount": 20}]
+
+
 class _FailingNotebookOrchestrator(NotebookOrchestrator):
     def apply_batch(
         self,
         session_id: str,
         edits: list[NotebookEdit],
     ) -> list[EditResult]:
-        notebook = self._store.load(session_id)  # noqa: SLF001
+        notebook = self._store.load(session_id)
         return [EditResult(ok=False, notebook=notebook, error="simulated notebook failure")]
 
 
@@ -170,7 +259,7 @@ def test_ingest_xlsx_file_registers_first_sheet_as_duckdb_table(tmp_path: Path) 
     )
 
     assert [item.table_name for item in result.files] == ["prices"]
-    queried = csv_runtime.query_dataframe(session_id, 'SELECT sku, price FROM prices ORDER BY sku')
+    queried = csv_runtime.query_dataframe(session_id, "SELECT sku, price FROM prices ORDER BY sku")
     assert queried.to_dict(orient="records") == [
         {"sku": "A", "price": 10.5},
         {"sku": "B", "price": 20.0},
@@ -293,9 +382,6 @@ def test_sql_table_candidates_include_upload_source_metadata(tmp_path: Path) -> 
     )
 
     sql_service = SQLTableService(
-        llm_base_url="http://localhost:9",
-        llm_model="dummy",
-        llm_api_key="dummy",
         csv_loaded=True,
         csv_session_id=session_id,
         storage_dir=tmp_path,
@@ -329,9 +415,6 @@ def test_joined_multi_file_upload_result_can_feed_plotly_tool(tmp_path: Path) ->
     )
 
     sql_service = SQLTableService(
-        llm_base_url="http://localhost:9",
-        llm_model="dummy",
-        llm_api_key="dummy",
         csv_loaded=True,
         csv_session_id=session_id,
         max_rows=50,
@@ -339,15 +422,12 @@ def test_joined_multi_file_upload_result_can_feed_plotly_tool(tmp_path: Path) ->
     sql_service.csv_runtime = csv_runtime
     sandbox = SessionSandbox()
     sql_tool = SQLTool(
-        llm_base_url="http://localhost:9",
-        llm_model="dummy",
-        llm_api_key="dummy",
         csv_loaded=True,
         csv_session_id=session_id,
         max_rows=50,
         sandbox=sandbox,
     )
-    sql_tool._service = sql_service  # noqa: SLF001
+    sql_tool._service = sql_service
     join_sql = """
         SELECT c.segment, SUM(o.amount) AS total_amount
         FROM orders AS o
@@ -356,14 +436,12 @@ def test_joined_multi_file_upload_result_can_feed_plotly_tool(tmp_path: Path) ->
         ORDER BY c.segment
     """
 
-    with (
-        patch.object(SQLTableService, "_call_llm_sql_only", return_value=join_sql),
-        patch.object(SQLTableService, "_judge_sql", return_value=(True, "", "")),
-    ):
-        _text, table_payload = sql_tool._run_query(
-            "join orders and customers by customer_id and chart total amount by segment",
-            artifact_name="sales_by_segment",
-        )
+    _text, table_payload = sql_tool._run(
+        mode="execute_sql",
+        sql=join_sql,
+        question="join orders and customers by customer_id",
+        artifact_name="sales_by_segment",
+    )
 
     joined = table_payload["items"]["sales_by_segment"]
     assert isinstance(joined, pd.DataFrame)

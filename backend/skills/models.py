@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from backend.skills.contracts import SkillExecutionContract
-
 
 class SkillError(Exception):
     """Base error for skill loading and selection."""
@@ -39,7 +37,6 @@ class Skill:
     kind: str = "analytical"
     tool_key: str | None = None
     enabled_by_default: bool = True
-    execution_contract: SkillExecutionContract = field(default_factory=SkillExecutionContract)
 
     @property
     def instructions_markdown(self) -> str:

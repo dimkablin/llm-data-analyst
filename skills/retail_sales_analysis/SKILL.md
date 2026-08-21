@@ -26,9 +26,9 @@ values first; do not rely on customer, file, brand, category, or period names.
 - For period comparisons, verify the available date range before filtering.
 - Do not substitute columns from a different dataset or language convention.
 
-### Required tools
-- sql_tool
-- plotly_tool
+### Required capabilities
+- read_only_sql
+- chart
 
 ### Required artifacts
 - table: retail_sales_slice_table

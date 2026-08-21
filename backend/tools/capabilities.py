@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.tools.catalog import ALL_TOOL_SPECS
+
 
 class RuntimeTableDescriptor(BaseModel):
     table_name: str
@@ -50,49 +52,14 @@ _CAPABILITY_TABLE_PROMPT_OPTIONS = RuntimeTableDescriptorPromptOptions(
     max_columns=12,
 )
 
-_CAPABILITY_SPECS: tuple[dict[str, Any], ...] = (
+_CAPABILITY_SPECS: tuple[dict[str, Any], ...] = tuple(
     {
-        "key": "table_analysis",
-        "label": "табличный анализ",
-        "requires_any_tools": ("pandas_tool",),
-        "requires_data_source": "dataset",
-    },
-    {
-        "key": "db_query",
-        "label": "SQL-анализ БД",
-        "requires_any_tools": ("sql_tool", "database_tool"),
-        "requires_data_source": "db",
-    },
-    {
-        "key": "charting",
-        "label": "построение графиков",
-        "requires_any_tools": ("plotly_tool",),
-        "requires_data_source": "any_data",
-    },
-    {
-        "key": "forecasting",
-        "label": "прогнозирование",
-        "requires_any_tools": ("forecast_tool",),
-        "requires_data_source": "any_data",
-    },
-    {
-        "key": "anomaly_planfact",
-        "label": "анализ аномалий и план-факт",
-        "requires_any_tools": ("anomaly_planfact_tool",),
-        "requires_data_source": "any_data",
-    },
-    {
-        "key": "external_search",
-        "label": "внешний поиск",
-        "requires_any_tools": ("search_tool",),
-        "requires_data_source": None,
-    },
-    {
-        "key": "knowledge_base_search",
-        "label": "поиск по базе знаний",
-        "requires_any_tools": ("rag_tool",),
-        "requires_data_source": None,
-    },
+        "key": spec.capability_key,
+        "label": spec.description,
+        "requires_any_tools": (spec.tool_key,),
+        "requires_data_source": "any_data" if spec.requires_session_data else None,
+    }
+    for spec in ALL_TOOL_SPECS
 )
 
 
@@ -159,8 +126,7 @@ def format_runtime_table_descriptors(
         hidden_columns = len(columns) - len(shown_columns)
         if hidden_columns > 0:
             columns_text = (
-                f"{columns_text}, "
-                f"{options.column_overflow_template.format(hidden_columns=hidden_columns)}"
+                f"{columns_text}, {options.column_overflow_template.format(hidden_columns=hidden_columns)}"
             )
         stats: list[str] = []
         if descriptor.row_count is not None:
@@ -191,17 +157,8 @@ def _has_required_data_source(
     has_db_source: bool,
     has_knowledge_base: bool,
 ) -> bool:
-    if requirement is None:
-        return True
-    if requirement == "dataset":
-        return has_dataframe
-    if requirement == "db":
-        return has_db_source
-    if requirement == "knowledge_base":
-        return has_knowledge_base
-    if requirement == "any_data":
-        return has_dataframe or has_db_source
-    return False
+    del has_knowledge_base
+    return requirement is None or (requirement == "any_data" and (has_dataframe or has_db_source))
 
 
 def build_runtime_capability_context(
@@ -278,28 +235,35 @@ def build_runtime_capability_context(
         )
         lines.append("- Unavailable capability details:")
         for capability in unavailable_capabilities:
-            required_tools = ", ".join(
-                f"`{tool}`" for tool in capability.get("requires_any_tools", [])
-            )
+            required_tools = ", ".join(f"`{tool}`" for tool in capability.get("requires_any_tools", []))
             lines.append(
-                f"  - {capability['label']} (`{capability['key']}`); "
-                f"required tools: {required_tools}"
+                f"  - {capability['label']} (`{capability['key']}`); required tools: {required_tools}"
             )
     if csv_table_names:
         tables_str = ", ".join(f"`{t}`" for t in csv_table_names)
         lines.append(f"- Таблицы в DuckDB: {tables_str}")
     table_descriptors = coerce_runtime_table_descriptors(csv_table_descriptors)
     lines.extend(format_runtime_table_descriptors(table_descriptors, _CAPABILITY_TABLE_PROMPT_OPTIONS))
-    if (
-        "data_catalog_tool" in tool_key_set
-        and (source_table_count > 1 or source_count > 1)
-    ):
+    if "data_catalog_tool" in tool_key_set and (source_table_count > 1 or source_count > 1):
         lines.append(
             "- CATALOG-FIRST: multiple sources or tables are available. "
-            "Call `data_catalog_tool(action=\"list_tables\")` or "
-            "`data_catalog_tool(action=\"describe_table\", table=\"<qualified_name>\")` "
+            'Call `data_catalog_tool(action="list_tables")` or '
+            '`data_catalog_tool(action="describe_table", table="<qualified_name>")` '
             "before SQL/dataframe work when table choice is not explicit. "
             "Use exact `qualified_name` values; do not guess from bare table names."
+        )
+    if "semantic_catalog_read_tool" in tool_key_set:
+        lines.append(
+            "- `semantic_catalog_read_tool` is available for semantic metadata absent from the injected "
+            "context: missing, incomplete, or ambiguous terms, formulas, and relationships. It does not "
+            "calculate data. For an unknown term's meaning, semantic search may be followed by `rag_tool` "
+            "and then `public_web_search` when available; RAG and web never supply an executable business "
+            "formula. A formula comes only from a confirmed semantic metric or the user. To inspect, change, "
+            "build, generate, or validate the semantic layer, use "
+            "`semantic_catalog_read_tool`, `semantic_catalog_edit_tool`, or "
+            "`semantic_catalog_generate_tool`. Do not use `sql_tool`, "
+            "`pandas_tool`, or `plotly_tool` for semantic metadata changes unless "
+            "the user explicitly asks to analyze raw data first."
         )
     lines.append(
         "- Нельзя обещать действия, требующие недоступного capability. "

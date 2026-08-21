@@ -5,11 +5,14 @@ import json
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import pytest
 
-from backend.artifacts.bridge import execution_to_api_payload
-from backend.artifacts.execution import ExecutionArtifact, ExecArtifactType
+from backend.artifacts.bridge import execution_from_api_payload, execution_to_api_payload
+from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact
 from backend.artifacts.presentation import _serialize_table_data
+from backend.auth.blob_store import StoredBlob
 from backend.core.json_utils import NumpyEncoder
+from backend.sessions.session_store import SessionStore
 
 
 def test_serialize_table_data_converts_numpy_values() -> None:
@@ -41,6 +44,112 @@ def test_execution_to_api_payload_is_json_serializable() -> None:
     )
     api_payload = execution_to_api_payload(artifact)
     json.dumps(api_payload, cls=NumpyEncoder)
+
+
+def test_complete_table_artifact_round_trips_for_execution() -> None:
+    frame = pd.DataFrame(
+        {
+            "month": pd.to_datetime(["2025-01-01", "2025-02-01"]),
+            "value": pd.Series([10, 20], dtype="Int64"),
+        }
+    )
+    artifact = ExecutionArtifact(
+        artifact_type=ExecArtifactType.DATAFRAME,
+        name="monthly_values",
+        data=frame,
+        producer_tool="sql_tool",
+    )
+
+    payload = execution_to_api_payload(artifact)
+    restored = execution_from_api_payload(payload, session_id="session-1")
+
+    assert payload["execution"]["data_complete"] is True
+    assert restored.id == artifact.id
+    assert restored.session_id == "session-1"
+    assert restored.data.equals(frame)
+
+
+def test_legacy_inline_execution_contract_remains_readable() -> None:
+    artifact = ExecutionArtifact(
+        name="legacy",
+        data=pd.DataFrame({"value": [1]}),
+    )
+    payload = execution_to_api_payload(artifact)
+    payload["execution"]["schema_version"] = "1.0"
+    payload["execution"].pop("storage")
+
+    restored = execution_from_api_payload(payload, session_id="session-1")
+
+    assert restored.data.equals(artifact.data)
+
+
+def test_large_execution_artifact_uses_blob_and_keeps_bounded_json_preview(tmp_path) -> None:
+    class BlobStore:
+        def __init__(self) -> None:
+            self.content: dict[str, bytes] = {}
+
+        def put_many(self, *, items, **_kwargs) -> list[str]:
+            ids = [f"blob-{index}" for index, _item in enumerate(items)]
+            self.content.update((blob_id, item.content) for blob_id, item in zip(ids, items, strict=True))
+            return ids
+
+        def get_for_session(self, *, blob_id: str, **_kwargs) -> StoredBlob | None:
+            content = self.content.get(blob_id)
+            if content is None:
+                return None
+            return StoredBlob(
+                blob_id=blob_id,
+                logical_name="artifact.parquet",
+                media_type="application/vnd.apache.parquet",
+                content=content,
+            )
+
+    blob_store = BlobStore()
+    store = SessionStore(
+        str(tmp_path),
+        ttl_days=7,
+        artifact_blob_store=blob_store,
+    )
+    session = store.create_session("session-1")
+    frame = pd.DataFrame(
+        {
+            "row": range(5_000),
+            "description": ["large analytical result " * 8] * 5_000,
+        }
+    )
+    artifact = ExecutionArtifact(id="large", name="large", data=frame)
+    full_payload = execution_to_api_payload(artifact)
+
+    store.add_chat_message(session.session_id, "ai", "result", artifacts=[full_payload])
+    store.add_artifacts(session.session_id, [artifact], user_id=1)
+
+    state = store.load_session(session.session_id)
+    assert state is not None
+    persisted = state.artifacts[0]
+    assert persisted["execution"]["storage"]["kind"] == "blob"
+    assert len(persisted["data"]["data"]["data"]) == 100
+    assert len(state.chat_history[-1]["artifacts"][0]["data"]["data"]["data"]) == 100
+    hydrated = store.get_serialized_artifact(session.session_id, artifact.id)
+    assert hydrated is not None
+    restored = execution_from_api_payload(hydrated, session_id=session.session_id)
+    assert restored.data.equals(frame)
+
+
+def test_incomplete_table_artifact_cannot_be_restored_for_execution() -> None:
+    frame = pd.DataFrame({"value": [1, 2]})
+    frame.attrs["llm_data_analyst.query"] = {"truncated": True}
+    artifact = ExecutionArtifact(
+        artifact_type=ExecArtifactType.DATAFRAME,
+        name="preview_only",
+        data=frame,
+        producer_tool="sql_tool",
+    )
+
+    payload = execution_to_api_payload(artifact)
+
+    assert payload["execution"]["data_complete"] is False
+    with pytest.raises(ValueError, match="incomplete or preview"):
+        execution_from_api_payload(payload, session_id="session-1")
 
 
 def test_numpy_dtype_is_json_serializable() -> None:

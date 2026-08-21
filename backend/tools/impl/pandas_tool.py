@@ -31,6 +31,7 @@ class PandasTool(BaseExecTool):
     description: str = tool_description("pandas_tool")
     allowed_libs: set[str] = {"pandas", "numpy", "re", "datetime"}
     allowed_artifact_types: tuple = (pd.DataFrame, pd.Series)
+
     def __init__(
         self,
         df: pd.DataFrame,
@@ -38,6 +39,9 @@ class PandasTool(BaseExecTool):
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         sandbox: object | None = None,
+        session_id: str = "",
+        session_store: object | None = None,
+        execution_store: object | None = None,
     ) -> None:
         super().__init__(
             df,
@@ -46,6 +50,9 @@ class PandasTool(BaseExecTool):
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
             sandbox=sandbox,
+            session_id=session_id,
+            session_store=session_store,
+            execution_store=execution_store,
         )
 
     @staticmethod
@@ -71,6 +78,8 @@ class PandasTool(BaseExecTool):
         return super()._validate_tool_contract(tool_result)
 
     def post_process_tool_result(self, tool_result: dict[str, object]) -> dict[str, object]:
+        from backend.data_access.dataframe_utils import deduplicate_dataframe_columns
+
         base = super().post_process_tool_result(tool_result)
         processed: dict[str, object] = {}
         for name, value in base.items():
@@ -86,6 +95,8 @@ class PandasTool(BaseExecTool):
                 except Exception:
                     # Keep original value; validator will report precise type mismatch.
                     pass
+            if isinstance(value, pd.DataFrame):
+                value = deduplicate_dataframe_columns(value)
             if isinstance(value, (pd.DataFrame, pd.Series)):
                 processed[name] = self._round_numeric_table(value)
             else:

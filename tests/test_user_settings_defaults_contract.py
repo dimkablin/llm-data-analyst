@@ -60,6 +60,29 @@ class UserSettingsDefaultsContractTests(unittest.TestCase):
 
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_user_settings_preserve_zero_temperatures(self) -> None:
+        tmpdir = tempfile.mkdtemp()
+        auth_db = None
+        try:
+            auth_db = AuthDB(str(Path(tmpdir) / "app.db"), token_ttl_days=30)
+            user = auth_db.create_user("zero_temperature", "secret", is_admin=False)
+
+            auth_db.update_user_settings(
+                user.id,
+                llm_temperature_chat=0.0,
+                llm_temperature_tool=0.0,
+            )
+            settings = auth_db.get_user_settings(user.id)
+
+            self.assertEqual(settings.llm_temperature_chat, 0.0)
+            self.assertEqual(settings.llm_temperature_tool, 0.0)
+        finally:
+            if auth_db is not None:
+                del auth_db
+            import shutil
+
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def test_default_admin_creation_ignores_concurrent_insert(self) -> None:
         tmpdir = tempfile.mkdtemp()
         auth_db = None
@@ -129,6 +152,51 @@ class UserSettingsDefaultsContractTests(unittest.TestCase):
 
         self.assertFalse(captured["streaming"])
 
+    def test_runtime_llm_uses_tool_temperature_with_thinking_enabled(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_make_reasoning_llm(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return object()
+
+        with patch(
+            "backend.agent.runtime_llm.make_reasoning_llm",
+            side_effect=fake_make_reasoning_llm,
+        ):
+            runtime_llm.build_runtime_llm(
+                Settings(
+                    llm_enable_thinking=True,
+                    llm_temperature_tool=0.0,
+                ),
+                role="tool",
+                include_reasoning=True,
+            )
+
+        self.assertTrue(captured["enable_thinking"])
+        self.assertEqual(captured["temperature"], 0.0)
+
+    def test_runtime_llm_keeps_chat_thinking_temperature_at_one(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_make_reasoning_llm(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return object()
+
+        with patch(
+            "backend.agent.runtime_llm.make_reasoning_llm",
+            side_effect=fake_make_reasoning_llm,
+        ):
+            runtime_llm.build_runtime_llm(
+                Settings(
+                    llm_enable_thinking=True,
+                    llm_temperature_chat=0.0,
+                ),
+                role="chat",
+                include_reasoning=True,
+            )
+
+        self.assertEqual(captured["temperature"], 1.0)
+
     def test_react_setting_round_trips_through_api_models(self) -> None:
         response = UserSettingsResponse(agent_react_enabled=True)
         update = UserSettingsUpdateRequest(agent_react_enabled=True)
@@ -162,6 +230,7 @@ class UserSettingsDefaultsContractTests(unittest.TestCase):
             agent_step_timeout_sec=22,
             agent_inner_recursion_limit=9,
             llm_streaming=False,
+            always_use_analysis_plan=True,
         ).to_user_settings()
         service.dependencies.auth_db.get_user_settings = MethodType(
             lambda _self, _uid: user_settings,
@@ -175,3 +244,4 @@ class UserSettingsDefaultsContractTests(unittest.TestCase):
         self.assertEqual(runtime.llm_max_tokens_default, 777)
         self.assertEqual(runtime.backend_query_timeout_sec, 44)
         self.assertFalse(runtime.llm_streaming)
+        self.assertTrue(runtime.always_use_analysis_plan)

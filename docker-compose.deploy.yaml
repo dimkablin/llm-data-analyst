@@ -1,11 +1,44 @@
 services:
+  app_data:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${APP_DATA_USER:-app}
+      POSTGRES_PASSWORD: ${APP_DATA_PASSWORD:-app}
+      POSTGRES_DB: ${APP_DATA_DB:-app_data}
+    volumes:
+      - app_data_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DATA_USER:-app} -d ${APP_DATA_DB:-app_data}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  semantic_metadata:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${SEMANTIC_METADATA_USER:-semantic}
+      POSTGRES_PASSWORD: ${SEMANTIC_METADATA_PASSWORD:-semantic}
+      POSTGRES_DB: ${SEMANTIC_METADATA_DB:-semantic_metadata}
+    volumes:
+      - semantic_metadata_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SEMANTIC_METADATA_USER:-semantic} -d ${SEMANTIC_METADATA_DB:-semantic_metadata}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   backend:
-    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/llm-data-analyst-backend:latest
+    image: llm-data-analyst-backend:${IMAGE_TAG:-latest}
     ports:
       - "${BACKEND_PORT:-8605}:8000"
     volumes:
-      - backend_storage:/app/backend_storage
       - ./certs:/opt/certs:ro
+    tmpfs:
+      - /tmp/llm-data-analyst:size=1g,mode=1777
     env_file:
       - .env
     environment:
@@ -14,12 +47,22 @@ services:
       - CURL_CA_BUNDLE=${CURL_CA_BUNDLE:-/opt/certs/inno_pki_chain.pem}
       - BACKEND_SESSION_TTL_DAYS=${BACKEND_SESSION_TTL_DAYS:-7}
       - BACKEND_MAX_DATASET_MB=${BACKEND_MAX_DATASET_MB:-100}
-      - BACKEND_STORAGE_DIR=${BACKEND_STORAGE_DIR_DOCKER:-/app/backend_storage}
-      - AUTH_DB_PATH=${AUTH_DB_PATH_DOCKER:-/app/backend_storage/app.db}
+      - BACKEND_STORAGE_DIR=${BACKEND_STORAGE_DIR_DOCKER:-/tmp/llm-data-analyst}
+      - CSV_SESSION_BASE_DIR=${CSV_SESSION_BASE_DIR_DOCKER:-/tmp/llm-data-analyst/csv_sessions}
+      - APP_DATABASE_URL=${APP_DATABASE_URL:-postgresql://app:app@app_data:5432/app_data}
+      - APP_DATABASE_SCHEMA=${APP_DATABASE_SCHEMA:-public}
       - AUTH_TOKEN_TTL_DAYS=${AUTH_TOKEN_TTL_DAYS:-30}
       - AUTH_DEFAULT_ADMIN_USERNAME=${AUTH_DEFAULT_ADMIN_USERNAME:-admin}
       - AUTH_DEFAULT_ADMIN_PASSWORD=${AUTH_DEFAULT_ADMIN_PASSWORD:-admin}
       - BACKEND_CORS_ALLOW_ORIGINS=${BACKEND_CORS_ALLOW_ORIGINS:-http://10.9.168.20:8606}
+      - SEMANTIC_METADATA_DATABASE_URL=${SEMANTIC_METADATA_DATABASE_URL:-postgresql://semantic:semantic@semantic_metadata:5432/semantic_metadata}
+      - SEMANTIC_METADATA_SCHEMA=${SEMANTIC_METADATA_SCHEMA:-public}
+      - SEMANTIC_QDRANT_COLLECTION=${SEMANTIC_QDRANT_COLLECTION:-semantic_catalog_chunks_bge_m3_1024_v1}
+      - SEMANTIC_EMBEDDING_PROVIDER=${SEMANTIC_EMBEDDING_PROVIDER:-openai}
+      - SEMANTIC_EMBEDDING_BASE_URL=${SEMANTIC_EMBEDDING_BASE_URL:-http://host.docker.internal:8004/v1}
+      - SEMANTIC_EMBEDDING_API_KEY=${SEMANTIC_EMBEDDING_API_KEY:-EMPTY}
+      - SEMANTIC_EMBEDDING_MODEL=${SEMANTIC_EMBEDDING_MODEL:-bge-m3}
+      - SEMANTIC_EMBEDDING_DIM=${SEMANTIC_EMBEDDING_DIM:-1024}
       - PHOENIX_ENABLED=${PHOENIX_ENABLED:-true}
       - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-llm-data-analyst}
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006/v1/traces}
@@ -33,12 +76,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
+      app_data:
+        condition: service_healthy
+      semantic_metadata:
+        condition: service_healthy
       phoenix:
         condition: service_healthy
     restart: unless-stopped
 
   frontend:
-    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-lib/llm-data-analyst-frontend:latest
+    image: llm-data-analyst-frontend:${IMAGE_TAG:-latest}
     ports:
       - "${FRONTEND_PORT:-8606}:8603"
     environment:
@@ -59,7 +106,7 @@ services:
     restart: unless-stopped
 
   phoenix:
-    image: docker-ppbd-prod.sfera-t1.ru/digital_assistant-docker-release/phoenix:version-10.13.2
+    image: ${PHOENIX_IMAGE:-arizephoenix/phoenix:version-10.13.2}
     ports:
       - "${PHOENIX_UI_PORT:-8607}:6006"
       - "${PHOENIX_GRPC_PORT:-8608}:4317"
@@ -77,5 +124,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  app_data_data:
   phoenix_data:
-  backend_storage:
+  semantic_metadata_data:

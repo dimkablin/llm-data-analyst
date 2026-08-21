@@ -17,7 +17,7 @@ def build_runtime_llm(
     enable_thinking = settings.llm_enable_thinking and include_reasoning
 
     if enable_thinking:
-        temperature = 1.0
+        temperature = settings.llm_temperature_tool if role == "tool" else 1.0
         top_p = settings.llm_top_p
     else:
         temperature = (

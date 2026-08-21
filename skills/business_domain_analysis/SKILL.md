@@ -41,19 +41,18 @@ example source names, fixed filters, or memorized examples.
 6. **Visualization** -> use `plotly_tool` to create `business_analysis_chart`
    for trends, comparisons, contribution, concentration, or ranking when a chart
    improves the answer.
-7. **Specialized routing** -> when the selected method requires external
-   services, call the relevant instructions and tool instead of reimplementing:
-   `forecast_tool` for future values, `anomaly_planfact_tool` for deviations,
-   `generate_summary_tool` for session-grounded synthesis, and
-   `generate_report_tool` only for explicit file export.
+7. **Specialized routing** -> when the selected method requires an external
+   capability, resolve it through the current active capability catalog and call
+   only its bound tool instead of reimplementing it. Use summary generation for
+   session-grounded synthesis and report export only for explicit file export.
 8. **Final synthesis** -> answer with the calculation basis, artifact names,
    strongest findings, uncertainty, missing evidence, and concrete next action.
 
-### Required tools
-- `data_catalog_tool`
-- `sql_tool`
-- `pandas_tool`
-- `plotly_tool`
+### Required capabilities
+- `source_catalog`
+- `read_only_sql`
+- `dataframe_transform`
+- `chart`
 
 ### Required artifacts
 - table: business_evidence_table
@@ -64,7 +63,7 @@ example source names, fixed filters, or memorized examples.
 - Every filter value, role mapping, metric, and dimension must come from schema discovery or tool output.
 - Do not encode customer names, example source names, fixed tickers, brands, categories, regions, months, or baseline labels in the skill.
 - If the user names a value, verify it against the data before using it as a filter; if absent, report the mismatch.
-- Forecasts must use `forecast_tool`; anomaly and plan-fact detection must use `anomaly_planfact_tool`.
+- Forecasts, anomaly detection, and plan-fact analysis must use their specialized active capabilities with provider provenance.
 - Report export must use `generate_report_tool` only after evidence exists in persisted session history or artifacts.
 
 ### Rules

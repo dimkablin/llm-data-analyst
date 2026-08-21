@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from backend.agent.graph_tracker import ExecutionGraphTracker
@@ -25,7 +25,7 @@ from backend.core.config import settings
 from backend.core.json_utils import NumpyEncoder as _NumpyEncoder
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
-from backend.sessions.session_store import SessionStore
+from backend.sessions.session_store import SessionBusyError, SessionStore
 from backend.skills.registry import SkillRegistry
 
 router = APIRouter(tags=["Запросы и агент"])
@@ -35,7 +35,6 @@ _auth_db: AuthDB = None  # type: ignore
 _store: SessionStore = None  # type: ignore
 _skill_registry: SkillRegistry = None  # type: ignore
 _db_runtime_service = None  # type: ignore
-_search_integration_service = None  # type: ignore
 _forecast_integration_service = None  # type: ignore
 _anomaly_planfact_integration_service = None  # type: ignore
 _rag_service = None  # type: ignore
@@ -45,6 +44,7 @@ _query_trace_context_fn = None  # type: ignore
 _settings = None  # type: ignore
 _csv_runtime: CSVSessionRuntime = None  # type: ignore
 _manifest_store: ManifestStore = None  # type: ignore
+_blob_store = None  # type: ignore
 _storage_dir: Path | None = None
 _query_execution_service: QueryExecutionService = None  # type: ignore
 
@@ -61,6 +61,8 @@ _build_tool_catalog_fn = None  # type: ignore
 _known_tool_keys = None  # type: ignore
 _mcp_service = None  # type: ignore
 _semantic_context_builder = None  # type: ignore
+_semantic_catalog_service = None  # type: ignore
+_semantic_generation_service = None  # type: ignore
 
 
 def setup(
@@ -68,7 +70,6 @@ def setup(
     store: SessionStore,
     skill_registry: SkillRegistry,
     db_runtime_service,
-    search_integration_service,
     forecast_integration_service,
     anomaly_planfact_integration_service,
     rag_service,
@@ -87,12 +88,15 @@ def setup(
     known_tool_keys,
     csv_runtime: CSVSessionRuntime,
     manifest_store: ManifestStore,
+    blob_store=None,
     storage_dir: str | Path | None = None,
     mcp_service=None,
     semantic_context_builder=None,
+    semantic_catalog_service=None,
+    semantic_generation_service=None,
 ) -> None:
     global _auth_db, _store, _skill_registry, _db_runtime_service
-    global _search_integration_service, _forecast_integration_service
+    global _forecast_integration_service
     global _anomaly_planfact_integration_service, _rag_service
     global _user_memory_service
     global _build_trace_context_fn, _query_trace_context_fn, _settings
@@ -100,14 +104,13 @@ def setup(
     global _PhaseCollector, _TokenStreamCallbackHandler
     global _ContextUsageCollector, _AgentRunner, _effective_enabled_tool_keys_fn
     global _build_tool_catalog_fn, _known_tool_keys, _csv_runtime
-    global _manifest_store, _storage_dir, _query_execution_service, _mcp_service
-    global _semantic_context_builder
+    global _manifest_store, _blob_store, _storage_dir, _query_execution_service, _mcp_service
+    global _semantic_context_builder, _semantic_catalog_service, _semantic_generation_service
 
     _auth_db = auth_db
     _store = store
     _skill_registry = skill_registry
     _db_runtime_service = db_runtime_service
-    _search_integration_service = search_integration_service
     _forecast_integration_service = forecast_integration_service
     _anomaly_planfact_integration_service = anomaly_planfact_integration_service
     _rag_service = rag_service
@@ -126,8 +129,11 @@ def setup(
     _known_tool_keys = known_tool_keys
     _mcp_service = mcp_service
     _semantic_context_builder = semantic_context_builder
+    _semantic_catalog_service = semantic_catalog_service
+    _semantic_generation_service = semantic_generation_service
     _csv_runtime = csv_runtime
     _manifest_store = manifest_store
+    _blob_store = blob_store
     _storage_dir = Path(storage_dir) if storage_dir is not None else Path(settings.storage_dir)
     _query_execution_service = QueryExecutionService(
         dependencies=QueryExecutionDependencies(
@@ -135,7 +141,6 @@ def setup(
             store=_store,
             skill_registry=_skill_registry,
             db_runtime_service=_db_runtime_service,
-            search_integration_service=_search_integration_service,
             forecast_integration_service=_forecast_integration_service,
             anomaly_planfact_integration_service=_anomaly_planfact_integration_service,
             rag_service=_rag_service,
@@ -146,6 +151,7 @@ def setup(
             csv_runtime=_csv_runtime,
             manifest_store=_manifest_store,
             storage_dir=_storage_dir,
+            blob_store=_blob_store,
             llm_text_collector_cls=_LLMTextCollector,
             tool_collector_cls=_ToolCollector,
             build_stream_callbacks_fn=_build_stream_callbacks,
@@ -154,6 +160,8 @@ def setup(
             build_tool_catalog_fn=_build_tool_catalog_fn,
             mcp_service=_mcp_service,
             semantic_context_builder=_semantic_context_builder,
+            semantic_catalog_service=_semantic_catalog_service,
+            semantic_generation_service=_semantic_generation_service,
         )
     )
 
@@ -212,14 +220,17 @@ async def query(
     payload: QueryRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> QueryResponse:
-    return await _query_execution_service.execute(
-        QueryExecutionRequest(
-            session_id=session_id,
-            payload=payload,
-            current_user=current_user,
-            persist=True,
+    try:
+        return await _query_execution_service.execute(
+            QueryExecutionRequest(
+                session_id=session_id,
+                payload=payload,
+                current_user=current_user,
+                persist=True,
+            )
         )
-    )
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/sessions/{session_id}/evaluate", response_model=QueryResponse)
@@ -228,14 +239,17 @@ async def evaluate(
     payload: QueryRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> QueryResponse:
-    return await _query_execution_service.execute(
-        QueryExecutionRequest(
-            session_id=session_id,
-            payload=payload,
-            current_user=current_user,
-            persist=False,
+    try:
+        return await _query_execution_service.execute(
+            QueryExecutionRequest(
+                session_id=session_id,
+                payload=payload,
+                current_user=current_user,
+                persist=False,
+            )
         )
-    )
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/sessions/{session_id}/query/stream")
@@ -244,13 +258,16 @@ async def query_stream(
     payload: QueryRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> StreamingResponse:
-    stream_context = _query_execution_service.prepare_stream(
-        QueryStreamExecutionRequest(
-            session_id=session_id,
-            payload=payload,
-            current_user=current_user,
+    try:
+        stream_context = _query_execution_service.prepare_stream(
+            QueryStreamExecutionRequest(
+                session_id=session_id,
+                payload=payload,
+                current_user=current_user,
+            )
         )
-    )
+    except SessionBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     async def event_generator():
         async for event, data in _query_execution_service.stream_events(stream_context):

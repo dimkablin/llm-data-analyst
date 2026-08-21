@@ -20,6 +20,7 @@ class DataFrameSchemaSummary(BaseModel):
     name: str
     shape: tuple[int, int]
     columns: dict[str, str] = Field(default_factory=dict)
+    observed_values: dict[str, list[str]] = Field(default_factory=dict)
     warning: str | None = None
 
     @classmethod
@@ -35,10 +36,25 @@ class DataFrameSchemaSummary(BaseModel):
         warning = None
         if len(columns) > _MAX_SCHEMA_COLUMNS:
             warning = f"Only first {_MAX_SCHEMA_COLUMNS} of {len(columns)} columns are shown."
+        observed_values: dict[str, list[str]] = {}
+        for column, _dtype in shown_columns:
+            series = value[column]
+            if not isinstance(series, pd.Series) or not (
+                pd.api.types.is_string_dtype(series.dtype)
+                or pd.api.types.is_bool_dtype(series.dtype)
+                or isinstance(series.dtype, pd.CategoricalDtype)
+            ):
+                continue
+            values = series.dropna().astype(str).drop_duplicates()
+            if 0 < len(values) <= 20:
+                observed_values[str(column)] = values.tolist()
+            if len(observed_values) >= 8:
+                break
         return cls(
             name=name,
             shape=(int(value.shape[0]), int(value.shape[1])),
             columns={str(column): str(dtype) for column, dtype in shown_columns},
+            observed_values=observed_values,
             warning=warning,
         )
 
@@ -47,6 +63,9 @@ class DataFrameSchemaSummary(BaseModel):
         if self.columns:
             lines.append("  columns:")
             lines.extend(f"    {name}: {dtype}" for name, dtype in self.columns.items())
+        if self.observed_values:
+            lines.append("  observed_values:")
+            lines.extend(f"    {name}: {values}" for name, values in self.observed_values.items())
         if self.warning:
             lines.append(f"  warning: {self.warning}")
         return "\n".join(lines)
@@ -89,4 +108,27 @@ class ToolExecutionObservation(BaseModel):
         if self.referenced_dataframe_schemas:
             lines.extend(["", "referenced_dataframe_schemas:"])
             lines.extend(schema.to_text() for schema in self.referenced_dataframe_schemas)
+            lines.extend(
+                [
+                    "",
+                    (
+                        "recovery_hint: If a filter produced an empty candidate, compare its "
+                        "labels with observed_values and correct the source mapping before "
+                        "retrying downstream code."
+                    ),
+                ]
+            )
         return "\n".join(lines).strip()
+
+
+def exception_metadata(exc: BaseException) -> dict[str, str]:
+    source = getattr(exc, "orig", None) or exc
+    metadata = {"error_type": type(source).__name__}
+    missing_symbol = getattr(source, "name", None)
+    if missing_symbol is None and isinstance(source, KeyError) and source.args:
+        missing_symbol = source.args[0]
+    if missing_symbol is None:
+        missing_symbol = getattr(getattr(source, "diag", None), "column_name", None)
+    if missing_symbol is not None:
+        metadata["missing_symbol"] = str(missing_symbol)
+    return metadata

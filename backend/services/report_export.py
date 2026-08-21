@@ -1266,7 +1266,7 @@ def _split_table_payload(artifact: dict[str, Any]) -> tuple[list[str], list[list
     data = artifact.get("data") if isinstance(artifact.get("data"), dict) else {}
     if str(data.get("format") or "").strip().lower() != "split":
         return None
-    payload = data.get("data")
+    payload = data.get("export_data") or data.get("data")
     if not isinstance(payload, dict):
         return None
     raw_columns = payload.get("columns")
@@ -1330,18 +1330,102 @@ def _append_plot_data_sheet(
     _autosize_excel_columns(sheet)
 
 
+def _append_planfact_help_sheet(
+    *,
+    workbook: Any,
+    used_titles: set[str],
+) -> None:
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    sheet = workbook.create_sheet(
+        _safe_excel_sheet_title("Как проверить", "Проверка", used_titles),
+        1,
+    )
+    sheet.append(["Проверка расчёта план-факта"])
+    sheet["A1"].font = Font(bold=True, size=14)
+    sheet["A1"].fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+    instructions = [
+        "1. Откройте лист «Контроль»: каждая строка соответствует строке исходного результата.",
+        "2. «Проверка Excel» пересчитывается по строкам листа «Расчетная детализация».",
+        "3. Статус OK означает, что результат и пересчёт Excel совпали с точностью до 0,01.",
+        "4. Если листы первички доступны, используйте на них тот же номер строки результата.",
+        "В книгу включены только строки, участвовавшие в выгруженном результате.",
+    ]
+    for line in instructions:
+        sheet.append([line])
+    sheet.column_dimensions["A"].width = 110
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        row[0].alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def _append_planfact_data_sheet(
+    *,
+    workbook: Any,
+    title: str,
+    payload: dict[str, Any],
+    used_titles: set[str],
+) -> None:
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    columns = [str(column) for column in payload.get("columns") or []]
+    rows = payload.get("rows") or []
+    if not columns:
+        return
+
+    sheet = workbook.create_sheet(_safe_excel_sheet_title(title, title, used_titles))
+    header_row = 1
+    sheet.append(columns)
+    for cell in sheet[header_row]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+    for row in rows:
+        sheet.append(list(row) if isinstance(row, list | tuple) else [row])
+
+    data_end = max(header_row, header_row + len(rows))
+    last_column = get_column_letter(len(columns))
+    sheet.auto_filter.ref = f"A{header_row}:{last_column}{data_end}"
+    sheet.freeze_panes = f"A{header_row + 1}"
+    _autosize_excel_columns(sheet)
+
+
+def _append_planfact_validation_sheets(
+    *,
+    workbook: Any,
+    validation_tables: dict[str, dict[str, Any]],
+    used_titles: set[str],
+    summary_sheet: Any,
+) -> None:
+    if not validation_tables:
+        return
+    if "Контроль" in validation_tables:
+        _append_planfact_help_sheet(workbook=workbook, used_titles=used_titles)
+    for title, payload in validation_tables.items():
+        _append_planfact_data_sheet(
+            workbook=workbook,
+            title=title,
+            payload=payload,
+            used_titles=used_titles,
+        )
+        summary_sheet.append([title, "Проверка", f"Строк: {len(payload.get('rows') or [])}"])
+
+
 def _render_board_xlsx(
     *,
     title: str,
     artifacts: list[dict[str, Any]],
     out_path: Path,
     sections: list[dict[str, Any]] | None = None,
+    planfact_validation_tables: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
     artifact_index = _build_artifact_index(artifacts)
     workbook = Workbook()
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
+    workbook.calculation.calcMode = "auto"
     summary = workbook.active
     summary.title = "Отчет"
     summary.append([_strip_markdown_syntax(title) or "Отчет"])
@@ -1353,6 +1437,12 @@ def _render_board_xlsx(
         cell.fill = PatternFill(fill_type="solid", fgColor="E0F2FE")
 
     used_titles = {summary.title}
+    _append_planfact_validation_sheets(
+        workbook=workbook,
+        validation_tables=planfact_validation_tables or {},
+        used_titles=used_titles,
+        summary_sheet=summary,
+    )
     for section_label, section_artifacts in _board_export_sections(artifacts, sections):
         if section_label:
             summary.append([_strip_markdown_syntax(section_label), "", ""])
@@ -1406,6 +1496,7 @@ def build_board_export(
     output_dir: Path,
     export_format: str,
     sections: list[dict[str, Any]] | None = None,
+    planfact_validation_tables: dict[str, dict[str, Any]] | None = None,
 ) -> ReportBuildResult:
     if not artifacts:
         raise ValueError("Нет артефактов для экспорта")
@@ -1432,6 +1523,7 @@ def build_board_export(
             artifacts=artifacts,
             out_path=file_path,
             sections=sections,
+            planfact_validation_tables=planfact_validation_tables,
         )
     else:
         _render_board_docx(

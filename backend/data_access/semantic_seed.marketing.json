@@ -2,28 +2,5 @@
   "name": "marketing",
   "enabled_by_default": true,
   "domains": ["marketing", "ads"],
-  "terms": [],
-  "metric_columns": {
-    "spend": ["spend", "cost", "ad_spend", "marketing_spend"],
-    "revenue": ["revenue", "sales", "amount"],
-    "clicks": ["clicks", "click_count"],
-    "impressions": ["impressions", "views"],
-    "conversions": ["conversions", "orders", "leads_converted"],
-    "leads": ["leads", "lead_count"],
-    "qualified_leads": ["qualified_leads", "mql", "sql"],
-    "pipeline": ["pipeline_value", "pipeline", "opportunity_amount"],
-    "campaign_id": ["campaign_id", "campaign"]
-  },
-  "metric_templates": [
-    { "key": "cac", "name": "CAC", "kind": "sum_per_count", "numerator_group": "spend", "distinct_group": "conversions", "synonyms": ["cac", "customer acquisition cost"] },
-    { "key": "roas", "name": "ROAS", "kind": "ratio_sum", "numerator_group": "revenue", "denominator_group": "spend", "synonyms": ["roas", "return on ad spend"] },
-    { "key": "cpc", "name": "CPC", "kind": "ratio_sum", "numerator_group": "spend", "denominator_group": "clicks", "synonyms": ["cpc", "cost per click"] },
-    { "key": "cpm", "name": "CPM", "kind": "ratio_sum", "numerator_group": "spend", "denominator_group": "impressions", "synonyms": ["cpm", "cost per mille"] },
-    { "key": "ctr", "name": "CTR", "kind": "ratio_sum", "numerator_group": "clicks", "denominator_group": "impressions", "synonyms": ["ctr", "click-through rate"], "format": "percent" },
-    { "key": "cpa", "name": "CPA", "kind": "ratio_sum", "numerator_group": "spend", "denominator_group": "conversions", "synonyms": ["cpa", "cost per acquisition"] },
-    { "key": "leads", "name": "Leads", "kind": "sum", "column_group": "leads", "synonyms": ["лиды", "leads"] },
-    { "key": "qualified_leads", "name": "Qualified leads", "kind": "sum", "column_group": "qualified_leads", "synonyms": ["qualified leads", "mql", "sql"] },
-    { "key": "pipeline_value", "name": "Pipeline value", "kind": "sum", "column_group": "pipeline", "synonyms": ["pipeline", "pipeline value"] },
-    { "key": "campaign_conversion", "name": "Campaign conversion", "kind": "ratio_sum", "numerator_group": "conversions", "denominator_group": "clicks", "synonyms": ["campaign conversion"], "format": "percent" }
-  ]
+  "terms": []
 }

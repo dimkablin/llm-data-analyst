@@ -1,0 +1,17 @@
+stages:
+  - deploy
+
+variables:
+  DOCKER_BUILDKIT: "1"
+
+deploy_dev:
+  stage: deploy
+  tags:
+    - deploy-shell
+  resource_group: chronos-mcp-dev
+  environment:
+    name: dev
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+  script:
+    - IMAGE_TAG="dev-$CI_COMMIT_SHORT_SHA" bash scripts/ci/deploy.sh

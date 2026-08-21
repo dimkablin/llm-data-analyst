@@ -7,6 +7,16 @@
 .venv
 .uv-cache
 .pytest_tmp
+.pytest_cache
+.ruff_cache
+.worktrees
+.runtime
+.codex-backups
+.codex-pet-runs
+.codex-run
+.codex-tmp
+.tmp_container_check
+tmp
 tmp87v4n0bm
 __pycache__
 *.pyc
@@ -18,5 +28,6 @@ backend_titanic_test_results.json
 
 frontend/node_modules
 frontend/dist
+mcp/model_cache
 
 *.log

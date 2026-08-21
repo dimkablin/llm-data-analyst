@@ -16,13 +16,14 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -512,7 +513,17 @@ def _judge_messages(question: str, row: dict[str, Any], expectation: dict[str, A
         for tool in row.get("tool_runs", [])
         if isinstance(tool, dict) and tool.get("status") == "error"
     ]
+    tool_observations = [
+        {
+            "tool_name": tool.get("tool_name"),
+            "input": _trim(tool.get("input_preview"), 1000),
+            "output": _trim(tool.get("output_preview") or tool.get("result_summary"), 4000),
+        }
+        for tool in row.get("tool_runs", [])
+        if isinstance(tool, dict) and tool.get("status") != "error"
+    ]
     payload = {
+        "current_date": date.today().isoformat(),
         "question": question,
         "answer": _trim(row.get("answer_text"), 12_000),
         "expectations": expectation or {},
@@ -528,6 +539,7 @@ def _judge_messages(question: str, row: dict[str, Any], expectation: dict[str, A
         },
         "artifact_summaries": row.get("artifact_summaries") or [],
         "artifact_evidence": _artifact_evidence(row.get("final_payload") if isinstance(row.get("final_payload"), dict) else None),
+        "successful_tool_observations": tool_observations,
         "tool_errors": tool_errors,
     }
     system = (
@@ -546,6 +558,8 @@ def _judge_messages(question: str, row: dict[str, Any], expectation: dict[str, A
         "unless they reverse the conclusion or replace required exact facts. "
         "Tool-call errors are already penalized by the benchmark runner: treat them as context, "
         "and apply only a small penalty when the final answer is still correct and grounded. "
+        "For mutable current facts, use the supplied current_date and successful current-run "
+        "observations instead of relying on older model memory. "
         "Apply a large penalty for hallucinations: invented numbers not present in answer/artifact "
         "evidence, conclusions unsupported by tables/values/plots, claimed tables or charts that "
         "were not produced, requested plots/tables that are missing, or references to analysis "
@@ -937,6 +951,9 @@ def stream_query(
         "fallback_used": _answer_has_fallback(answer_text),
         "wall_duration_ms": wall_duration_ms,
         "duration_ms": int(metrics.get("duration_ms") or wall_duration_ms),
+        "llm_duration_ms": int(metrics.get("llm_duration_ms") or 0),
+        "non_llm_duration_ms": int(metrics.get("non_llm_duration_ms") or 0),
+        "llm_calls": int(metrics.get("llm_calls") or 0),
         "artifact_count": int(metrics.get("artifact_count") or artifact_stats["artifact_count_from_payload"]),
         "table_count": int(metrics.get("table_count") or artifact_stats["table_count_from_payload"]),
         "plot_count": int(metrics.get("plot_count") or artifact_stats["plot_count_from_payload"]),
@@ -945,6 +962,20 @@ def stream_query(
         "model": metrics.get("model"),
         "tool_calls": len(tool_runs),
         "tool_errors": tool_errors,
+        "contract_valid": bool((final_payload or {}).get("contract_valid", False)),
+        "terminal_status": str(
+            (final_payload or {}).get("terminal_status") or "failed"
+        ),
+        "capability_outcomes": list(
+            (final_payload or {}).get("capability_outcomes") or []
+        ),
+        "error_fingerprints": list(
+            (final_payload or {}).get("error_fingerprints") or []
+        ),
+        "retry_count": int((final_payload or {}).get("retry_count") or 0),
+        "reported_tool_error_count": int(
+            (final_payload or {}).get("tool_error_count") or 0
+        ),
         "tool_names": tool_names,
         "tool_name_counts": dict(counts),
         "repeated_tool_calls": sum(count - 1 for count in counts.values() if count > 1),
@@ -1005,9 +1036,17 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "judge_error",
         "judge_duration_ms",
         "duration_ms",
+        "llm_duration_ms",
+        "non_llm_duration_ms",
+        "llm_calls",
         "wall_duration_ms",
         "tool_calls",
         "tool_errors",
+        "reported_tool_error_count",
+        "contract_valid",
+        "terminal_status",
+        "retry_count",
+        "error_fingerprints",
         "tool_names",
         "repeated_tool_calls",
         "artifact_count",
@@ -1047,6 +1086,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], meta: dict[str, Any]
     scores = [int(row.get("quality_score") or 0) for row in rows]
     heuristic_scores = [int(row.get("heuristic_score") or row.get("quality_score") or 0) for row in rows]
     durations = [int(row.get("duration_ms") or 0) for row in rows]
+    llm_durations = [int(row.get("llm_duration_ms") or 0) for row in rows]
+    non_llm_durations = [int(row.get("non_llm_duration_ms") or 0) for row in rows]
     tool_errors = [int(row.get("tool_errors") or 0) for row in rows]
     latency_penalties = [int(row.get("latency_penalty") or 0) for row in rows]
     judge_scores = [int(row.get("judge_score")) for row in rows if row.get("judge_score") is not None]
@@ -1080,6 +1121,8 @@ def _write_markdown(path: Path, rows: list[dict[str, Any]], meta: dict[str, Any]
         f"- Last quartile score: `{last_score:.1f}`",
         f"- Quality drop: `{quality_drop:.1f}`",
         f"- Avg duration: `{_avg(durations) / 1000:.1f}s`",
+        f"- Avg LLM duration: `{_avg(llm_durations) / 1000:.1f}s`",
+        f"- Avg non-LLM duration: `{_avg(non_llm_durations) / 1000:.1f}s`",
         f"- First quartile duration: `{first_duration / 1000:.1f}s`",
         f"- Last quartile duration: `{last_duration / 1000:.1f}s`",
         f"- Duration growth: `{(last_duration - first_duration) / 1000:.1f}s`",
@@ -1308,6 +1351,8 @@ def _artifact_preview_html(artifact: dict[str, Any], index: int) -> str:
 def _write_chat_html(path: Path, rows: list[dict[str, Any]], meta: dict[str, Any]) -> None:
     score_values = [int(row.get("quality_score") or 0) for row in rows]
     durations = [int(row.get("duration_ms") or 0) for row in rows]
+    llm_durations = [int(row.get("llm_duration_ms") or 0) for row in rows]
+    non_llm_durations = [int(row.get("non_llm_duration_ms") or 0) for row in rows]
     first = rows[: max(1, len(rows) // 4)] if rows else []
     last = rows[-max(1, len(rows) // 4):] if rows else []
     first_score = _avg([int(row.get("quality_score") or 0) for row in first])
@@ -1392,6 +1437,8 @@ def _write_chat_html(path: Path, rows: list[dict[str, Any]], meta: dict[str, Any
         f"<span class='pill'>last quartile: {last_score:.1f}</span>",
         f"<span class='pill'>quality drop: {first_score - last_score:.1f}</span>",
         f"<span class='pill'>avg time: {_avg(durations) / 1000:.1f}s</span>",
+        f"<span class='pill'>avg LLM: {_avg(llm_durations) / 1000:.1f}s</span>",
+        f"<span class='pill'>avg other: {_avg(non_llm_durations) / 1000:.1f}s</span>",
         f"<span class='pill'>time growth: {(last_duration - first_duration) / 1000:.1f}s</span>",
         f"<span class='pill'>slow: &gt;30s={slow_30}, &gt;40s={slow_40}</span>",
         f"<span class='pill'>judge: {html.escape(str(bool(meta.get('judge_enabled'))))}</span>",
@@ -1526,6 +1573,7 @@ def _print_progress(row: dict[str, Any]) -> None:
     print(
         "[{turn:>3}] {status:<4} score={score:>3} heuristic={heuristic:>3} "
         "latency=-{latency:<2} judge={judge:<3} time={time:>6.1f}s "
+        "llm={llm:>6.1f}s other={other:>6.1f}s "
         "tools={tools:<2} errors={errors:<2} arts={arts:<2} {question}".format(
             turn=row["turn_index"],
             status=status,
@@ -1534,6 +1582,8 @@ def _print_progress(row: dict[str, Any]) -> None:
             latency=row.get("latency_penalty") or 0,
             judge=judge,
             time=int(row.get("duration_ms") or 0) / 1000,
+            llm=int(row.get("llm_duration_ms") or 0) / 1000,
+            other=int(row.get("non_llm_duration_ms") or 0) / 1000,
             tools=row.get("tool_calls") or 0,
             errors=row.get("tool_errors") or 0,
             arts=row.get("artifact_count") or 0,
@@ -1575,6 +1625,12 @@ def main() -> int:
     parser.add_argument("--include-reasoning", action="store_true")
     parser.add_argument("--no-history", action="store_true", help="Still one session, but sends use_history=false.")
     parser.add_argument("--limit", type=int, default=0, help="Run only first N questions.")
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Run the whole suite in this many isolated fresh sessions.",
+    )
     parser.add_argument("--timeout", type=int, default=360, help="Per-question HTTP timeout in seconds.")
     parser.add_argument("--chat-temperature", type=float, help="Temporarily set analyst chat temperature.")
     parser.add_argument("--tool-temperature", type=float, help="Temporarily set analyst tool temperature.")
@@ -1608,6 +1664,26 @@ def main() -> int:
     parser.add_argument("--judge-timeout", type=int, default=120, help="Judge HTTP timeout in seconds.")
     parser.add_argument("--judge-temperature", type=float, default=0.0)
     args = parser.parse_args()
+
+    if args.repeats > 1:
+        exit_code = 0
+        for repeat_index in range(1, args.repeats + 1):
+            repeat_out = args.out / f"repeat_{repeat_index}"
+            command = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                *sys.argv[1:],
+                "--repeats",
+                "1",
+                "--out",
+                str(repeat_out),
+            ]
+            print(f"Starting isolated repeat {repeat_index}/{args.repeats}: {repeat_out}")
+            completed = subprocess.run(command, check=False)
+            exit_code = max(exit_code, completed.returncode)
+        return exit_code
+    if args.repeats < 1:
+        parser.error("--repeats must be at least 1")
 
     base_url = str(args.base_url).rstrip("/")
     if not args.questions.exists():

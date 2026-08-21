@@ -23,10 +23,10 @@ label from data values or user wording before grouping rows.
 5. **Interpretation** -> calculate relative uplift against baseline and warn
    about seasonality or mix shifts when the comparison periods differ.
 
-### Required tools
-- `sql_tool`
-- `pandas_tool`
-- `plotly_tool`
+### Required capabilities
+- `read_only_sql`
+- `dataframe_transform`
+- `chart`
 
 ### Required artifacts
 - table: promo_map_table

@@ -152,3 +152,17 @@ def test_admin_mcp_server_route_can_create_and_delete_configs() -> None:
     assert service.created_by == 7
     assert deleted.ok is True
     assert service.deleted == "finance-research"
+
+
+def test_admin_mcp_server_route_tests_connection() -> None:
+    service = _FakeMCPService()
+    service.test_connection = lambda server_id, payload: 3
+    mcp_servers_route.setup(auth_db=_FakeAuthDB(), mcp_service=service)
+
+    result = mcp_servers_route.admin_test_mcp_server(
+        "finance-research",
+        mcp_servers_route.MCPServerUpdateRequest(),
+        _user(is_admin=True),
+    )
+
+    assert result.message == "MCP server connected; tools: 3"

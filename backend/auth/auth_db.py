@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from psycopg.errors import UniqueViolation
+
 from backend.auth.user_settings_defaults import (
     DEFAULT_USER_SETTINGS,
     UserSettingsDefaults,
@@ -57,7 +59,10 @@ class UserSettings:
     show_think_planning: bool = True
     show_think_tool: bool = True
     show_think_final: bool = True
+    always_use_analysis_plan: bool = False
     show_detailed_tool_steps: bool = False
+    show_rag_errors: bool = True
+    anomaly_check_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,10 @@ class AuthDB:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now(UTC).isoformat()
+
+    @staticmethod
+    def _timestamp_text(value: object) -> str:
+        return value.isoformat() if isinstance(value, datetime) else str(value)
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -194,7 +203,7 @@ class AuthDB:
                     analysis_mode TEXT NOT NULL DEFAULT 'fast',
                     llm_temperature_chat REAL NOT NULL DEFAULT 0.7,
                     llm_temperature_tool REAL NOT NULL DEFAULT 0.5,
-                    llm_max_tokens_default INTEGER NOT NULL DEFAULT 2048,
+                    llm_max_tokens_default INTEGER NOT NULL DEFAULT 4096,
                     llm_max_tokens_reasoning INTEGER NOT NULL DEFAULT 4096,
                     backend_query_timeout_sec INTEGER NOT NULL DEFAULT 180,
                     agent_max_steps INTEGER NOT NULL DEFAULT 32,
@@ -237,6 +246,7 @@ class AuthDB:
                     command TEXT,
                     args_json TEXT NOT NULL DEFAULT '[]',
                     env_json TEXT NOT NULL DEFAULT '{}',
+                    tool_bindings_json TEXT NOT NULL DEFAULT '{}',
                     timeout_sec REAL NOT NULL DEFAULT 30.0,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     enabled_by_default INTEGER NOT NULL DEFAULT 1,
@@ -248,6 +258,13 @@ class AuthDB:
 
                 CREATE INDEX IF NOT EXISTS idx_mcp_server_configs_enabled
                     ON mcp_server_configs(enabled, server_id);
+
+                CREATE TABLE IF NOT EXISTS mcp_server_secrets (
+                    server_id TEXT PRIMARY KEY,
+                    secret_blob_encrypted TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(server_id) REFERENCES mcp_server_configs(server_id) ON DELETE CASCADE
+                );
 
                 CREATE TABLE IF NOT EXISTS user_mcp_server_settings (
                     user_id INTEGER NOT NULL,
@@ -290,6 +307,19 @@ class AuthDB:
                     FOREIGN KEY(connection_id) REFERENCES user_db_connections(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS user_db_connection_access (
+                    connection_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    granted_by_user_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(connection_id, user_id),
+                    FOREIGN KEY(connection_id) REFERENCES user_db_connections(id) ON DELETE CASCADE,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_user_db_connection_access_user
+                    ON user_db_connection_access(user_id, connection_id);
+
                 CREATE TABLE IF NOT EXISTS user_memories (
                     user_id    INTEGER NOT NULL,
                     mem_type   TEXT    NOT NULL,
@@ -303,6 +333,7 @@ class AuthDB:
             self._ensure_chat_sessions_columns(conn)
             self._ensure_user_settings_columns(conn)
             self._ensure_user_db_connections_columns(conn)
+            self._ensure_mcp_server_config_columns(conn)
 
     @staticmethod
     def _ensure_chat_sessions_columns(conn: sqlite3.Connection) -> None:
@@ -384,7 +415,7 @@ class AuthDB:
             conn.execute(
                 """
                 ALTER TABLE user_settings
-                ADD COLUMN llm_max_tokens_default INTEGER NOT NULL DEFAULT 2048
+                ADD COLUMN llm_max_tokens_default INTEGER NOT NULL DEFAULT 4096
                 """
             )
         if "llm_max_tokens_reasoning" not in existing_columns:
@@ -487,6 +518,17 @@ class AuthDB:
                 ADD COLUMN show_think_final INTEGER NOT NULL DEFAULT 1
                 """
             )
+        if "always_use_analysis_plan" not in existing_columns:
+            try:
+                conn.execute(
+                    """
+                    ALTER TABLE user_settings
+                    ADD COLUMN always_use_analysis_plan INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         if "show_detailed_tool_steps" not in existing_columns:
             conn.execute(
                 """
@@ -494,6 +536,25 @@ class AuthDB:
                 ADD COLUMN show_detailed_tool_steps INTEGER NOT NULL DEFAULT 0
                 """
             )
+        if "show_rag_errors" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE user_settings
+                ADD COLUMN show_rag_errors INTEGER NOT NULL DEFAULT 1
+                """
+            )
+        if "anomaly_check_enabled" not in existing_columns:
+            try:
+                conn.execute(
+                    """
+                    ALTER TABLE user_settings
+                    ADD COLUMN anomaly_check_enabled INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            except sqlite3.OperationalError as exc:
+                # Multiple Uvicorn workers may run this idempotent migration together.
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
     @staticmethod
     def _ensure_user_db_connections_columns(conn: sqlite3.Connection) -> None:
@@ -504,6 +565,18 @@ class AuthDB:
                 """
                 ALTER TABLE user_db_connections
                 RENAME COLUMN database TO database_name
+                """
+            )
+
+    @staticmethod
+    def _ensure_mcp_server_config_columns(conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(mcp_server_configs)").fetchall()
+        existing_columns = {str(row["name"]) for row in rows}
+        if "tool_bindings_json" not in existing_columns:
+            conn.execute(
+                """
+                ALTER TABLE mcp_server_configs
+                ADD COLUMN tool_bindings_json TEXT NOT NULL DEFAULT '{}'
                 """
             )
 
@@ -570,16 +643,19 @@ class AuthDB:
                 show_think_planning,
                 show_think_tool,
                 show_think_final,
+                always_use_analysis_plan,
                 show_detailed_tool_steps,
+                show_rag_errors,
+                anomaly_check_enabled,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
             (
                 user_id,
                 defaults.theme,
-                1 if defaults.default_include_reasoning else 0,
+                defaults.default_include_reasoning,
                 defaults.default_answer_style,
                 defaults.analysis_mode,
                 defaults.analysis_depth,
@@ -591,14 +667,17 @@ class AuthDB:
                 defaults.agent_max_steps,
                 defaults.agent_step_timeout_sec,
                 defaults.agent_inner_recursion_limit,
-                1 if defaults.agent_react_enabled else 0,
+                defaults.agent_react_enabled,
                 defaults.ui_scale,
-                1 if defaults.llm_streaming else 0,
-                1 if defaults.show_thinking else 0,
-                1 if defaults.show_think_planning else 0,
-                1 if defaults.show_think_tool else 0,
-                1 if defaults.show_think_final else 0,
-                1 if defaults.show_detailed_tool_steps else 0,
+                defaults.llm_streaming,
+                defaults.show_thinking,
+                defaults.show_think_planning,
+                defaults.show_think_tool,
+                defaults.show_think_final,
+                defaults.always_use_analysis_plan,
+                defaults.show_detailed_tool_steps,
+                defaults.show_rag_errors,
+                defaults.anomaly_check_enabled,
                 self._now_iso(),
             ),
         )
@@ -609,7 +688,7 @@ class AuthDB:
             id=int(row["id"]),
             username=str(row["username"]),
             is_admin=bool(row["is_admin"]),
-            created_at=str(row["created_at"]),
+            created_at=AuthDB._timestamp_text(row["created_at"]),
         )
 
     def ensure_default_admin(self, username: str, password: str) -> None:
@@ -619,7 +698,7 @@ class AuthDB:
             return
         try:
             self.create_user(username=normalized, password=password, is_admin=True)
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, UniqueViolation):
             if self.get_user_by_username(normalized) is not None:
                 return
             raise
@@ -646,14 +725,17 @@ class AuthDB:
         password_hash = self._hash_password(password)
         created_at = self._now_iso()
         with self._connect() as conn:
-            cursor = conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO users(username, password_hash, is_admin, created_at)
                 VALUES (?, ?, ?, ?)
+                RETURNING id
                 """,
-                (normalized, password_hash, 1 if is_admin else 0, created_at),
-            )
-            user_id = int(cursor.lastrowid)
+                (normalized, password_hash, is_admin, created_at),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("Failed to create user")
+            user_id = int(row["id"])
             self._ensure_user_settings_row(conn, user_id)
         return AuthUser(
             id=user_id,
@@ -722,7 +804,7 @@ class AuthDB:
 
     @staticmethod
     def _count_admins(conn: sqlite3.Connection) -> int:
-        row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1").fetchone()
+        row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE is_admin = TRUE").fetchone()
         if row is None:
             return 0
         return int(row["count"])
@@ -793,7 +875,7 @@ class AuthDB:
                 raise ValueError("Нельзя снять роль у последнего администратора")
             cursor = conn.execute(
                 "UPDATE users SET is_admin = ? WHERE id = ?",
-                (1 if is_admin else 0, user_id),
+                (is_admin, user_id),
             )
             return cursor.rowcount > 0
 
@@ -827,9 +909,17 @@ class AuthDB:
             default_answer_style=answer_style,
             analysis_mode=analysis_mode,
             analysis_depth=depth,
-            llm_temperature_chat=float(row["llm_temperature_chat"] or 0.7),
-            llm_temperature_tool=float(row["llm_temperature_tool"] or 0.5),
-            llm_max_tokens_default=int(row["llm_max_tokens_default"] or 2048),
+            llm_temperature_chat=float(
+                row["llm_temperature_chat"]
+                if row["llm_temperature_chat"] is not None
+                else 0.7
+            ),
+            llm_temperature_tool=float(
+                row["llm_temperature_tool"]
+                if row["llm_temperature_tool"] is not None
+                else 0.5
+            ),
+            llm_max_tokens_default=int(row["llm_max_tokens_default"] or 4096),
             llm_max_tokens_reasoning=int(row["llm_max_tokens_reasoning"] or 4096),
             backend_query_timeout_sec=int(row["backend_query_timeout_sec"] or 180),
             agent_max_steps=min(
@@ -867,9 +957,22 @@ class AuthDB:
             show_think_final=(
                 bool(row["show_think_final"]) if "show_think_final" in row.keys() else True
             ),
+            always_use_analysis_plan=(
+                bool(row["always_use_analysis_plan"])
+                if "always_use_analysis_plan" in row.keys()
+                else False
+            ),
             show_detailed_tool_steps=(
                 bool(row["show_detailed_tool_steps"])
                 if "show_detailed_tool_steps" in row.keys()
+                else False
+            ),
+            show_rag_errors=(
+                bool(row["show_rag_errors"]) if "show_rag_errors" in row.keys() else True
+            ),
+            anomaly_check_enabled=(
+                bool(row["anomaly_check_enabled"])
+                if "anomaly_check_enabled" in row.keys()
                 else False
             ),
         )
@@ -890,7 +993,10 @@ class AuthDB:
                     , ui_scale
                     , llm_streaming, show_thinking
                     , show_think_planning, show_think_tool, show_think_final
+                    , always_use_analysis_plan
                     , show_detailed_tool_steps
+                    , show_rag_errors
+                    , anomaly_check_enabled
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -924,7 +1030,10 @@ class AuthDB:
         show_think_planning: bool | None = None,
         show_think_tool: bool | None = None,
         show_think_final: bool | None = None,
+        always_use_analysis_plan: bool | None = None,
         show_detailed_tool_steps: bool | None = None,
+        show_rag_errors: bool | None = None,
+        anomaly_check_enabled: bool | None = None,
     ) -> UserSettings:
         with self._connect() as conn:
             self._ensure_user_settings_row(conn, user_id)
@@ -941,7 +1050,10 @@ class AuthDB:
                     , ui_scale
                     , llm_streaming, show_thinking
                     , show_think_planning, show_think_tool, show_think_final
+                    , always_use_analysis_plan
                     , show_detailed_tool_steps
+                    , show_rag_errors
+                    , anomaly_check_enabled
                 FROM user_settings
                 WHERE user_id = ?
                 """,
@@ -1056,10 +1168,23 @@ class AuthDB:
                 if show_think_final is not None
                 else current.show_think_final
             )
+            next_always_use_analysis_plan = (
+                bool(always_use_analysis_plan)
+                if always_use_analysis_plan is not None
+                else current.always_use_analysis_plan
+            )
             next_show_detailed_tool_steps = (
                 bool(show_detailed_tool_steps)
                 if show_detailed_tool_steps is not None
                 else current.show_detailed_tool_steps
+            )
+            next_show_rag_errors = (
+                bool(show_rag_errors) if show_rag_errors is not None else current.show_rag_errors
+            )
+            next_anomaly_check_enabled = (
+                bool(anomaly_check_enabled)
+                if anomaly_check_enabled is not None
+                else current.anomaly_check_enabled
             )
             conn.execute(
                 """
@@ -1075,13 +1200,16 @@ class AuthDB:
                     ui_scale = ?,
                     llm_streaming = ?, show_thinking = ?,
                     show_think_planning = ?, show_think_tool = ?, show_think_final = ?,
+                    always_use_analysis_plan = ?,
                     show_detailed_tool_steps = ?,
+                    show_rag_errors = ?,
+                    anomaly_check_enabled = ?,
                     updated_at = ?
                 WHERE user_id = ?
                 """,
                 (
                     next_theme,
-                    1 if next_reasoning else 0,
+                    next_reasoning,
                     next_answer_style,
                     next_analysis_mode,
                     next_analysis_depth,
@@ -1093,14 +1221,17 @@ class AuthDB:
                     next_agent_max_steps,
                     next_agent_step_timeout_sec,
                     next_agent_inner_recursion_limit,
-                    1 if next_agent_react_enabled else 0,
+                    next_agent_react_enabled,
                     next_ui_scale,
-                    1 if next_llm_streaming else 0,
-                    1 if next_show_thinking else 0,
-                    1 if next_show_think_planning else 0,
-                    1 if next_show_think_tool else 0,
-                    1 if next_show_think_final else 0,
-                    1 if next_show_detailed_tool_steps else 0,
+                    next_llm_streaming,
+                    next_show_thinking,
+                    next_show_think_planning,
+                    next_show_think_tool,
+                    next_show_think_final,
+                    next_always_use_analysis_plan,
+                    next_show_detailed_tool_steps,
+                    next_show_rag_errors,
+                    next_anomaly_check_enabled,
                     self._now_iso(),
                     user_id,
                 ),
@@ -1126,7 +1257,10 @@ class AuthDB:
             show_think_planning=next_show_think_planning,
             show_think_tool=next_show_think_tool,
             show_think_final=next_show_think_final,
+            always_use_analysis_plan=next_always_use_analysis_plan,
             show_detailed_tool_steps=next_show_detailed_tool_steps,
+            show_rag_errors=next_show_rag_errors,
+            anomaly_check_enabled=next_anomaly_check_enabled,
         )
 
     def list_user_tool_settings(self, user_id: int) -> dict[str, bool]:
@@ -1162,7 +1296,7 @@ class AuthDB:
                 (
                     user_id,
                     clean_tool_key,
-                    1 if enabled else 0,
+                    enabled,
                     self._now_iso(),
                 ),
             )
@@ -1200,7 +1334,7 @@ class AuthDB:
                 (
                     user_id,
                     clean_skill_id,
-                    1 if enabled else 0,
+                    enabled,
                     self._now_iso(),
                 ),
             )
@@ -1243,7 +1377,7 @@ class AuthDB:
                 (
                     user_id,
                     clean_server_id,
-                    1 if enabled else 0,
+                    enabled,
                     self._now_iso(),
                 ),
             )
@@ -1291,10 +1425,10 @@ class AuthDB:
                 """
                 INSERT INTO mcp_server_configs(
                     server_id, name, description, transport, url, command, args_json,
-                    env_json, timeout_sec, enabled, enabled_by_default, created_at,
+                    env_json, tool_bindings_json, timeout_sec, enabled, enabled_by_default, created_at,
                     updated_at, updated_by
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(server_id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
@@ -1303,6 +1437,7 @@ class AuthDB:
                     command = excluded.command,
                     args_json = excluded.args_json,
                     env_json = excluded.env_json,
+                    tool_bindings_json = excluded.tool_bindings_json,
                     timeout_sec = excluded.timeout_sec,
                     enabled = excluded.enabled,
                     enabled_by_default = excluded.enabled_by_default,
@@ -1318,9 +1453,17 @@ class AuthDB:
                     config.command,
                     json.dumps(list(config.args), ensure_ascii=False),
                     json.dumps(dict(config.env), ensure_ascii=False),
+                    json.dumps(
+                        {
+                            key: binding.model_dump(mode="json")
+                            for key, binding in config.tool_bindings.items()
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                     float(config.timeout_sec),
-                    1 if config.enabled else 0,
-                    1 if config.enabled_by_default else 0,
+                    config.enabled,
+                    config.enabled_by_default,
                     config.created_at or now_iso,
                     now_iso,
                     updated_by,
@@ -1346,27 +1489,65 @@ class AuthDB:
             )
             return cursor.rowcount > 0
 
+    def set_mcp_server_secret(self, server_id: str, secret_blob_encrypted: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO mcp_server_secrets(server_id, secret_blob_encrypted, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(server_id) DO UPDATE SET
+                    secret_blob_encrypted = excluded.secret_blob_encrypted,
+                    updated_at = excluded.updated_at
+                """,
+                (server_id, secret_blob_encrypted, self._now_iso()),
+            )
+
+    def clear_mcp_server_secret(self, server_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM mcp_server_secrets WHERE server_id = ?", (server_id,))
+
+    def get_mcp_server_secret_blob(self, server_id: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT secret_blob_encrypted FROM mcp_server_secrets WHERE server_id = ?",
+                (server_id,),
+            ).fetchone()
+        return str(row["secret_blob_encrypted"]) if row is not None else None
+
     @staticmethod
     def _to_mcp_server_config(row: sqlite3.Row):
-        from backend.mcp.models import MCPServerConfig, MCPServerTransport
+        from backend.mcp.models import MCPServerConfig, MCPServerTransport, MCPToolBindingConfig
 
-        def _json_list(raw: str | None) -> list[str]:
+        def _json_list(raw: object) -> list[str]:
             try:
-                parsed = json.loads(raw or "[]")
+                parsed = raw if isinstance(raw, list) else json.loads(str(raw or "[]"))
             except Exception:
                 return []
             if not isinstance(parsed, list):
                 return []
             return [str(item) for item in parsed]
 
-        def _json_str_dict(raw: str | None) -> dict[str, str]:
+        def _json_str_dict(raw: object) -> dict[str, str]:
             try:
-                parsed = json.loads(raw or "{}")
+                parsed = raw if isinstance(raw, dict) else json.loads(str(raw or "{}"))
             except Exception:
                 return {}
             if not isinstance(parsed, dict):
                 return {}
             return {str(key): str(value) for key, value in parsed.items()}
+
+        def _tool_bindings(raw: object) -> dict[str, MCPToolBindingConfig]:
+            try:
+                parsed = raw if isinstance(raw, dict) else json.loads(str(raw or "{}"))
+            except Exception:
+                return {}
+            if not isinstance(parsed, dict):
+                return {}
+            return {
+                str(key): MCPToolBindingConfig.model_validate(value)
+                for key, value in parsed.items()
+                if isinstance(value, dict)
+            }
 
         return MCPServerConfig(
             server_id=str(row["server_id"]),
@@ -1375,13 +1556,22 @@ class AuthDB:
             transport=MCPServerTransport(str(row["transport"])),
             url=str(row["url"]) if row["url"] is not None else None,
             command=str(row["command"]) if row["command"] is not None else None,
-            args=_json_list(str(row["args_json"]) if row["args_json"] is not None else None),
-            env=_json_str_dict(str(row["env_json"]) if row["env_json"] is not None else None),
+            args=_json_list(row["args_json"]),
+            env=_json_str_dict(row["env_json"]),
+            tool_bindings=_tool_bindings(row["tool_bindings_json"]),
             timeout_sec=float(row["timeout_sec"]),
             enabled=bool(row["enabled"]),
             enabled_by_default=bool(row["enabled_by_default"]),
-            created_at=str(row["created_at"]) if row["created_at"] is not None else None,
-            updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
+            created_at=(
+                AuthDB._timestamp_text(row["created_at"])
+                if row["created_at"] is not None
+                else None
+            ),
+            updated_at=(
+                AuthDB._timestamp_text(row["updated_at"])
+                if row["updated_at"] is not None
+                else None
+            ),
             updated_by=int(row["updated_by"]) if row["updated_by"] is not None else None,
         )
 
@@ -1392,34 +1582,21 @@ class AuthDB:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO chat_sessions(
+                INSERT INTO chat_sessions(
                     session_id, user_id, title, created_at, last_access,
                     has_dataset, last_message_preview, title_is_custom, allow_auto_title
                 )
-                VALUES (
-                    ?,
-                    ?,
-                    COALESCE((SELECT title FROM chat_sessions WHERE session_id = ?), 'Новый чат'),
-                    COALESCE((SELECT created_at FROM chat_sessions WHERE session_id = ?), ?),
-                    ?,
-                    COALESCE((SELECT has_dataset FROM chat_sessions WHERE session_id = ?), 0),
-                    COALESCE((SELECT last_message_preview FROM chat_sessions WHERE session_id = ?), NULL),
-                    COALESCE((SELECT title_is_custom FROM chat_sessions WHERE session_id = ?), 0),
-                    COALESCE((SELECT allow_auto_title FROM chat_sessions WHERE session_id = ?), ?)
-                )
+                VALUES (?, ?, 'Новый чат', ?, ?, FALSE, NULL, FALSE, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    last_access = excluded.last_access
                 """,
                 (
                     session_id,
                     user_id,
-                    session_id,
-                    session_id,
                     now_iso,
                     now_iso,
-                    session_id,
-                    session_id,
-                    session_id,
-                    session_id,
-                    1 if allow_auto_title else 0,
+                    allow_auto_title,
                 ),
             )
 
@@ -1448,7 +1625,7 @@ class AuthDB:
             cursor = conn.execute(
                 """
                 UPDATE chat_sessions
-                SET title = ?, title_is_custom = 1, last_access = ?
+                SET title = ?, title_is_custom = TRUE, last_access = ?
                 WHERE session_id = ? AND user_id = ?
                 """,
                 (cleaned, self._now_iso(), session_id, user_id),
@@ -1473,7 +1650,7 @@ class AuthDB:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE chat_sessions SET has_dataset = ?, last_access = ? WHERE session_id = ?",
-                (1 if has_dataset else 0, self._now_iso(), session_id),
+                (has_dataset, self._now_iso(), session_id),
             )
 
     def update_session_after_reply(
@@ -1497,8 +1674,8 @@ class AuthDB:
                 UPDATE chat_sessions
                 SET
                     title = CASE
-                        WHEN allow_auto_title = 1
-                            AND title_is_custom = 0
+                        WHEN allow_auto_title = TRUE
+                            AND title_is_custom = FALSE
                             AND ? IS NOT NULL
                             AND trim(?) <> ''
                         THEN ?
@@ -1558,7 +1735,7 @@ class AuthDB:
                     last_message_preview
                 FROM chat_sessions
                 WHERE user_id = ?
-                ORDER BY datetime(last_access) DESC
+                ORDER BY last_access DESC
                 """,
                 (user_id,),
             ).fetchall()
@@ -1567,8 +1744,8 @@ class AuthDB:
             {
                 "session_id": str(row["session_id"]),
                 "title": str(row["title"] or "Новый чат"),
-                "created_at": str(row["created_at"]),
-                "last_access": str(row["last_access"]),
+                "created_at": self._timestamp_text(row["created_at"]),
+                "last_access": self._timestamp_text(row["last_access"]),
                 "has_dataset": bool(row["has_dataset"]),
                 "last_message_preview": (
                     str(row["last_message_preview"])
@@ -1603,8 +1780,8 @@ class AuthDB:
         return {
             "session_id": str(row["session_id"]),
             "title": str(row["title"] or "Новый чат"),
-            "created_at": str(row["created_at"]),
-            "last_access": str(row["last_access"]),
+            "created_at": self._timestamp_text(row["created_at"]),
+            "last_access": self._timestamp_text(row["last_access"]),
             "has_dataset": bool(row["has_dataset"]),
             "last_message_preview": (
                 str(row["last_message_preview"])
@@ -1614,11 +1791,13 @@ class AuthDB:
         }
 
     @staticmethod
-    def _parse_options_json(raw: str | None) -> dict[str, object] | None:
+    def _parse_options_json(raw: object) -> dict[str, object] | None:
+        if isinstance(raw, dict):
+            return {str(key): value for key, value in raw.items()}
         if raw is None or str(raw).strip() == "":
             return None
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(str(raw))
         except Exception:
             return None
         return parsed if isinstance(parsed, dict) else None
@@ -1634,14 +1813,16 @@ class AuthDB:
             port=int(row["port"]) if row["port"] is not None else None,
             database=str(row["database_name"]) if row["database_name"] is not None else None,
             username=str(row["username"]) if row["username"] is not None else None,
-            options_json=AuthDB._parse_options_json(
-                str(row["options_json"]) if row["options_json"] is not None else None
+            options_json=AuthDB._parse_options_json(row["options_json"]),
+            last_test_at=(
+                AuthDB._timestamp_text(row["last_test_at"])
+                if row["last_test_at"] is not None
+                else None
             ),
-            last_test_at=str(row["last_test_at"]) if row["last_test_at"] is not None else None,
             last_test_ok=bool(row["last_test_ok"]) if row["last_test_ok"] is not None else None,
             last_error=str(row["last_error"]) if row["last_error"] is not None else None,
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
+            created_at=AuthDB._timestamp_text(row["created_at"]),
+            updated_at=AuthDB._timestamp_text(row["updated_at"]),
             password_present=bool(row["password_present"]),
         )
 
@@ -1657,10 +1838,12 @@ class AuthDB:
                     CASE WHEN s.connection_id IS NOT NULL THEN 1 ELSE 0 END AS password_present
                 FROM user_db_connections c
                 LEFT JOIN user_db_connection_secrets s ON s.connection_id = c.id
-                WHERE c.user_id = ?
-                ORDER BY datetime(c.updated_at) DESC, datetime(c.created_at) DESC
+                LEFT JOIN user_db_connection_access a
+                    ON a.connection_id = c.id AND a.user_id = ?
+                WHERE c.user_id = ? OR a.user_id IS NOT NULL
+                ORDER BY c.updated_at DESC, c.created_at DESC
                 """,
-                (user_id,),
+                (user_id, user_id),
             ).fetchall()
         return [self._to_db_connection_record(row) for row in rows]
 
@@ -1676,9 +1859,11 @@ class AuthDB:
                     CASE WHEN s.connection_id IS NOT NULL THEN 1 ELSE 0 END AS password_present
                 FROM user_db_connections c
                 LEFT JOIN user_db_connection_secrets s ON s.connection_id = c.id
-                WHERE c.user_id = ? AND c.id = ?
+                LEFT JOIN user_db_connection_access a
+                    ON a.connection_id = c.id AND a.user_id = ?
+                WHERE (c.user_id = ? OR a.user_id IS NOT NULL) AND c.id = ?
                 """,
-                (user_id, connection_id),
+                (user_id, user_id, connection_id),
             ).fetchone()
         if row is None:
             return None
@@ -1814,13 +1999,43 @@ class AuthDB:
                 SELECT s.secret_blob_encrypted
                 FROM user_db_connection_secrets s
                 JOIN user_db_connections c ON c.id = s.connection_id
-                WHERE c.user_id = ? AND c.id = ?
+                LEFT JOIN user_db_connection_access a
+                    ON a.connection_id = c.id AND a.user_id = ?
+                WHERE (c.user_id = ? OR a.user_id IS NOT NULL) AND c.id = ?
                 """,
-                (user_id, connection_id),
+                (user_id, user_id, connection_id),
             ).fetchone()
         if row is None:
             return None
         return str(row["secret_blob_encrypted"])
+
+    def grant_db_connection_access(
+        self,
+        owner_user_id: int,
+        connection_id: str,
+        grantee_user_id: int,
+    ) -> bool:
+        with self._connect() as conn:
+            owned = conn.execute(
+                "SELECT 1 FROM user_db_connections WHERE user_id = ? AND id = ?",
+                (owner_user_id, connection_id),
+            ).fetchone()
+        if owned is None:
+            return False
+        now_iso = self._now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_db_connection_access(
+                    connection_id, user_id, granted_by_user_id, created_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(connection_id, user_id) DO UPDATE SET
+                    granted_by_user_id = excluded.granted_by_user_id
+                """,
+                (connection_id, grantee_user_id, owner_user_id, now_iso),
+            )
+        return True
 
     def update_db_connection_test_status(
         self,
@@ -1841,7 +2056,7 @@ class AuthDB:
                 """,
                 (
                     checked_at,
-                    1 if ok else 0,
+                    ok,
                     error,
                     checked_at,
                     user_id,
@@ -1861,7 +2076,6 @@ class AuthDB:
         return str(row["content"]) if row else ""
 
     def set_user_memory(self, user_id: int, mem_type: str, content: str) -> None:
-        import time as _time
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1871,5 +2085,30 @@ class AuthDB:
                     SET content = excluded.content,
                         updated_at = excluded.updated_at
                 """,
-                (user_id, mem_type, content, _time.time()),
+                (user_id, mem_type, content, self._now_iso()),
             )
+
+
+class PostgresAuthDB(AuthDB):
+    """AuthDB backed by the app_data PostgreSQL database."""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        schema: str = "public",
+        token_ttl_days: int = 30,
+        user_settings_defaults: UserSettingsDefaults = DEFAULT_USER_SETTINGS,
+    ) -> None:
+        from backend.auth.app_data_postgres import AppDataPostgresStore
+
+        self._store = AppDataPostgresStore(dsn, schema=schema)
+        self.token_ttl_days = token_ttl_days
+        self.user_settings_defaults = user_settings_defaults
+
+    def initialize(self) -> None:
+        self._store.ensure_schema()
+        self._cleanup_expired_tokens()
+
+    def _connect(self):
+        return self._store.connect()

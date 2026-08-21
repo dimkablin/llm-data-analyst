@@ -101,7 +101,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
   const dot = isRunning ? (
     <span className="inline-flex items-center"><SpinnerDisplay size="dot" /></span>
   ) : call.status === "error" ? (
-    <span className="text-destructive">●</span>
+    <span className="text-muted-foreground/50">●</span>
   ) : (
     <span className="text-emerald-500">●</span>
   );
@@ -163,7 +163,7 @@ function ToolRow({ call, isLast }: { call: StreamToolCall; isLast: boolean }) {
                 {call.status === "error" ? "Ошибка" : "Выход"}
               </span>
               {call.status === "error" ? (
-                <div className="max-w-full overflow-hidden rounded border px-3 py-2 font-mono text-[11px] leading-relaxed break-words border-destructive/20 bg-destructive/5 text-destructive/80">
+                <div className="max-w-full overflow-hidden rounded border border-border/25 bg-muted/20 px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground/65 break-words">
                   {call.output_preview}
                 </div>
               ) : (
@@ -203,14 +203,15 @@ export function ToolCallList({
   showDetailedTools?: boolean;
   isSummarizing?: boolean;
 }) {
-  if (!tools.length && !reasoning?.trim()) return null;
+  const visibleTools = tools;
+  if (!visibleTools.length && !reasoning?.trim()) return null;
 
   const liveReasoning = reasoning?.trim() ?? "";
 
   if (!showDetailedTools) {
-    const stages = buildAgentStagesFromTools(tools, {
+    const stages = buildAgentStagesFromTools(visibleTools, {
       isLive,
-      isSummarizing: isSummarizing || Boolean(isLive && tools.length > 0 && liveReasoning),
+      isSummarizing: isSummarizing || Boolean(isLive && visibleTools.length > 0 && liveReasoning),
     });
     if (!stages.length && !liveReasoning) {
       return null;
@@ -218,7 +219,7 @@ export function ToolCallList({
     return (
       <div className="flex flex-col gap-2 py-0.5">
         {stages.length ? <AgentStageTimeline stages={stages} /> : null}
-        {isLive && !tools.length && liveReasoning ? (
+        {isLive && !visibleTools.length && liveReasoning ? (
           <LiveReasoningText text={liveReasoning} />
         ) : null}
       </div>
@@ -228,12 +229,12 @@ export function ToolCallList({
   return (
     <div className="flex flex-col gap-0.5 py-0.5">
       {/* Фаза рассуждения до первого вызова инструмента. */}
-      {isLive && !tools.length && liveReasoning ? (
+      {isLive && !visibleTools.length && liveReasoning ? (
         <LiveReasoningText text={liveReasoning} />
       ) : null}
 
-      {tools.map((call, idx) => {
-        const isLast = idx === tools.length - 1;
+      {visibleTools.map((call, idx) => {
+        const isLast = idx === visibleTools.length - 1;
         return (
           <React.Fragment key={call.id}>
             {call.pre_reasoning ? <ThinkingBlock content={call.pre_reasoning} defaultCollapsed /> : null}
@@ -243,7 +244,7 @@ export function ToolCallList({
       })}
 
       {/* Поток рассуждения после последнего инструмента. */}
-      {isLive && tools.length > 0 && liveReasoning ? (
+      {isLive && visibleTools.length > 0 && liveReasoning ? (
         <LiveReasoningText text={liveReasoning} />
       ) : null}
     </div>

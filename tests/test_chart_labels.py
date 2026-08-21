@@ -1,6 +1,8 @@
+import pandas as pd
 import plotly.graph_objects as go
 
 from backend.tools.impl.plotly_tool import (
+    PlotlyTool,
     _bar_label_texts,
     _bar_point_count,
     apply_default_chart_style,
@@ -32,3 +34,22 @@ def test_apply_default_chart_style_hides_legend_for_single_bar_series() -> None:
     styled = apply_default_chart_style(fig)
     assert styled.layout.showlegend is False
     assert list(styled.data[0].text or []) == ["70.0%", "30.0%"]
+
+
+def test_plotly_tool_rejects_empty_trace_chart() -> None:
+    tool = PlotlyTool(pd.DataFrame())
+    fig = go.Figure(go.Bar(x=[], y=[]))
+
+    valid, message = tool.validate_tool_result({"target_directions_chart": fig})
+
+    assert valid is False
+    assert "empty" in message.lower() or "пуст" in message.lower()
+
+
+def test_plotly_tool_accepts_non_empty_chart_without_inferred_semantics() -> None:
+    tool = PlotlyTool(pd.DataFrame())
+    fig = go.Figure(go.Scatter(x=["2026-01-01", "2026-02-01"], y=[10, 12], name=""))
+
+    valid, message = tool.validate_tool_result({"attrition_forecast": fig})
+
+    assert valid is True, message

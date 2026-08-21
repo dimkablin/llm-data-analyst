@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -23,7 +24,7 @@ from backend.auth.auth_db import AuthDB, AuthUser, UserSettings
 from backend.core.config import Settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
-from backend.sessions.session_store import SessionState, SessionStore
+from backend.sessions.session_store import SessionQueryLease, SessionState, SessionStore
 from backend.skills.models import Skill
 from backend.skills.registry import SkillRegistry
 
@@ -57,6 +58,36 @@ def test_query_execution_service_contracts_are_pydantic_models() -> None:
         "csv_runtime",
         "manifest_store",
     }.issubset(QueryExecutionDependencies.model_fields)
+
+
+def test_semantic_context_attachment_has_no_skill_or_strict_routing_flag() -> None:
+    calls: list[dict] = []
+
+    class Builder:
+        def build(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(status="ready", prompt="", hints={})
+
+    service = QueryExecutionService.model_construct(
+        dependencies=SimpleNamespace(
+            semantic_context_builder=Builder(),
+            settings=SimpleNamespace(semantic_layer_enabled=True),
+        )
+    )
+    service._attach_semantic_context(
+        session_id="session",
+        user_id=1,
+        query="metric question",
+        session_source={},
+    )
+
+    assert calls == [
+        {
+            "session_id": "session",
+            "user_id": 1,
+            "query": "metric question",
+        }
+    ]
 
 
 def test_query_route_delegates_non_stream_execution_to_service() -> None:
@@ -144,6 +175,8 @@ def test_query_execution_service_prepares_runner_for_execute_and_stream(tmp_path
     assert stream_runner.run_request is None
     assert execute_runner.kwargs["enabled_analytical_skill_ids"] == {"allowed"}
     assert stream_runner.kwargs["enabled_analytical_skill_ids"] == {"allowed"}
+    assert execute_runner.kwargs["session_store"] is service.dependencies.store
+    assert stream_runner.kwargs["session_store"] is service.dependencies.store
 
 
 def test_query_execution_service_filters_skills_and_persists_response(tmp_path) -> None:
@@ -163,10 +196,7 @@ def test_query_execution_service_filters_skills_and_persists_response(tmp_path) 
         service.execute(
             QueryExecutionRequest(
                 session_id=session_id,
-                payload=QueryRequest(
-                    query="run analysis",
-                    selected_skill_ids=["allowed", "disabled", "default_disabled"],
-                ),
+                payload=QueryRequest(query="run analysis"),
                 current_user=AuthUser(
                     id=7,
                     username="user",
@@ -186,6 +216,157 @@ def test_query_execution_service_filters_skills_and_persists_response(tmp_path) 
     assert calls["selected_skill_ids"] == [(session_id, ["allowed"])]
     assert calls["messages"][0][:3] == (session_id, "user", "run analysis")
     assert calls["messages"][1][:3] == (session_id, "ai", "service answer")
+
+
+def test_query_execution_rejects_explicit_disabled_skill(tmp_path) -> None:
+    service, _calls, _runner_cls = _build_service_for_query_tests(
+        tmp_path,
+        user_skill_settings={"allowed": True, "disabled": False},
+        skills=[_skill(tmp_path, "allowed"), _skill(tmp_path, "disabled")],
+    )
+
+    try:
+        anyio_run(
+            service.execute(
+                QueryExecutionRequest(
+                    session_id="session-1",
+                    payload=QueryRequest(query="run", selected_skill_ids=["disabled"]),
+                    current_user=_auth_user(),
+                    persist=True,
+                )
+            )
+        )
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 422
+        assert "disabled" in str(getattr(exc, "detail", exc))
+    else:
+        raise AssertionError("explicit disabled skill must be rejected")
+
+
+def test_query_execution_passes_requested_tool_to_runtime(tmp_path) -> None:
+    service, _calls, runner_cls = _build_service_for_query_tests(tmp_path)
+    service.dependencies.build_tool_catalog_fn = lambda **_kwargs: [
+        {
+            "tool_key": "memory_tool",
+            "effective_enabled": True,
+            "requires_session_data": False,
+        }
+    ]
+
+    anyio_run(
+        service.execute(
+            QueryExecutionRequest(
+                session_id="session-1",
+                payload=QueryRequest(query="remember", requested_tool_key="memory_tool"),
+                current_user=_auth_user(),
+                persist=True,
+            )
+        )
+    )
+
+    assert runner_cls.instances[-1].run_request.requested_tool_key == "memory_tool"
+
+
+def test_query_execution_leaves_forecast_routing_to_agent_runtime(tmp_path) -> None:
+    service, _calls, runner_cls = _build_service_for_query_tests(tmp_path)
+    service.dependencies.store.state.source_type = "db_connection"
+    service.dependencies.store.state.source_ref_id = "conn-1"
+    service.dependencies.build_tool_catalog_fn = lambda **_kwargs: [
+        {
+            "tool_key": "forecast_tool",
+            "effective_enabled": True,
+            "requires_session_data": True,
+        }
+    ]
+    service.dependencies.effective_enabled_tool_keys_fn = lambda _catalog: {"forecast_tool"}
+    runner_cls.available_tool_keys = {"forecast_tool"}
+
+    try:
+        anyio_run(
+            service.execute(
+                QueryExecutionRequest(
+                    session_id="session-1",
+                    payload=QueryRequest(
+                        query="Сколько увольнений прогнозируется на следующий квартал? Покажи прогноз и график."
+                    ),
+                    current_user=_auth_user(),
+                    persist=True,
+                )
+            )
+        )
+    finally:
+        runner_cls.available_tool_keys = None
+
+    assert runner_cls.instances[-1].run_request.requested_tool_key is None
+
+
+def test_query_execution_defers_requested_tool_to_run_snapshot(tmp_path) -> None:
+    service, _calls, runner_cls = _build_service_for_query_tests(tmp_path)
+    runner_cls.available_tool_keys = set()
+
+    prepared = service.prepare_stream(
+        QueryStreamExecutionRequest(
+            session_id="session-1",
+            payload=QueryRequest(query="run", requested_tool_key="missing_tool"),
+            current_user=_auth_user(),
+        )
+    )
+
+    assert prepared.requested_tool_key == "missing_tool"
+
+
+def test_query_execution_returns_typed_outcome_for_tool_missing_from_snapshot(tmp_path) -> None:
+    service, _calls, runner_cls = _build_service_for_query_tests(tmp_path)
+    service.dependencies.store.state.source_type = "rag"
+    service.dependencies.build_tool_catalog_fn = lambda **_kwargs: [
+        {
+            "tool_key": "sql_tool",
+            "effective_enabled": True,
+            "requires_session_data": True,
+        }
+    ]
+    runner_cls.available_tool_keys = set()
+
+    response = anyio_run(
+        service.execute(
+            QueryExecutionRequest(
+                session_id="session-1",
+                payload=QueryRequest(query="run", requested_tool_key="sql_tool"),
+                current_user=_auth_user(),
+                persist=False,
+            )
+        )
+    )
+
+    assert response.terminal_status == "unavailable"
+    assert response.task_contract_satisfied is False
+    assert response.error_category == "validation"
+
+
+def test_public_query_api_runtime_exception_is_failed_outcome(tmp_path) -> None:
+    service, _calls, runner_cls = _build_service_for_query_tests(tmp_path)
+
+    def fail_run(_self, _request):
+        raise RuntimeError("graph failed")
+
+    runner_cls.run = fail_run
+    response = anyio_run(
+        service.execute(
+            QueryExecutionRequest(
+                session_id="session-1",
+                payload=QueryRequest(query="run"),
+                current_user=_auth_user(),
+                persist=False,
+            )
+        )
+    )
+
+    assert response.response_envelope_valid is True
+    assert response.task_contract_satisfied is False
+    assert response.terminal_status == "failed"
+    assert response.error_category == "internal"
+    assert response.task_contract_satisfied is False
+    assert response.model_dump()["contract_valid"] is False
 
 
 def test_query_stream_prepare_raises_http_errors_before_generator(tmp_path) -> None:
@@ -230,6 +411,66 @@ def test_query_stream_events_use_agent_run_contract_and_emit_final(tmp_path) -> 
     assert calls["context_usage"] == ("session-1", {"usage_percent": 60})
 
 
+def test_query_stream_forecast_uses_normal_agent_loop(tmp_path) -> None:
+    service, calls, runner_cls = _build_service_for_query_tests(tmp_path)
+    forecast_calls: list[str] = []
+    service.dependencies.store.state.source_type = "db_connection"
+    service.dependencies.store.state.source_ref_id = "conn-1"
+    service.dependencies.build_tool_catalog_fn = lambda **_kwargs: [
+        {
+            "tool_key": "forecast_tool",
+            "effective_enabled": True,
+            "requires_session_data": True,
+        }
+    ]
+    service.dependencies.forecast_integration_service = SimpleNamespace(
+        prepare_question=lambda question: question,
+        run_forecast=lambda question, **_kwargs: (
+            forecast_calls.append(question)
+            or SimpleNamespace(
+                forecast_rows=[{"ts": "2026-08-01", "yhat": 12.0, "lower": 10.0, "upper": 14.0}],
+                horizon=1,
+                summary="",
+            )
+        ),
+        build_artifact_payload=lambda _result, **_kwargs: {
+            "artifact_name": "forecast_result",
+            "rows": [{"ts": "2026-08-01", "yhat": 12.0, "lower": 10.0, "upper": 14.0}],
+            "source": {"source_type": "forecast"},
+            "recipe": {},
+            "meta": {"forecast": {"horizon": 1}},
+            "plot": {
+                "forecast_chart": {
+                    "data": [{"type": "scatter", "x": ["2026-08-01"], "y": [12.0]}],
+                    "layout": {},
+                }
+            },
+        },
+        source_descriptor=lambda: {"key": "forecast"},
+    )
+    runner_cls.available_tool_keys = {"forecast_tool"}
+
+    try:
+        context = service.prepare_stream(
+            QueryStreamExecutionRequest(
+                session_id="session-1",
+                payload=QueryRequest(
+                    query="Сколько увольнений прогнозируется на следующий месяц?",
+                    requested_tool_key="forecast_tool",
+                ),
+                current_user=_auth_user(),
+            )
+        )
+        events = anyio_run(_collect_stream_events(service.stream_events(context)))
+    finally:
+        runner_cls.available_tool_keys = None
+
+    assert [event for event, _data in events] == ["start", "final"]
+    assert forecast_calls == []
+    assert runner_cls.instances[-1].run_request.requested_tool_key == "forecast_tool"
+    assert [message[1] for message in calls["messages"]] == ["user", "ai"]
+
+
 def test_query_stream_interrupted_turn_persists_partial_tool_history(tmp_path) -> None:
     service, calls, _runner_cls = _build_service_for_query_tests(tmp_path)
     token_collector = SimpleNamespace(
@@ -253,6 +494,7 @@ def test_query_stream_interrupted_turn_persists_partial_tool_history(tmp_path) -
 
     persisted = service._persist_interrupted_stream_turn(
         session_id="session-1",
+        user_id=1,
         query_text="stream analysis",
         token_collector=token_collector,
         tool_collector=tool_collector,
@@ -285,6 +527,55 @@ def test_query_stream_cancellation_signals_running_agent(tmp_path) -> None:
     runner = anyio_run(_cancel_stream_after_agent_starts(service.stream_events(context)))
 
     assert runner.cancel_seen.is_set()
+
+
+def test_query_deadline_returns_without_waiting_for_agent_thread(tmp_path) -> None:
+    service, _calls, _runner_cls = _build_service_for_query_tests(tmp_path)
+    service.dependencies.agent_runner_cls = _CancellableFakeRunner
+    service.dependencies.auth_db.get_user_settings = lambda _user_id: replace(
+        _user_settings(), backend_query_timeout_sec=0.05
+    )
+    _CancellableFakeRunner.instances.clear()
+
+    started_at = time.monotonic()
+    response = anyio_run(
+        service.execute(
+            QueryExecutionRequest(
+                session_id="session-1",
+                payload=QueryRequest(query="slow analysis"),
+                current_user=_auth_user(),
+                persist=False,
+            )
+        )
+    )
+
+    assert time.monotonic() - started_at < 0.25
+    assert response.text != "service answer"
+    assert response.task_contract_satisfied is False
+    assert _CancellableFakeRunner.instances[-1].cancel_seen.wait(timeout=0.2)
+
+
+def test_stream_deadline_returns_without_waiting_for_agent_thread(tmp_path) -> None:
+    service, _calls, _runner_cls = _build_service_for_query_tests(tmp_path)
+    service.dependencies.agent_runner_cls = _CancellableFakeRunner
+    service.dependencies.auth_db.get_user_settings = lambda _user_id: replace(
+        _user_settings(), backend_query_timeout_sec=0.05
+    )
+    _CancellableFakeRunner.instances.clear()
+    context = service.prepare_stream(
+        QueryStreamExecutionRequest(
+            session_id="session-1",
+            payload=QueryRequest(query="slow stream analysis"),
+            current_user=_auth_user(),
+        )
+    )
+
+    started_at = time.monotonic()
+    events = anyio_run(_collect_stream_events(service.stream_events(context)))
+
+    assert time.monotonic() - started_at < 0.25
+    assert [event for event, _data in events] == ["start", "final"]
+    assert _CancellableFakeRunner.instances[-1].cancel_seen.wait(timeout=0.2)
 
 
 class _FakeRouteQueryService:
@@ -320,8 +611,7 @@ class _FakeRouteQueryService:
 
 async def _drain_streaming_response(response) -> str:
     chunks = [
-        chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
-        async for chunk in response.body_iterator
+        chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk async for chunk in response.body_iterator
     ]
     return "".join(chunks)
 
@@ -364,6 +654,9 @@ class _FakeSessionStore(SessionStore):
     def load_session(self, _session_id: str) -> SessionState:
         return self.state
 
+    def acquire_query_lease(self, _session_id: str) -> SessionQueryLease:
+        return SessionQueryLease(lambda: None)
+
     def get_dataframe(self, _session_id: str):
         return None
 
@@ -376,7 +669,7 @@ class _FakeSessionStore(SessionStore):
     def set_structured_memory(self, session_id: str, memory) -> None:
         self.calls.setdefault("structured_memory", (session_id, memory))
 
-    def add_artifacts(self, session_id: str, artifacts) -> None:
+    def add_artifacts(self, session_id: str, artifacts, **_kwargs) -> None:
         self.calls.setdefault("artifacts", (session_id, artifacts))
 
     def set_selected_skill_ids(self, session_id: str, skill_ids: list[str]) -> None:
@@ -486,6 +779,7 @@ def _build_service_for_query_tests(
 
     class _FakeRunner:
         instances: ClassVar[list[_FakeRunner]] = []
+        available_tool_keys: ClassVar[set[str] | None] = None
 
         def __init__(self, _settings, **kwargs) -> None:
             self.kwargs = kwargs
@@ -494,6 +788,22 @@ def _build_service_for_query_tests(
 
         def run(self, request: AgentRunRequest) -> AgentRunResult:
             self.run_request = request
+            if (
+                request.requested_tool_key
+                and self.available_tool_keys is not None
+                and request.requested_tool_key not in self.available_tool_keys
+            ):
+                from backend.agent.models import AgentOutcome, ErrorCategory
+
+                return AgentRunResult(
+                    response=AgentResponse(
+                        final_text="Requested tool is unavailable.",
+                        reasoning="Active registry resolution failed.",
+                        artifacts=[],
+                        route="analysis",
+                        outcome=AgentOutcome.unavailable(ErrorCategory.VALIDATION),
+                    )
+                )
             return AgentRunResult(
                 response=AgentResponse(
                     final_text="service answer",
@@ -503,13 +813,15 @@ def _build_service_for_query_tests(
                 )
             )
 
+        def is_tool_available(self, tool_key: str, **_kwargs) -> bool:
+            return self.available_tool_keys is None or tool_key in self.available_tool_keys
+
     service = QueryExecutionService(
         dependencies=QueryExecutionDependencies(
             auth_db=auth_db,
             store=store,
             skill_registry=registry,
             db_runtime_service=None,
-            search_integration_service=SimpleNamespace(source_descriptor=lambda: {"key": "search"}),
             forecast_integration_service=SimpleNamespace(source_descriptor=lambda: {"key": "forecast"}),
             anomaly_planfact_integration_service=SimpleNamespace(
                 source_descriptor=lambda: {"key": "anomaly"}

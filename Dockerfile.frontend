@@ -4,6 +4,7 @@ ARG USE_MIRROR=""
 ARG NPM_REGISTRY=""
 ARG APP_BASE_PATH=/
 ARG VITE_BASE_PATH=/
+ARG VITE_BUILD_COMMIT=unknown
 WORKDIR /app
 
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -16,6 +17,7 @@ RUN set -eux; \
 COPY frontend/ ./
 ENV APP_BASE_PATH=${APP_BASE_PATH}
 ENV VITE_BASE_PATH=${VITE_BASE_PATH}
+ENV VITE_BUILD_COMMIT=${VITE_BUILD_COMMIT}
 RUN npm run build
 
 FROM nginx:1.27-alpine

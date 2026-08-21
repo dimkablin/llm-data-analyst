@@ -2,16 +2,15 @@
 
 All tests here are offline — no LLM, no database, no network required.
 """
+
 from __future__ import annotations
 
 import json
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-import backend.data_access.sql_table_service as _sql_table_svc_mod
 
 # The tools.impl package must be imported before sql_table_service to avoid a
 # circular import: sql_table_service → tools.impl.db_helpers (triggers __init__)
@@ -21,60 +20,6 @@ import backend.tools.impl  # noqa: F401 — side-effect import resolves the cycl
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
-
-# ---------------------------------------------------------------------------
-# 2. SQL injection — safe sample SQL construction
-# ---------------------------------------------------------------------------
-
-
-class TestSafeSampleSQL:
-    """_safe_sample_sql must produce properly quoted identifiers."""
-
-    def _make_service(self):
-        """Return a SQLTableService instance bypassing LLM construction."""
-        svc = _sql_table_svc_mod.SQLTableService.__new__(_sql_table_svc_mod.SQLTableService)
-        svc.csv_runtime = MagicMock()
-        svc._cached_db_helper = None
-        svc._cached_candidates = None
-        svc.db_runtime_config = None
-        svc.csv_loaded = False
-        svc.csv_session_id = None
-        svc.max_rows = 200
-        return svc
-
-    def _csv_candidate(self, table_name: str):
-        return _sql_table_svc_mod.TableCandidate(
-            source_kind="csv_session",
-            dialect="duckdb",
-            table_name=table_name,
-            qualified_name=table_name,
-            schema="main",
-            columns=["id", "value"],
-            source_label="test",
-            source_ref_id="sid",
-            csv_session_id="csv-sid",
-        )
-
-    def test_simple_csv_table_produces_quoted_select(self):
-        svc = self._make_service()
-        candidate = self._csv_candidate("sales")
-        sql = svc._safe_sample_sql(candidate)
-        assert sql == 'SELECT * FROM "sales" LIMIT 5'
-
-    def test_csv_table_name_with_invalid_chars_raises(self):
-        svc = self._make_service()
-        # A catalog entry that somehow contains semicolons would be injection
-        candidate = self._csv_candidate("sales; DROP TABLE users --")
-        with pytest.raises(ValueError, match="Unsafe CSV table identifier"):
-            svc._safe_sample_sql(candidate)
-
-    def test_safe_sample_sql_result_passes_read_only_check(self):
-        from backend.tools.impl.db_helpers import _assert_read_only_sql
-        svc = self._make_service()
-        candidate = self._csv_candidate("orders")
-        sql = svc._safe_sample_sql(candidate)
-        # Must not raise
-        _assert_read_only_sql(sql)
 
 # ---------------------------------------------------------------------------
 # 3. Config validation — insecure admin password
@@ -93,6 +38,7 @@ class TestConfigValidation:
 
         # Build a minimal stub module so the function can be extracted cleanly.
         import backend.api.app as app_mod
+
         return app_mod._validate_startup_config
 
     def test_validate_startup_config_exits_on_admin_password(self):
@@ -137,9 +83,7 @@ class TestCORSConfig:
         # Verify the conditional logic directly (app.py module-level code)
         cors_wildcard = wildcard_settings.cors_allow_origins.strip() == "*"
         allow_credentials = not cors_wildcard
-        assert allow_credentials is False, (
-            "allow_credentials must be False when cors_allow_origins='*'"
-        )
+        assert allow_credentials is False, "allow_credentials must be False when cors_allow_origins='*'"
 
     def test_cors_explicit_origins_enables_credentials(self):
         from backend.core.config import Settings
@@ -241,6 +185,7 @@ class TestSandboxManagerCleanup:
         assert removed == 0
         assert mgr.get("session-new") is not None
 
+
 # ---------------------------------------------------------------------------
 # 7. Depth profile consistency
 # ---------------------------------------------------------------------------
@@ -251,17 +196,18 @@ class TestDepthProfileConsistency:
 
     def test_all_expected_depth_keys_are_present(self):
         from backend.core.config import DEPTH_PROFILES
+
         assert set(DEPTH_PROFILES.keys()) == {"light", "medium", "deep"}
 
     def test_depth_profiles_are_ordered_ascending(self):
         from backend.core.config import DEPTH_PROFILES
+
         limits = [DEPTH_PROFILES[k]["inner_recursion_limit"] for k in ("light", "medium", "deep")]
-        assert limits == sorted(limits), (
-            "inner_recursion_limit must increase from light → medium → deep"
-        )
+        assert limits == sorted(limits), "inner_recursion_limit must increase from light → medium → deep"
 
     def test_depth_profile_values_are_positive_integers(self):
         from backend.core.config import DEPTH_PROFILES
+
         for depth, profile in DEPTH_PROFILES.items():
             assert isinstance(profile["inner_recursion_limit"], int), depth
             assert profile["inner_recursion_limit"] > 0, depth

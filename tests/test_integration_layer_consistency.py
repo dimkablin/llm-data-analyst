@@ -13,9 +13,6 @@ from backend.integrations import (
     RAGConfig,
     RAGIntegrationError,
     RAGService,
-    SearchIntegrationConfig,
-    SearchIntegrationError,
-    SearchIntegrationService,
 )
 from backend.integrations.predict_common import PredictIntegrationError
 
@@ -45,17 +42,6 @@ _ANOMALY_CONFIG = dict(
 
 class IntegrationLayerConsistencyTests(unittest.TestCase):
     def test_source_descriptors_follow_minimal_catalog_contract(self) -> None:
-        search = SearchIntegrationService(
-            SearchIntegrationConfig(
-                enabled=True,
-                base_url="https://search.example",
-                search_endpoint="/api/v1/search/",
-                fetch_endpoint="/api/v1/fetch/",
-                timeout_sec=10.0,
-                max_results_default=5,
-                fetch_top_n_default=3,
-            )
-        )
         rag = RAGService(
             RAGConfig(
                 enabled=True,
@@ -72,7 +58,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         anomaly = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_ANOMALY_CONFIG))
 
         descriptors = [
-            search.source_descriptor(),
             rag.source_descriptor(),
             forecast.source_descriptor(),
             anomaly.source_descriptor(),
@@ -86,29 +71,10 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             self.assertIn("display_name_ru", descriptor)
             self.assertIn("description_ru", descriptor)
 
-        self.assertFalse(search.source_descriptor()["requires_session_data"])
         self.assertFalse(rag.source_descriptor()["requires_session_data"])
         self.assertTrue(forecast.source_descriptor()["requires_session_data"])
         self.assertTrue(anomaly.source_descriptor()["requires_session_data"])
-        self.assertEqual(search.source_descriptor()["status"], "available")
-        self.assertTrue(search.source_descriptor()["display_name_ru"])
-        self.assertIn("search", search.source_descriptor()["capabilities"])
-
     def test_operational_meta_contains_common_fields(self) -> None:
-        search = SearchIntegrationService(
-            SearchIntegrationConfig(
-                enabled=True,
-                base_url="https://search.example",
-                search_endpoint="/api/v1/search/",
-                fetch_endpoint="/api/v1/fetch/",
-                timeout_sec=10.0,
-                max_results_default=5,
-                fetch_top_n_default=3,
-            ),
-            transport=lambda url, payload, timeout: {
-                "results": [{"title": "Doc", "url": "https://example.com/doc"}]
-            },
-        )
         rag = RAGService(
             RAGConfig(
                 enabled=True,
@@ -150,7 +116,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
         anomaly_svc = AnomalyPlanfactIntegrationService(AnomalyPlanfactConfig(**_ANOMALY_CONFIG))
 
         payloads = [
-            search.build_artifact_payload(search.search("agents")),
             forecast_svc.build_artifact_payload(forecast_result),
             anomaly_svc.build_artifact_payload(anomaly_result),
         ]
@@ -167,22 +132,6 @@ class IntegrationLayerConsistencyTests(unittest.TestCase):
             self.assertIn("timeout_sec", meta_section)
 
     def test_timeout_errors_are_normalized_across_integrations(self) -> None:
-        search = SearchIntegrationService(
-            SearchIntegrationConfig(
-                enabled=True,
-                base_url="https://search.example",
-                search_endpoint="/api/v1/search/",
-                fetch_endpoint="/api/v1/fetch/",
-                timeout_sec=10.0,
-                max_results_default=5,
-                fetch_top_n_default=3,
-            ),
-            transport=lambda url, payload, timeout: (_ for _ in ()).throw(TimeoutError()),
-        )
-        with self.assertRaises(SearchIntegrationError) as search_exc:
-            search.search("agents")
-        self.assertIn("request timed out", str(search_exc.exception).lower())
-
         rag = RAGService(
             RAGConfig(
                 enabled=True,

@@ -14,7 +14,6 @@ type BindChatAgentArgs = {
   includeReasoning: boolean;
   useHistory: boolean;
   analysisDepth?: string;
-  selectedSkillIds?: string[];
 };
 
 type ChatAgentContextValue = ReturnType<typeof useChatAgent> & {
@@ -41,8 +40,7 @@ export function ChatAgentProvider({ children }: { children: ReactNode }) {
         prev.sessionId === nextArgs.sessionId &&
         prev.includeReasoning === nextArgs.includeReasoning &&
         prev.useHistory === nextArgs.useHistory &&
-        prev.analysisDepth === nextArgs.analysisDepth &&
-        JSON.stringify(prev.selectedSkillIds ?? []) === JSON.stringify(nextArgs.selectedSkillIds ?? [])
+        prev.analysisDepth === nextArgs.analysisDepth
       ) {
         return prev;
       }

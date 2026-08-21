@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -15,7 +15,7 @@ class SkillOverride:
     triggers: tuple[str, ...] | None
     core_markdown: str | None
     details_markdown: str | None
-    updated_by: int
+    updated_by: int | None
     updated_at: str
 
 
@@ -32,7 +32,7 @@ class SkillOverrideStore:
 
     @staticmethod
     def _now_iso() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -177,7 +177,7 @@ class SkillOverrideStore:
         tj = row["triggers_json"]
         if tj is not None:
             try:
-                parsed = json.loads(tj)
+                parsed = tj if isinstance(tj, list) else json.loads(str(tj))
                 if isinstance(parsed, list):
                     triggers = tuple(str(t).strip() for t in parsed if str(t).strip())
             except (json.JSONDecodeError, TypeError):
@@ -189,6 +189,19 @@ class SkillOverrideStore:
             triggers=triggers,
             core_markdown=str(row["core_markdown"]) if row["core_markdown"] is not None else None,
             details_markdown=str(row["details_markdown"]) if row["details_markdown"] is not None else None,
-            updated_by=int(row["updated_by"]),
+            updated_by=int(row["updated_by"]) if row["updated_by"] is not None else None,
             updated_at=str(row["updated_at"]),
         )
+
+
+class PostgresSkillOverrideStore(SkillOverrideStore):
+    def __init__(self, dsn: str, *, schema: str = "public") -> None:
+        from backend.auth.app_data_postgres import AppDataPostgresStore
+
+        self._store = AppDataPostgresStore(dsn, schema=schema)
+
+    def initialize(self) -> None:
+        self._store.ensure_schema()
+
+    def _connect(self):
+        return self._store.connect()

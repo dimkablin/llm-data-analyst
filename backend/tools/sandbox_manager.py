@@ -1,9 +1,11 @@
 """Singleton manager for per-session sandboxes."""
+
 from __future__ import annotations
 
 import logging
 import threading
 import time
+from collections.abc import Mapping
 
 from backend.tools.sandbox import SessionSandbox
 
@@ -18,6 +20,7 @@ class SandboxManager:
 
     def __init__(self) -> None:
         self._sandboxes: dict[str, SessionSandbox] = {}
+        self._source_identities: dict[str, tuple[str, str, str, str]] = {}
         self._last_access: dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -45,9 +48,35 @@ class SandboxManager:
             self._last_access[session_id] = time.monotonic()
             return sandbox
 
+    def get_or_create_for_source(
+        self,
+        session_id: str,
+        source_context: Mapping[str, object] | None,
+    ) -> SessionSandbox:
+        """Return a sandbox bound to the current stable source identity."""
+        context = source_context or {}
+        identity = tuple(
+            str(context.get(key) or "").strip()
+            for key in ("source_type", "source_ref_id", "source_mode", "csv_session_id")
+        )
+        with self._lock:
+            sandbox = self._sandboxes.get(session_id)
+            previous = self._source_identities.get(session_id)
+            if sandbox is not None and previous != identity:
+                sandbox.clear()
+                sandbox = None
+            if sandbox is None:
+                sandbox = SessionSandbox()
+                self._sandboxes[session_id] = sandbox
+                logger.debug("SandboxManager: created sandbox for session %s", session_id)
+            self._source_identities[session_id] = identity
+            self._last_access[session_id] = time.monotonic()
+            return sandbox
+
     def remove(self, session_id: str) -> None:
         with self._lock:
             sb = self._sandboxes.pop(session_id, None)
+            self._source_identities.pop(session_id, None)
             self._last_access.pop(session_id, None)
             if sb is not None:
                 sb.clear()
@@ -63,6 +92,7 @@ class SandboxManager:
                     expired.append(sid)
             for sid in expired:
                 sb = self._sandboxes.pop(sid, None)
+                self._source_identities.pop(sid, None)
                 self._last_access.pop(sid, None)
                 if sb is not None:
                     sb.clear()

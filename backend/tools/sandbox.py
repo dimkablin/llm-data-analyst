@@ -1,17 +1,26 @@
 """Session-scoped persistent Python sandbox.
 
-One ``SessionSandbox`` lives for the entire chat session.  Every tool
-``exec()``s code into the **same** namespace so variables are naturally
-shared across tool calls — no special prefixes or serialization needed.
+One ``SessionSandbox`` lives for the entire chat session. Successful executions
+commit their user variables back into the shared namespace; timed-out worker
+processes are terminated without mutating that state.
 """
+
 from __future__ import annotations
 
 import ast
 import builtins
+import copy
+import keyword
 import logging
+import marshal
+import multiprocessing
+import pickle
+import symtable
 import threading
+import types
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from multiprocessing.connection import wait
 from pathlib import Path
 from typing import Any
 
@@ -61,11 +70,23 @@ SAFE_BUILTINS: dict[str, Any] = {
 }
 
 # Union of all libs any tool may need.
-_ALL_ALLOWED_LIBS: frozenset[str] = frozenset({
-    "pandas", "numpy", "plotly", "json", "re", "math", "datetime",
-    "collections", "itertools", "functools", "statistics", "time",
-    "_strptime",
-})
+_ALL_ALLOWED_LIBS: frozenset[str] = frozenset(
+    {
+        "pandas",
+        "numpy",
+        "plotly",
+        "json",
+        "re",
+        "math",
+        "datetime",
+        "collections",
+        "itertools",
+        "functools",
+        "statistics",
+        "time",
+        "_strptime",
+    }
+)
 
 # Result-extraction priority (same logic as the old _execute_tool_code).
 _RESULT_CANDIDATES: tuple[str, ...] = (
@@ -79,16 +100,149 @@ _RESULT_CANDIDATES: tuple[str, ...] = (
     "values",
     "table",
     "plot",
+    "fig",
     "payload",
     "data",
     "__tool_last_expr__",
 )
 
 # Keys that belong to the sandbox infrastructure, not user variables.
-_INFRA_KEYS: frozenset[str] = frozenset({
-    "df", "db_connection", "db_runtime", "pd", "np", "px", "go",
-    "__builtins__", "__tool_last_expr__",
-})
+_INFRA_KEYS: frozenset[str] = frozenset(
+    {
+        "df",
+        "db_connection",
+        "db_runtime",
+        "pd",
+        "np",
+        "px",
+        "go",
+        "__builtins__",
+        "__tool_last_expr__",
+    }
+)
+
+
+def is_user_variable_name(name: str) -> bool:
+    """Return whether *name* can be referenced safely in sandbox code."""
+    return bool(
+        name
+        and name.isidentifier()
+        and not keyword.iskeyword(name)
+        and not name.startswith("_")
+        and name not in _INFRA_KEYS
+    )
+
+
+def _make_safe_import(allowed: frozenset[str]):
+    def _safe_import(name, globals_=None, locals_=None, fromlist=(), level=0):
+        root = name.split(".")[0]
+        if root not in allowed:
+            raise ImportError(f"Импорт библиотеки '{root}' запрещен")
+        return builtins.__import__(name, globals_, locals_, fromlist, level)
+
+    return _safe_import
+
+
+def _worker_scope(
+    values: dict[str, Any],
+    module_names: dict[str, str],
+    *,
+    include_plotly: bool,
+) -> dict[str, Any]:
+    safe = dict(SAFE_BUILTINS)
+    safe["__import__"] = _make_safe_import(_ALL_ALLOWED_LIBS)
+    scope: dict[str, Any] = {
+        "__builtins__": safe,
+        "pd": pd,
+        "np": np,
+        "df": pd.DataFrame(),
+        **values,
+    }
+    for name, module_name in module_names.items():
+        scope[name] = builtins.__import__(module_name)
+    if include_plotly:
+        import plotly.express as px
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        from backend.tools.plotly_express_compat import wrap_plotly_express
+
+        scope.update({"px": wrap_plotly_express(px), "go": go, "make_subplots": make_subplots})
+    return scope
+
+
+def _picklable_scope(
+    scope: dict[str, Any],
+    names: set[str],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    values: dict[str, Any] = {}
+    modules: dict[str, str] = {}
+    for name in names:
+        if name not in scope or name == "__builtins__":
+            continue
+        value = scope[name]
+        if isinstance(value, types.ModuleType):
+            modules[name] = value.__name__
+            continue
+        try:
+            pickle.dumps(value)
+        except Exception:
+            continue
+        values[name] = value
+    return values, modules
+
+
+def _extract_worker_result(
+    scope: dict[str, Any],
+    assigned_names: set[str],
+    stdout_text: str,
+) -> Any:
+    for candidate in _RESULT_CANDIDATES:
+        if candidate in assigned_names and candidate in scope:
+            value = scope[candidate]
+            if candidate != "__tool_last_expr__" or value is not None:
+                return value
+    for key, value in scope.items():
+        key_lower = str(key).strip().lower()
+        if key in assigned_names and (key_lower.endswith("_result") or key_lower == "result"):
+            return value
+    return stdout_text.strip() or None
+
+
+def _execute_worker(
+    connection: Any,
+    compiled_payload: bytes,
+    values: dict[str, Any],
+    module_names: dict[str, str],
+    assigned_names: set[str],
+    persistent_names: set[str],
+    include_plotly: bool,
+) -> None:
+    stdout_parts: list[str] = []
+    try:
+        scope = _worker_scope(values, module_names, include_plotly=include_plotly)
+        original_print = scope["__builtins__"]["print"]
+
+        def _capture_print(*args, sep=" ", end="\n", file=None, flush=False):
+            if file is not None:
+                original_print(*args, sep=sep, end=end, file=file, flush=flush)
+                return
+            stdout_parts.append(sep.join(str(arg) for arg in args) + end)
+
+        scope["__builtins__"]["print"] = _capture_print
+        exec(marshal.loads(compiled_payload), scope)  # pylint: disable=exec-used
+        stdout_text = "".join(stdout_parts)
+        result = _extract_worker_result(scope, assigned_names, stdout_text)
+        updated_values, updated_modules = _picklable_scope(scope, persistent_names)
+        connection.send(("ok", result, stdout_text, updated_values, updated_modules))
+    except Exception as exc:
+        stdout_text = "".join(stdout_parts)
+        try:
+            connection.send(("error", exc, stdout_text, {}, {}))
+        except Exception:
+            connection.send(("error", RuntimeError(str(exc)), stdout_text, {}, {}))
+    finally:
+        connection.close()
 
 
 # ------------------------------------------------------------------
@@ -100,7 +254,7 @@ class NotebookEntry:
     entry_type: str  # "code" | "data_source_change"
     tool_name: str = ""
     language: str = "python"  # "python" | "sql"
-    question: str = ""        # natural-language question (sql_tool only)
+    question: str = ""  # natural-language question (sql_tool only)
     code: str = ""
     result_summary: str = ""
     variables_created: list[str] = field(default_factory=list)
@@ -124,8 +278,7 @@ class NotebookEntry:
 class SessionSandbox:
     """Persistent Python execution environment for a single chat session.
 
-    The ``_scope`` dict is the shared namespace.  ``execute()`` runs
-    ``exec()`` inside it — every variable survives between calls.
+    The ``_scope`` dict is the shared namespace committed between calls.
     """
 
     def __init__(self) -> None:
@@ -137,6 +290,7 @@ class SessionSandbox:
         self._storage_dir: Path | None = None
         self._bound_df: pd.DataFrame | None = None
         self._bound_db_config: Any = None
+        self._bound_source_label: str = ""
         self.schema_registry = DataFrameSchemaRegistry()
         self._persisted_entry_count: int = 0
         self._init_scope()
@@ -154,22 +308,13 @@ class SessionSandbox:
         import pandas as _pd  # pylint: disable=reimported
 
         safe = dict(SAFE_BUILTINS)
-        safe["__import__"] = self._make_safe_import(_ALL_ALLOWED_LIBS)
+        safe["__import__"] = _make_safe_import(_ALL_ALLOWED_LIBS)
 
         df_entry = self._bound_df if self._bound_df is not None else _pd.DataFrame()
         self._scope.update({"__builtins__": safe, "pd": _pd, "np": _np, "df": df_entry})
 
         # _globals is kept as an alias so callers that reference it still work.
         self._globals = self._scope
-
-    @staticmethod
-    def _make_safe_import(allowed: frozenset[str]):
-        def _safe_import(name, globals_=None, locals_=None, fromlist=(), level=0):
-            root = name.split(".")[0]
-            if root not in allowed:
-                raise ImportError(f"Импорт библиотеки '{root}' запрещен")
-            return builtins.__import__(name, globals_, locals_, fromlist, level)
-        return _safe_import
 
     # ------ data binding ---------------------------------------------
 
@@ -183,10 +328,25 @@ class SessionSandbox:
         with self._lock:
             is_first_load = self._bound_df is None
             old_shape = self._bound_df.shape if self._bound_df is not None else None
+            normalized_source_label = str(source_label or "").strip()
+            source_changed = bool(
+                self._bound_source_label
+                and normalized_source_label
+                and self._bound_source_label != normalized_source_label
+            )
 
             self._bound_df = df
             self._bound_db_config = db_runtime_config
-            self._scope["df"] = df
+            if source_changed:
+                self._scope = {}
+                self._globals = self._scope
+                self._total_executions = 0
+                self.schema_registry = DataFrameSchemaRegistry()
+                self._init_scope()
+            else:
+                self._scope["df"] = df
+            if normalized_source_label:
+                self._bound_source_label = normalized_source_label
             self.schema_registry.register_dataframe(
                 variable_name="df",
                 df=df,
@@ -196,26 +356,30 @@ class SessionSandbox:
 
             new_shape = df.shape
             if not is_first_load and old_shape != new_shape:
-                self._notebook.append(NotebookEntry(
-                    timestamp=_now_iso(),
-                    entry_type="data_source_change",
-                    result_summary=(
-                        f"Источник данных изменён: {source_label or 'новый датасет'}. "
-                        f"Было {old_shape[0]}x{old_shape[1]}, "
-                        f"стало {new_shape[0]}x{new_shape[1]}. "
-                        f"Столбцы: {list(df.columns[:20])}"
-                    ),
-                ))
+                self._notebook.append(
+                    NotebookEntry(
+                        timestamp=_now_iso(),
+                        entry_type="data_source_change",
+                        result_summary=(
+                            f"Источник данных изменён: {source_label or 'новый датасет'}. "
+                            f"Было {old_shape[0]}x{old_shape[1]}, "
+                            f"стало {new_shape[0]}x{new_shape[1]}. "
+                            f"Столбцы: {list(df.columns[:20])}"
+                        ),
+                    )
+                )
             elif is_first_load:
-                self._notebook.append(NotebookEntry(
-                    timestamp=_now_iso(),
-                    entry_type="data_source_change",
-                    result_summary=(
-                        f"Загружен датасет: {source_label or 'датасет'}. "
-                        f"Размер {new_shape[0]}x{new_shape[1]}. "
-                        f"Столбцы: {list(df.columns[:20])}"
-                    ),
-                ))
+                self._notebook.append(
+                    NotebookEntry(
+                        timestamp=_now_iso(),
+                        entry_type="data_source_change",
+                        result_summary=(
+                            f"Загружен датасет: {source_label or 'датасет'}. "
+                            f"Размер {new_shape[0]}x{new_shape[1]}. "
+                            f"Столбцы: {list(df.columns[:20])}"
+                        ),
+                    )
+                )
 
         self._persist_notebook()
 
@@ -230,15 +394,17 @@ class SessionSandbox:
     ) -> None:
         """Append a code entry to the notebook from an external tool (e.g. SQLTool)."""
         with self._lock:
-            self._notebook.append(NotebookEntry(
-                timestamp=_now_iso(),
-                entry_type="code",
-                tool_name=tool_name,
-                language=language,
-                question=question[:300],
-                code=code[:500],
-                result_summary=result_summary[:200],
-            ))
+            self._notebook.append(
+                NotebookEntry(
+                    timestamp=_now_iso(),
+                    entry_type="code",
+                    tool_name=tool_name,
+                    language=language,
+                    question=question[:300],
+                    code=code[:500],
+                    result_summary=result_summary[:200],
+                )
+            )
         self._persist_notebook()
 
     # ------ execution ------------------------------------------------
@@ -267,25 +433,34 @@ class SessionSandbox:
         include_plotly: bool = False,
         timeout_sec: float = 25.0,
         extra_scope: dict[str, Any] | None = None,
+        isolated: bool = False,
+        return_stdout: bool = False,
     ) -> Any:
         """Execute *code* in the persistent scope.
 
-        Returns the tool result extracted from the scope.
+        Returns the tool result extracted from the scope, optionally with
+        captured stdout.
         Raises ``TimeoutError`` or ``RuntimeError`` on failure.
         """
         code = normalize_code(code)
         if not code:
             raise RuntimeError("Пустой код")
 
+        execution_scope = (
+            {name: self._copy_for_execution(name, value) for name, value in self._scope.items()}
+            if isolated
+            else self._scope
+        )
+
         # Ensure plotly is available when needed.
-        if include_plotly and "px" not in self._scope:
+        if include_plotly and "px" not in execution_scope:
             import plotly.express as _px
             import plotly.graph_objects as _go
             from plotly.subplots import make_subplots as _make_subplots
 
             from backend.tools.plotly_express_compat import wrap_plotly_express
 
-            self._scope.update(
+            execution_scope.update(
                 {
                     "px": wrap_plotly_express(_px),
                     "go": _go,
@@ -295,15 +470,13 @@ class SessionSandbox:
 
         # Merge extra_scope (e.g. tool-specific helpers).
         if extra_scope:
-            self._scope.update(extra_scope)
-
-        # Clear stale result candidates from previous executions so they don't
-        # bleed into result extraction for the current execution.
-        for _candidate in _RESULT_CANDIDATES:
-            self._scope.pop(_candidate, None)
+            execution_scope.update(
+                {name: self._copy_for_execution(name, value) for name, value in extra_scope.items()}
+            )
 
         # Compile AST — capture last expression as __tool_last_expr__.
         tree = ast.parse(code, filename="<tool_code>", mode="exec")
+        captures_last_expression = False
         if tree.body:
             if isinstance(tree.body[-1], ast.Expr):
                 tree.body[-1] = ast.Assign(
@@ -311,6 +484,7 @@ class SessionSandbox:
                     value=tree.body[-1].value,
                 )
                 ast.fix_missing_locations(tree)
+                captures_last_expression = True
             else:
                 last_name = self._last_assigned_name(tree.body[-1])
                 if last_name:
@@ -324,94 +498,112 @@ class SessionSandbox:
                         )
                     )
                     ast.fix_missing_locations(tree)
+                    captures_last_expression = True
+        assigned_names = {
+            symbol.get_name()
+            for symbol in symtable.symtable(code, "<tool_code>", "exec").get_symbols()
+            if symbol.is_assigned() or symbol.is_imported()
+        }
+        if captures_last_expression:
+            assigned_names.add("__tool_last_expr__")
         compiled = compile(tree, filename="<tool_code>", mode="exec")
 
-        # Run in a daemon thread for timeout enforcement.
-        error_box: list[Exception] = []
-        stdout_parts: list[str] = []
-
-        def _run():
-            builtins_scope = self._scope.get("__builtins__", {})
-            original_print = (
-                builtins_scope.get("print")
-                if isinstance(builtins_scope, dict)
-                else builtins.print
-            )
-
-            def _capture_print(*args, sep=" ", end="\n", file=None, flush=False):
-                if file is not None:
-                    original_print(*args, sep=sep, end=end, file=file, flush=flush)
-                    return
-                stdout_parts.append(sep.join(str(arg) for arg in args) + end)
-
-            try:
-                if isinstance(builtins_scope, dict):
-                    builtins_scope["print"] = _capture_print
-                exec(compiled, self._scope)  # pylint: disable=exec-used
-            except Exception as exc:
-                error_box.append(exc)
-            finally:
-                if isinstance(builtins_scope, dict):
-                    builtins_scope["print"] = original_print
-
         with self._lock:
-            thread = threading.Thread(target=_run, daemon=True)
-            thread.start()
-            thread.join(timeout=timeout_sec)
+            input_values, input_modules = _picklable_scope(
+                execution_scope,
+                set(execution_scope),
+            )
+            persistent_names = set() if isolated else set(self._scope) | assigned_names
+            context_name = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+            context = multiprocessing.get_context(context_name)
+            parent_connection, child_connection = context.Pipe(duplex=False)
+            process = context.Process(
+                target=_execute_worker,
+                args=(
+                    child_connection,
+                    marshal.dumps(compiled),
+                    input_values,
+                    input_modules,
+                    assigned_names,
+                    persistent_names,
+                    include_plotly,
+                ),
+            )
+            process.start()
+            child_connection.close()
+            ready = wait(
+                [parent_connection, process.sentinel],
+                timeout=max(0.0, float(timeout_sec)),
+            )
+            if parent_connection not in ready:
+                if process.sentinel in ready:
+                    process.join()
+                    parent_connection.close()
+                    raise RuntimeError(
+                        f"Sandbox worker завершился без результата (exit code {process.exitcode})"
+                    )
+                process.terminate()
+                process.join(timeout=1.0)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+                parent_connection.close()
+                raise TimeoutError(f"Превышен лимит выполнения ({timeout_sec} сек)")
 
-            if thread.is_alive():
-                # Can't hard-kill a thread, but it's a daemon so it
-                # will die when the process exits.  Reset scope to be safe.
-                self._scope.clear()
-                self._init_scope()
-                raise TimeoutError(
-                    f"Превышен лимит выполнения ({timeout_sec} сек)"
-                )
-
-            if error_box:
-                raise error_box[0]
-
-            result = self._extract_result("".join(stdout_parts))
+            status, payload, stdout_text, updated_values, updated_modules = parent_connection.recv()
+            parent_connection.close()
+            process.join()
+            if status == "error":
+                error = payload
+                try:
+                    error.sandbox_stdout = stdout_text.strip()
+                except Exception:
+                    pass
+                raise error
+            result = payload
+            if not isolated:
+                for name, value in updated_values.items():
+                    self._scope[name] = value
+                for name, module_name in updated_modules.items():
+                    self._scope[name] = builtins.__import__(module_name)
             self._total_executions += 1
 
             # Log to notebook.
-            new_vars = self._detect_new_user_vars()
-            self._register_dataframe_vars(new_vars, source_kind="pandas_result")
-            self._notebook.append(NotebookEntry(
-                timestamp=_now_iso(),
-                entry_type="code",
-                tool_name=tool_name,
-                code=code[:500],
-                result_summary=_describe_value(result)[:200],
-                variables_created=new_vars,
-            ))
+            new_vars = [] if isolated else self._detect_new_user_vars()
+            if not isolated:
+                self._register_dataframe_vars(new_vars, source_kind="pandas_result")
+            self._notebook.append(
+                NotebookEntry(
+                    timestamp=_now_iso(),
+                    entry_type="code",
+                    tool_name=tool_name,
+                    code=code[:500],
+                    result_summary=_describe_value(result)[:200],
+                    variables_created=new_vars,
+                )
+            )
 
         self._persist_notebook()
-        return result
+        return (result, stdout_text.strip()) if return_stdout else result
 
-    def _extract_result(self, stdout_text: str = "") -> Any:
-        """Extract tool result from scope using priority candidates."""
-        for candidate in _RESULT_CANDIDATES:
-            if candidate in self._scope:
-                value = self._scope[candidate]
-                if candidate == "__tool_last_expr__" and value is None:
-                    continue
-                return value
-
-        for key, value in self._scope.items():
-            key_lower = str(key).strip().lower()
-            if key_lower.endswith("_result") or key_lower == "result":
-                return value
-
-        if stdout_text.strip():
-            return stdout_text.strip()
-
-        return None
+    @staticmethod
+    def _copy_for_execution(name: str, value: Any) -> Any:
+        if name == "__builtins__" and isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            return value.copy(deep=True)
+        if name in _INFRA_KEYS:
+            return value
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
 
     def _detect_new_user_vars(self) -> list[str]:
         """Return names of user-created variables (non-infra, non-dunder)."""
         return [
-            k for k in self._scope
+            k
+            for k in self._scope
             if k not in _INFRA_KEYS
             and not k.startswith("_")
             and not callable(self._scope[k])
@@ -472,9 +664,7 @@ class SessionSandbox:
                 if entry.entry_type == "data_source_change":
                     nb_lines.append(f"  📊 {entry.result_summary}")
                 else:
-                    nb_lines.append(
-                        f"  🔧 [{entry.tool_name}] → {entry.result_summary}"
-                    )
+                    nb_lines.append(f"  🔧 [{entry.tool_name}] → {entry.result_summary}")
             parts.append("Лог сессии (последние действия):\n" + "\n".join(nb_lines))
 
         return "\n\n".join(parts)
@@ -494,10 +684,7 @@ class SessionSandbox:
         """Return notebook entries as a list of dicts for the JSON API."""
         with self._lock:
             entries = list(self._notebook)
-        return [
-            {"index": i + 1, **entry.to_dict()}
-            for i, entry in enumerate(entries)
-        ]
+        return [{"index": i + 1, **entry.to_dict()} for i, entry in enumerate(entries)]
 
     def render_notebook_md(self) -> str:
         """Render the notebook as a human-readable Markdown string."""
@@ -545,11 +732,7 @@ class SessionSandbox:
     def get_user_scope(self) -> dict[str, Any]:
         """Snapshot of user-visible sandbox variables (for code preflight)."""
         with self._lock:
-            return {
-                key: val
-                for key, val in self._scope.items()
-                if key not in _INFRA_KEYS
-            }
+            return {key: val for key, val in self._scope.items() if key not in _INFRA_KEYS}
 
     def put(
         self,
@@ -563,6 +746,8 @@ class SessionSandbox:
         Used by non-exec tools (e.g. sql_tool) to make their results
         available to subsequent tools (e.g. plotly_tool, pandas_tool).
         """
+        if not is_user_variable_name(name):
+            return
         if isinstance(value, pd.DataFrame):
             from backend.data_access.dataframe_utils import deduplicate_dataframe_columns
 
@@ -607,6 +792,7 @@ def _now_iso() -> str:
 
 def normalize_code(code: str) -> str:
     import re
+
     text = str(code or "").strip()
     if not text:
         return ""

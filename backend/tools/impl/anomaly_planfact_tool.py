@@ -210,6 +210,8 @@ class AnomalyPlanfactTool(BaseExecTool):
             if not valid:
                 return False, validate_message, {}
 
+            self._publish_result_items_to_sandbox(normalized_result)
+
             text = (
                 f"✅ Создано через {self.name} - {len(normalized_result)} {self.human_name}: "
                 f"{', '.join(normalized_result.keys())}"

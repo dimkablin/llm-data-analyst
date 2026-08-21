@@ -74,6 +74,10 @@ def test_source_inventory_merges_csv_tables_and_db_schema_tables(tmp_path: Path)
                 "table_type": "table",
                 "qualified_name": "mart.orders",
                 "columns": ["order_id", "net_revenue"],
+                "column_types": {
+                    "order_id": "integer",
+                    "net_revenue": "numeric",
+                },
             }
         ],
     ):
@@ -102,6 +106,7 @@ def test_source_inventory_merges_csv_tables_and_db_schema_tables(tmp_path: Path)
     assert "orders.csv" in prompt
     assert "mart.orders" in prompt
     assert "net_revenue" in prompt
+    assert "`net_revenue` (numeric)" in prompt
 
 
 def test_data_catalog_tool_lists_and_describes_inventory() -> None:

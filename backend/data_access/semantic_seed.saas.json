@@ -2,24 +2,5 @@
   "name": "saas",
   "enabled_by_default": true,
   "domains": ["saas", "subscription"],
-  "terms": [],
-  "metric_columns": {
-    "mrr": ["mrr", "monthly_recurring_revenue", "recurring_revenue"],
-    "arr": ["arr", "annual_recurring_revenue"],
-    "revenue": ["revenue", "amount", "subscription_amount"],
-    "user_id": ["user_id", "customer_id", "account_id"],
-    "paid_user_id": ["paid_user_id", "subscriber_id", "customer_id"],
-    "churned": ["churned", "churned_customers", "cancelled"],
-    "retained": ["retained", "retained_customers", "active_customers"],
-    "expansion": ["expansion_mrr", "upsell_mrr"],
-    "contraction": ["contraction_mrr", "downgrade_mrr"]
-  },
-  "metric_templates": [
-    { "key": "mrr", "name": "MRR", "kind": "sum", "column_group": "mrr", "synonyms": ["mrr", "monthly recurring revenue"] },
-    { "key": "arr", "name": "ARR", "kind": "sum", "column_group": "arr", "synonyms": ["arr", "annual recurring revenue"] },
-    { "key": "arpu", "name": "ARPU", "kind": "sum_per_count", "numerator_group": "revenue", "distinct_group": "user_id", "synonyms": ["arpu", "average revenue per user"] },
-    { "key": "arppu", "name": "ARPPU", "kind": "sum_per_count", "numerator_group": "revenue", "distinct_group": "paid_user_id", "synonyms": ["arppu", "average revenue per paying user"] },
-    { "key": "expansion_mrr", "name": "Expansion MRR", "kind": "sum", "column_group": "expansion", "synonyms": ["expansion mrr", "upsell mrr"] },
-    { "key": "contraction_mrr", "name": "Contraction MRR", "kind": "sum", "column_group": "contraction", "synonyms": ["contraction mrr", "downgrade mrr"] }
-  ]
+  "terms": []
 }

@@ -418,9 +418,51 @@ export function Account() {
                               Детальные шаги инструментов
                             </span>
                             <span className="mt-1 block text-muted-foreground">
-                              Включено — как раньше: planner_tool, sql_tool, pandas_tool с аргументами.
+                              Включено — названия инструментов и их аргументы.
                               Выключено — пять этапов: выбор инструментов, данные, графики, анализ,
                               суммаризация.
+                            </span>
+                          </span>
+                        </label>
+                        <label className="inline-flex items-start gap-3 rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.show_rag_errors}
+                            onChange={(event) =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                show_rag_errors: event.target.checked,
+                              }))
+                            }
+                            className="mt-0.5 h-4 w-4 accent-primary"
+                          />
+                          <span className="text-sm leading-relaxed">
+                            <span className="font-semibold text-foreground">
+                              Показывать ошибку RAG
+                            </span>
+                            <span className="mt-1 block text-muted-foreground">
+                              Выключите, чтобы скрыть сообщение о ненастроенной интеграции RAG.
+                            </span>
+                          </span>
+                        </label>
+                        <label className="inline-flex items-start gap-3 rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={settingsDraft.anomaly_check_enabled}
+                            onChange={(event) =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                anomaly_check_enabled: event.target.checked,
+                              }))
+                            }
+                            className="mt-0.5 h-4 w-4 accent-primary"
+                          />
+                          <span className="text-sm leading-relaxed">
+                            <span className="font-semibold text-foreground">
+                              Проверять числа по артефактам
+                            </span>
+                            <span className="mt-1 block text-muted-foreground">
+                              Эвристически сверяет числа в итоговом ответе и показывает источники или расхождения.
                             </span>
                           </span>
                         </label>

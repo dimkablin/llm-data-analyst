@@ -7,7 +7,7 @@ triggers: time series, trend, seasonality, rolling, moving average, period, temp
 
 ## Time Series Analysis
 
-**НЕ используй этот skill для прогноза будущих периодов.** Если пользователь просит прогноз / forecast / «на N месяцев вперёд» → сразу `get_tool_instructions("forecast_tool")` и `forecast_tool` с `horizon=N`. Не вызывай `statsmodels` / ручной forecast в `pandas_tool`.
+**НЕ используй этот skill для прогноза будущих периодов.** Если пользователь просит прогноз / forecast / «на N месяцев вперёд», используй специализированную forecasting capability и только её текущий bound tool. Не вызывай `statsmodels` / ручной forecast в `pandas_tool`.
 
 Data with a time component: trends, seasonality, stationarity, anomalies.
 
@@ -22,5 +22,5 @@ Data with a time component: trends, seasonality, stationarity, anomalies.
 - MA windows adapt to frequency — don't hardcode values
 - Anomaly threshold: Z > 2.5 if points < 30, else Z > 3.0
 - < 12 points after resampling → skip ADF/ACF/decomposition, return chart with warning
-- Not for forecasting — use `forecast_tool` / `anomaly_planfact_tool` instead
+- Not for forecasting — use the specialized capability bound in the active catalog
 - Non-stationary (ADF p > 0.05) → trend/seasonality present; seasonal variation > 20% → series is seasonal

@@ -6,8 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.agent.contracts import AnalysisTaskContract
-from backend.agent.models import AgentResponse
+from backend.agent.models import AgentOutcome, AgentResponse, ErrorCategory
 from backend.agent.services.runtime_context import (
     csv_table_descriptors_from_manifest,
     is_rag_session_source,
@@ -22,12 +21,11 @@ from backend.data_access.source_inventory import (
     format_source_inventory_prompt,
 )
 from backend.notebook.manifest_store import ManifestStore
-from backend.skills.contracts import (
-    SkillExecutionRequirement,
-    SkillPermissionValidationResult,
-    validate_skill_tool_permissions,
+from backend.tools.active_catalog import (
+    ActiveCapabilityCatalog,
+    ActiveRegistrySnapshot,
+    build_active_capability_context,
 )
-from backend.tools.capabilities import build_runtime_capability_context
 from backend.tools.context import ToolBuildContext
 from backend.tools.sandbox_manager import SandboxManager
 
@@ -148,46 +146,6 @@ class _RuntimeSourceResolver(BaseModel):
         )
 
 
-class _SkillExecutionGate(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    dependencies: Any
-
-    def resolve_requirements(
-        self,
-        *,
-        selected_skill_ids: list[str] | tuple[str, ...] | None,
-    ) -> tuple[SkillExecutionRequirement, ...]:
-        return self.dependencies.skill_registry.execution_requirements_for_prompt(
-            selected_skill_ids=selected_skill_ids,
-            enabled_skill_ids=self.dependencies.enabled_analytical_skill_ids,
-        )
-
-    def validate(
-        self,
-        requirements: tuple[SkillExecutionRequirement, ...],
-    ) -> SkillPermissionValidationResult:
-        return validate_skill_tool_permissions(
-            requirements,
-            self.dependencies.allowed_tool_keys,
-        )
-
-    @staticmethod
-    def denied_response(result: SkillPermissionValidationResult) -> AgentResponse:
-        reason = (result.reason or "skill required tools are disabled").strip()
-        tools = ", ".join(f"`{tool}`" for tool in result.missing_tool_keys)
-        tools_text = tools or "из execution contract навыка"
-        return AgentResponse(
-            final_text=(
-                f"Не могу выполнить запрос: необходимый tool {tools_text} "
-                f"выключен или недоступен. Детали: {reason}."
-            ),
-            reasoning=f"Skill permission denied: {reason}",
-            artifacts=[],
-            route="analysis",
-        )
-
-
 class _ContextBudgetPlanner(BaseModel):
     def plan(
         self,
@@ -263,7 +221,8 @@ class _ToolContextBuilder(BaseModel):
         trace_context: dict[str, Any],
         sandbox: Any,
         source_inventory: Any,
-    ) -> tuple[list[Any], str]:
+        working_memory: AnalysisWorkingMemory,
+    ) -> tuple[list[Any], str, ActiveRegistrySnapshot]:
         session_id = trace_context.get("session_id", "default")
         source_context = state.get("session_source") or {}
         candidates_key = catalog_cache_key(
@@ -271,6 +230,9 @@ class _ToolContextBuilder(BaseModel):
             source_type=source_context.get("source_type"),
             source_ref_id=source_context.get("source_ref_id"),
             csv_session_id=csv_session_id,
+        )
+        selected_skill_context = self.dependencies.skill_registry.build_prompt_block(
+            state.get("selected_skill_ids") or []
         )
         tool_context = ToolBuildContext(
             settings=self.dependencies.settings,
@@ -283,39 +245,32 @@ class _ToolContextBuilder(BaseModel):
             sandbox=sandbox,
             candidates_cache_key=candidates_key,
             source_inventory=source_inventory,
+            selected_skill_context=selected_skill_context,
             semantic_context_prompt=str(source_context.get("semantic_context_prompt") or ""),
             semantic_hints=dict(source_context.get("semantic_context_hints") or {}),
+            semantic_catalog_service=self.dependencies.semantic_catalog_service,
+            semantic_generation_service=self.dependencies.semantic_generation_service,
+            manifest_store=self.dependencies.manifest_store,
+            session_store=self.dependencies.session_store,
+            blob_store=self.dependencies.blob_store,
+            execution_store=next(
+                (
+                    callback.execution_store
+                    for callback in state.get("callbacks") or []
+                    if hasattr(callback, "execution_store") and callback.execution_store is not None
+                ),
+                None,
+            ),
             history=state.get("history") or [],
             session_notes=str(getattr(self.dependencies.session_memory, "notes", "") or ""),
             trace_context=trace_context,
+            working_memory=working_memory,
         )
         del df
-        tools = self.dependencies.tool_registry.build_tools(tool_context)
-        tool_descriptions = self.dependencies.tool_registry.describe_available_tools(
-            tool_context
-        )
-        self._configure_planner_descriptions(tools, tool_descriptions)
-        return tools, tool_descriptions
-
-    def _configure_planner_descriptions(
-        self,
-        tools: list[Any],
-        tool_descriptions: str,
-    ) -> None:
-        planner_descriptions = "\n".join(
-            line for line in tool_descriptions.splitlines()
-            if "planner_tool" not in line
-        ).strip()
-        analytical_block = (
-            self.dependencies.skill_registry.build_analytical_skills_brief_block(
-                enabled_skill_ids=self.dependencies.enabled_analytical_skill_ids,
-            )
-        )
-        if analytical_block:
-            planner_descriptions = planner_descriptions + "\n\n" + analytical_block
-        for tool in tools:
-            if hasattr(tool, "set_tool_descriptions"):
-                tool.set_tool_descriptions(planner_descriptions)
+        snapshot = self.dependencies.tool_registry.build_active_snapshot(tool_context)
+        tools = list(snapshot.tools)
+        tool_descriptions = self.dependencies.tool_registry.describe_catalog(snapshot.catalog)
+        return tools, tool_descriptions, snapshot
 
 
 class _CapabilityContextBuilder(BaseModel):
@@ -336,48 +291,43 @@ class _CapabilityContextBuilder(BaseModel):
         session_id: str,
         source_inventory: Any,
         source_context: dict[str, Any],
+        active_catalog: ActiveCapabilityCatalog,
+        active_snapshot: ActiveRegistrySnapshot,
     ) -> dict[str, Any]:
-        tool_keys = [
-            str(getattr(tool, "name", "")).strip()
-            for tool in tools
-            if str(getattr(tool, "name", "")).strip()
-            and str(getattr(tool, "name", "")).strip() not in _HIDDEN_FROM_AGENT
-        ]
         csv_table_names = list((state.get("session_source") or {}).get("csv_table_names") or [])
         csv_table_descriptors = csv_table_descriptors_from_manifest(
             storage_dir=self.dependencies.settings.storage_dir,
             csv_session_id=csv_session_id,
             session_id=session_id,
             session_source=state.get("session_source") or {},
+            manifest_store=self.dependencies.manifest_store,
         )
-        capability_context = build_runtime_capability_context(
-            available_tool_keys=tool_keys,
+        capability_context = build_active_capability_context(
+            catalog=active_catalog,
+            definitions=active_snapshot.capability_definitions,
+            resolutions=active_snapshot.resolutions,
             has_dataframe=tool_df is not None,
             has_db_source=(tool_db_runtime is not None) or csv_duckdb_mode,
             has_knowledge_base=is_rag_session_source(source_context),
             csv_table_names=csv_table_names or None,
             csv_table_descriptors=csv_table_descriptors or None,
-            source_table_count=(
-                len(source_inventory.tables) if source_inventory is not None else 0
-            ),
-            source_count=(
-                len(source_inventory.sources) if source_inventory is not None else 0
-            ),
+            source_table_count=(len(source_inventory.tables) if source_inventory is not None else 0),
+            source_count=(len(source_inventory.sources) if source_inventory is not None else 0),
         )
         if source_inventory is not None:
             inventory_prompt = format_source_inventory_prompt(source_inventory)
             if inventory_prompt:
                 capability_context["source_inventory"] = source_inventory.model_dump()
                 capability_context["prompt_block"] = (
-                    str(capability_context.get("prompt_block") or "").rstrip()
-                    + "\n"
-                    + inventory_prompt
+                    str(capability_context.get("prompt_block") or "").rstrip() + "\n" + inventory_prompt
                 ).strip()
         description_lines = [
-            line for line in tool_descriptions.splitlines()
+            line
+            for line in tool_descriptions.splitlines()
             if not any(("`" + key + "`") in line for key in _HIDDEN_FROM_AGENT)
         ]
         capability_context["tool_descriptions"] = "\n".join(description_lines).strip()
+        capability_context["registry_snapshot_fingerprint"] = active_snapshot.fingerprint
         return capability_context
 
 
@@ -387,13 +337,9 @@ class AgentContextBuilder(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     dependencies: Any
-    context_config: AgentContextManagerConfig = Field(
-        default_factory=AgentContextManagerConfig
-    )
+    context_config: AgentContextManagerConfig = Field(default_factory=AgentContextManagerConfig)
     budget_planner: _ContextBudgetPlanner = Field(default_factory=_ContextBudgetPlanner)
-    history_retriever: _RelevantHistoryRetriever = Field(
-        default_factory=_RelevantHistoryRetriever
-    )
+    history_retriever: _RelevantHistoryRetriever = Field(default_factory=_RelevantHistoryRetriever)
 
     def build(self, request: AgentContextRequest) -> AgentPreparedContext:
         state = dict(request.state)
@@ -430,25 +376,6 @@ class AgentContextBuilder(BaseModel):
         )
         state["session_source"] = session_source
 
-        skill_gate = _SkillExecutionGate(dependencies=self.dependencies)
-        skill_requirements = skill_gate.resolve_requirements(
-            selected_skill_ids=state.get("selected_skill_ids") or [],
-        )
-        permission_result = skill_gate.validate(skill_requirements)
-        if not permission_result.passed:
-            return AgentPreparedContext(
-                state_update={
-                    "response": skill_gate.denied_response(permission_result),
-                    "done": True,
-                    "stop_reason": "skill_permission_denied",
-                    "skill_execution_requirements": list(skill_requirements),
-                    "context_budget": context_budget,
-                    "retrieved_context": retrieved_context,
-                },
-                context_budget=context_budget,
-                retrieved_context=retrieved_context,
-            )
-
         prepared = self._prepare_agent_context(
             state=state,
             df=df,
@@ -457,7 +384,6 @@ class AgentContextBuilder(BaseModel):
             tool_db_runtime=tool_db_runtime,
             csv_loaded=csv_loaded,
             csv_session_id=csv_session_id,
-            skill_requirements=skill_requirements,
             context_budget=context_budget,
             retrieved_context=retrieved_context,
         )
@@ -473,7 +399,6 @@ class AgentContextBuilder(BaseModel):
         tool_db_runtime: Any,
         csv_loaded: bool,
         csv_session_id: str | None,
-        skill_requirements: tuple[SkillExecutionRequirement, ...],
         context_budget: ContextBudget,
         retrieved_context: ContextRetrievalResult,
     ) -> AgentPreparedContext:
@@ -481,7 +406,11 @@ class AgentContextBuilder(BaseModel):
         tool_df = None if csv_duckdb_mode else df
 
         session_id = trace_context.get("session_id", "default")
-        sandbox = SandboxManager.get_instance().get_or_create(session_id)
+        source_context = state.get("session_source") or {}
+        sandbox = SandboxManager.get_instance().get_or_create_for_source(
+            str(session_id),
+            source_context,
+        )
         sandbox.ensure_storage_dir(Path(self.dependencies.settings.storage_dir) / session_id)
         if df is not None:
             source_label = str(trace_context.get("dataset_name", "") or "")
@@ -491,15 +420,13 @@ class AgentContextBuilder(BaseModel):
                 db_runtime_config=tool_db_runtime,
             )
 
-        source_context = state.get("session_source") or {}
         source_inventory = self._build_source_inventory(
             session_id=str(session_id),
             source_context=source_context,
             tool_db_runtime=tool_db_runtime,
         )
-        tools, tool_descriptions = _ToolContextBuilder(
-            dependencies=self.dependencies
-        ).build(
+        working_memory = AnalysisWorkingMemory(goal=prompt)
+        tools, tool_descriptions, active_snapshot = _ToolContextBuilder(dependencies=self.dependencies).build(
             state=state,
             df=df,
             tool_df=tool_df,
@@ -509,11 +436,42 @@ class AgentContextBuilder(BaseModel):
             trace_context=trace_context,
             sandbox=sandbox,
             source_inventory=source_inventory,
+            working_memory=working_memory,
         )
+        active_catalog = active_snapshot.catalog
+        requested_tool_key = str(state.get("requested_tool_key") or "").strip()
+        if requested_tool_key and requested_tool_key not in active_catalog.tool_keys:
+            return AgentPreparedContext(
+                state_update={
+                    "response": AgentResponse(
+                        final_text=(f"Requested tool `{requested_tool_key}` is not active in this run."),
+                        reasoning="Requested tool resolution failed against active registry snapshot.",
+                        artifacts=[],
+                        route="analysis",
+                        outcome=AgentOutcome.unavailable(ErrorCategory.VALIDATION),
+                    ),
+                    "done": True,
+                    "stop_reason": "requested_tool_unavailable",
+                    "registry_snapshot": active_snapshot,
+                    "tools": tools,
+                    "capability_context": {
+                        **build_active_capability_context(
+                            catalog=active_catalog,
+                            definitions=active_snapshot.capability_definitions,
+                            resolutions=active_snapshot.resolutions,
+                            has_dataframe=tool_df is not None,
+                            has_db_source=(tool_db_runtime is not None) or csv_duckdb_mode,
+                        ),
+                        "registry_snapshot_fingerprint": active_snapshot.fingerprint,
+                    },
+                    "context_budget": context_budget,
+                    "retrieved_context": retrieved_context,
+                },
+                context_budget=context_budget,
+                retrieved_context=retrieved_context,
+            )
         max_steps = self._max_steps()
-        capability_context = _CapabilityContextBuilder(
-            dependencies=self.dependencies
-        ).build(
+        capability_context = _CapabilityContextBuilder(dependencies=self.dependencies).build(
             state=state,
             tools=tools,
             tool_descriptions=tool_descriptions,
@@ -524,9 +482,9 @@ class AgentContextBuilder(BaseModel):
             session_id=str(session_id),
             source_inventory=source_inventory,
             source_context=source_context,
+            active_catalog=active_catalog,
+            active_snapshot=active_snapshot,
         )
-        task_contract = AnalysisTaskContract.from_prompt(prompt)
-
         return AgentPreparedContext(
             state_update={
                 "prompt": prompt,
@@ -534,14 +492,13 @@ class AgentContextBuilder(BaseModel):
                 "done": False,
                 "stop_reason": "",
                 "tools": tools,
+                "registry_snapshot": active_snapshot,
                 "step_index": 0,
                 "sandbox": sandbox,
                 "capability_context": capability_context,
-                "task_contract": task_contract,
-                "skill_execution_requirements": list(skill_requirements),
                 "llm_unreachable": False,
                 "tool_db_runtime": tool_db_runtime,
-                "working_memory": AnalysisWorkingMemory(goal=prompt),
+                "working_memory": working_memory,
                 "session_source": state.get("session_source") or {},
                 "context_budget": context_budget,
                 "retrieved_context": retrieved_context,
@@ -554,7 +511,8 @@ class AgentContextBuilder(BaseModel):
         depth_inner_limit = self.dependencies.depth_profile.get("inner_recursion_limit")
         return max(
             1,
-            depth_inner_limit if isinstance(depth_inner_limit, int)
+            depth_inner_limit
+            if isinstance(depth_inner_limit, int)
             else self.dependencies.settings.agent_inner_recursion_limit,
         )
 
@@ -569,7 +527,9 @@ class AgentContextBuilder(BaseModel):
             return build_source_inventory(
                 session_id=session_id,
                 session_source=source_context,
-                manifest_store=ManifestStore(self.dependencies.settings.storage_dir),
+                manifest_store=(
+                    self.dependencies.manifest_store or ManifestStore(self.dependencies.settings.storage_dir)
+                ),
                 csv_runtime=CSVSessionRuntime(),
                 db_runtime=tool_db_runtime,
             )
@@ -592,6 +552,7 @@ class AgentContextBuilder(BaseModel):
             csv_session_id=csv_session_id,
             session_id=str(trace_context.get("session_id") or "") or None,
             session_source=session_source,
+            manifest_store=self.dependencies.manifest_store,
         )
         if not csv_table_descriptors:
             return session_source

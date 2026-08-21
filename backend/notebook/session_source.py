@@ -17,6 +17,13 @@ from typing import Any, Literal
 
 from backend.notebook.models import utcnow_iso
 
+SourceType = Literal["csv", "db_connection", "planfact"]
+DUCKDB_SOURCE_TYPES = {"csv", "planfact"}
+
+
+def is_duckdb_source_type(source_type: object) -> bool:
+    return str(source_type or "").strip().lower() in DUCKDB_SOURCE_TYPES
+
 # ── SessionSource ────────────────────────────────────────────────────────────
 
 
@@ -27,7 +34,7 @@ class SessionSource:
     alias: str
     """Stable identifier within the session: ``sales_csv``, ``warehouse_pg``."""
 
-    source_type: Literal["csv", "db_connection"]
+    source_type: SourceType
 
     display_name: str = ""
     """Human-readable label shown in UI."""
@@ -37,6 +44,7 @@ class SessionSource:
 
     # CSV-specific
     file_name: str | None = None
+    blob_id: str | None = None
     parquet_path: str | None = None
 
     # DB-specific
@@ -66,6 +74,8 @@ class SessionSource:
         }
         if self.file_name:
             d["file_name"] = self.file_name
+        if self.blob_id:
+            d["blob_id"] = self.blob_id
         if self.parquet_path:
             d["parquet_path"] = self.parquet_path
         if self.connection_id:
@@ -96,6 +106,7 @@ class SessionSource:
             display_name=raw.get("display_name", ""),
             variable_name=raw.get("variable_name", ""),
             file_name=raw.get("file_name"),
+            blob_id=raw.get("blob_id"),
             parquet_path=raw.get("parquet_path"),
             connection_id=raw.get("connection_id"),
             connection_name=raw.get("connection_name"),

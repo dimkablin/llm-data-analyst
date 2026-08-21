@@ -17,6 +17,49 @@ class MCPServerTransport(StrEnum):
     stdio = "stdio"
 
 
+class MCPToolBindingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capability_key: str = Field(min_length=1, max_length=120)
+    provider_identity: str | None = Field(default=None, max_length=120)
+    priority: int = 0
+    preferred: bool = False
+
+
+class MCPRetrySemantics(StrEnum):
+    SYSTEM = "system_retry"
+    MODEL_CORRECTABLE = "model_correctable"
+    TERMINAL = "terminal"
+
+
+class MCPErrorCategory(StrEnum):
+    ARGUMENT_VALIDATION = "argument_validation"
+    TRANSPORT = "transport"
+    TIMEOUT = "timeout"
+    PROTOCOL = "protocol"
+    AUTHENTICATION = "authentication"
+    AUTHORIZATION = "authorization"
+    PROVIDER_DOMAIN = "provider_domain"
+    INTERNAL = "internal"
+
+
+class MCPErrorDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    category: MCPErrorCategory
+    code: str
+    message: str
+    retry_semantics: MCPRetrySemantics
+    json_path: str | None = None
+    schema_path: str | None = None
+
+
+class MCPToolError(RuntimeError):
+    def __init__(self, details: MCPErrorDetails) -> None:
+        self.details = details
+        super().__init__(details.model_dump_json())
+
+
 def _tool_key_part(value: str) -> str:
     normalized = _TOOL_KEY_PART_RE.sub("_", value.strip()).strip("_").lower()
     return normalized or "unnamed"
@@ -37,6 +80,8 @@ class MCPServerConfig(BaseModel):
     command: str | None = Field(default=None, max_length=512)
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    tool_bindings: dict[str, MCPToolBindingConfig] = Field(default_factory=dict)
+    bearer_token: str | None = Field(default=None, max_length=4096, exclude=True, repr=False)
     timeout_sec: float = Field(default=30.0, ge=1.0, le=300.0)
     enabled: bool = True
     enabled_by_default: bool = True
@@ -80,6 +125,8 @@ class MCPServerCreateRequest(BaseModel):
     command: str | None = Field(default=None, max_length=512)
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    tool_bindings: dict[str, MCPToolBindingConfig] = Field(default_factory=dict)
+    bearer_token: str | None = Field(default=None, max_length=4096)
     timeout_sec: float = Field(default=30.0, ge=1.0, le=300.0)
     enabled: bool = True
     enabled_by_default: bool = True
@@ -100,6 +147,8 @@ class MCPServerUpdateRequest(BaseModel):
     command: str | None = Field(default=None, max_length=512)
     args: list[str] | None = None
     env: dict[str, str] | None = None
+    tool_bindings: dict[str, MCPToolBindingConfig] | None = None
+    bearer_token: str | None = Field(default=None, max_length=4096)
     timeout_sec: float | None = Field(default=None, ge=1.0, le=300.0)
     enabled: bool | None = None
     enabled_by_default: bool | None = None
@@ -118,6 +167,10 @@ class MCPToolDescriptor(BaseModel):
     description: str | None = None
     input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
+    capability_key: str | None = Field(default=None, min_length=1, max_length=120)
+    provider_identity: str | None = Field(default=None, max_length=120)
+    binding_priority: int = 0
+    binding_preferred: bool = False
 
     @classmethod
     def from_mcp_tool(
@@ -128,6 +181,10 @@ class MCPToolDescriptor(BaseModel):
         description: str | None = None,
         input_schema: dict[str, Any] | None = None,
         output_schema: dict[str, Any] | None = None,
+        capability_key: str | None = None,
+        provider_identity: str | None = None,
+        binding_priority: int = 0,
+        binding_preferred: bool = False,
     ) -> MCPToolDescriptor:
         return cls(
             server_id=server_id,
@@ -136,6 +193,10 @@ class MCPToolDescriptor(BaseModel):
             description=description,
             input_schema=dict(input_schema or {"type": "object"}),
             output_schema=dict(output_schema) if output_schema is not None else None,
+            capability_key=capability_key,
+            provider_identity=provider_identity,
+            binding_priority=binding_priority,
+            binding_preferred=binding_preferred,
         )
 
 
@@ -187,4 +248,4 @@ class MCPServerCatalogItem(BaseModel):
 
 
 class AdminMCPServerConfigResponse(MCPServerConfig):
-    pass
+    secret_configured: bool = False

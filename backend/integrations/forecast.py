@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,124 @@ def _coerce_positive_float(value: object, *, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return max(0.1, parsed)
+
+
+_FORECAST_TRACE_RE = re.compile(
+    r"(forecast|prediction|predicted|yhat|прогноз|предикт)",
+    flags=re.IGNORECASE,
+)
+_CONFIDENCE_TRACE_RE = re.compile(
+    r"(confidence|interval|bound|lower|upper|ci|доверит|интервал)",
+    flags=re.IGNORECASE,
+)
+
+
+def _sequence_has_points(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict) and {"dtype", "bdata"} <= set(value):
+        return True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return len(value) > 0
+    return True
+
+
+def _trace_has_points(trace: object) -> bool:
+    if not isinstance(trace, Mapping):
+        return False
+    return _sequence_has_points(trace.get("x")) and _sequence_has_points(trace.get("y"))
+
+
+def _forecast_rows_have_interval(rows: Sequence[Mapping[str, Any]]) -> bool:
+    return any(row.get("lower") is not None and row.get("upper") is not None for row in rows)
+
+
+def _plotly_figure_matches_forecast_contract(
+    figure: object,
+    rows: Sequence[Mapping[str, Any]],
+) -> bool:
+    if not isinstance(figure, Mapping):
+        return False
+    data = figure.get("data")
+    if not isinstance(data, Sequence) or isinstance(data, (str, bytes, bytearray)) or not data:
+        return False
+
+    has_forecast_trace = False
+    has_interval_trace = False
+    for trace in data:
+        if not isinstance(trace, Mapping) or not _trace_has_points(trace):
+            continue
+        name = str(trace.get("name") or "")
+        fill = str(trace.get("fill") or "").lower()
+        if _FORECAST_TRACE_RE.search(name):
+            has_forecast_trace = True
+        if _CONFIDENCE_TRACE_RE.search(name) or fill in {"tonexty", "tozeroy"}:
+            has_interval_trace = True
+
+    if not has_forecast_trace:
+        return False
+    return has_interval_trace if _forecast_rows_have_interval(rows) else not has_interval_trace
+
+
+def _build_forecast_plotly_figure(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    x = [row.get("ts") for row in rows]
+    yhat = [row.get("yhat") for row in rows]
+    traces: list[dict[str, Any]] = []
+
+    if _forecast_rows_have_interval(rows):
+        upper = [row.get("upper") for row in rows]
+        lower = [row.get("lower") for row in rows]
+        traces.extend(
+            [
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "name": "Upper bound",
+                    "x": x,
+                    "y": upper,
+                    "line": {"color": "rgba(148, 163, 184, 0)"},
+                    "showlegend": False,
+                    "hoverinfo": "skip",
+                },
+                {
+                    "type": "scatter",
+                    "mode": "lines",
+                    "name": "Confidence interval",
+                    "x": x,
+                    "y": lower,
+                    "fill": "tonexty",
+                    "fillcolor": "rgba(37, 99, 235, 0.14)",
+                    "line": {"color": "rgba(148, 163, 184, 0)"},
+                    "showlegend": True,
+                    "hoverinfo": "skip",
+                },
+            ]
+        )
+
+    traces.append(
+        {
+            "type": "scatter",
+            "mode": "lines+markers",
+            "name": "Forecast",
+            "x": x,
+            "y": yhat,
+            "line": {"color": "#2563eb", "width": 3},
+            "marker": {"color": "#2563eb", "size": 7},
+        }
+    )
+
+    return {
+        "data": traces,
+        "layout": {
+            "template": "plotly_white",
+            "title": {"text": "Forecast"},
+            "xaxis": {"title": {"text": "Period"}},
+            "yaxis": {"title": {"text": "Forecast value"}},
+            "showlegend": True,
+            "legend": {"orientation": "h", "y": -0.2},
+            "margin": {"l": 54, "r": 32, "t": 52, "b": 72},
+        },
+    }
 
 
 class ForecastIntegrationError(PredictIntegrationError):
@@ -147,6 +266,30 @@ class ForecastIntegrationService:
             raise ForecastIntegrationError("Forecast backend URL is not configured.")
         return self.config.base_url.rstrip("/") + "/" + self.config.predict_endpoint.lstrip("/")
 
+    @staticmethod
+    def prepare_question(question: str, *, catalog_hint: str = "") -> str:
+        """Add backend-facing constraints for predict-service time-series preparation."""
+        base = str(question or "").strip()
+        parts = [
+            base,
+            "",
+            "BACKEND INSTRUCTIONS FOR PREDICT-SERVICE:",
+            "- Choose the most relevant table from the available tables.",
+            "- If the user already named a table, use that table.",
+            "- Prepare only the historical input dataset for forecasting.",
+            "- The final SQL must return exactly two columns with exact aliases: dt, y.",
+            "- dt must be a date/datetime/timestamp column.",
+            "- y must be a numeric observed historical value.",
+            "- Do not generate future rows in SQL.",
+            "- Do not compute forecast values in SQL.",
+        ]
+
+        clean_catalog = str(catalog_hint or "").strip()
+        if clean_catalog:
+            parts.extend(["", clean_catalog])
+
+        return "\n".join(parts).strip()
+
     def source_descriptor(self) -> dict[str, Any]:
         return build_source_descriptor(
             source_type=self.config.source_type,
@@ -232,7 +375,7 @@ class ForecastIntegrationService:
             warnings.extend(str(item).strip() for item in raw_warnings if str(item).strip())
 
         if not rows:
-            warnings.append("Predict backend returned no forecast rows.")
+            raise ForecastIntegrationError("Predict backend returned no forecast rows.")
         if plotly_figure is None:
             warnings.append("Predict backend returned no plotly_figure.")
 
@@ -280,17 +423,22 @@ class ForecastIntegrationService:
             )
         ]
 
+        plotly_figure, built_fallback_plot = self._plotly_figure_for_result(result)
+        warnings = list(result.warnings)
+        if built_fallback_plot:
+            warnings.append("Built forecast_chart from forecast rows to match forecast/CI artifact contract.")
+
         meta = {
             "forecast": build_operation_meta(
                 status="completed",
-                warnings=result.warnings,
+                warnings=warnings,
                 request_params=result.request_params,
                 timeout_sec=self.config.timeout_sec,
                 extra={
                     "summary": result.summary,
                     "model_name": result.model_name,
                     "row_count": len(result.forecast_rows),
-                    "has_plot": bool(result.plotly_figure),
+                    "has_plot": bool(plotly_figure),
                 },
             )
         }
@@ -303,7 +451,13 @@ class ForecastIntegrationService:
             "meta": meta,
         }
 
-        if result.plotly_figure:
-            payload["plot"] = {plot_artifact_name: copy.deepcopy(result.plotly_figure)}
+        if plotly_figure:
+            payload["plot"] = {plot_artifact_name: copy.deepcopy(plotly_figure)}
 
         return payload
+
+    @staticmethod
+    def _plotly_figure_for_result(result: ForecastQueryResult) -> tuple[dict[str, Any], bool]:
+        if _plotly_figure_matches_forecast_contract(result.plotly_figure, result.forecast_rows):
+            return copy.deepcopy(result.plotly_figure), False  # type: ignore[arg-type]
+        return _build_forecast_plotly_figure(result.forecast_rows), True

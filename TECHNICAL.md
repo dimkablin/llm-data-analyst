@@ -92,7 +92,7 @@ FastAPI с SSE-стримингом.
 
 ### Аутентификация
 
-SQLite-база (`AUTH_DB_PATH`), JWT-токены с TTL (`AUTH_TOKEN_TTL_DAYS`).
+PostgreSQL `app_data`, JWT-токены с TTL (`AUTH_TOKEN_TTL_DAYS`).
 
 | Эндпоинт | Описание |
 |----------|----------|
@@ -131,19 +131,18 @@ Query-level кеш (`AGENT_CACHE_ENABLED`, `AGENT_CACHE_SIZE`, `AGENT_CACHE_TTL_
 
 ## 5. Хранение состояния
 
-`SessionStore` — файловое хранилище в `BACKEND_STORAGE_DIR`:
+Постоянное состояние хранится в PostgreSQL: `app_data` содержит пользователей,
+подключения, сессии, сообщения, артефакты, manifests, notebooks и загруженные файлы;
+`semantic_metadata` содержит профили и семантические каталоги. Qdrant — производный индекс.
 
 ```
-backend_storage/
-└── sessions/
-    └── {session_id}/
-        ├── state.json      # история диалога, артефакты, метаданные
-        └── data.parquet    # загруженный датасет
+/tmp/llm-data-analyst/
+└── sessions/               # временные DuckDB, Parquet и sandbox-файлы
 ```
 
 | Аспект | Реализация |
 |--------|------------|
-| Формат данных | Parquet (pyarrow). Чтение старых `.pkl` поддерживается для обратной совместимости |
+| Формат runtime | Временные DuckDB и Parquet (pyarrow), восстанавливаемые из PostgreSQL |
 | Кеш DataFrame | LRU на `OrderedDict`, максимум 20 записей |
 | Конкурентность | Per-session `threading.Lock` через `_get_session_lock()` |
 | TTL | Автоочистка сессий старше `BACKEND_SESSION_TTL_DAYS` (по умолчанию 7) |

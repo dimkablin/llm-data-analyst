@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from backend.auth.blob_store import BlobWrite
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.session_source_service import SessionSourceService
 from backend.data_access.tabular_upload_service import TabularUploadFile, TabularUploadService
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
+from backend.notebook.session_source import SessionSource
 from backend.notebook.store import NotebookStore
 from backend.sessions.session_store import SessionStore
 
@@ -118,3 +120,79 @@ def test_remove_last_csv_source_clears_active_csv_runtime_state(tmp_path: Path) 
     catalog = store.load_data_catalog(session_id)
     assert catalog is not None
     assert catalog.tables == []
+
+
+def test_remove_source_deletes_its_durable_blobs(tmp_path: Path) -> None:
+    class BlobStore:
+        def __init__(self) -> None:
+            self.deleted_ids: list[str] = []
+            self.deleted_kinds: list[str] = []
+
+        def put_many(self, *, items: list[BlobWrite], **_kwargs) -> list[str]:
+            return [f"blob-{index}" for index, _item in enumerate(items)]
+
+        def delete_many(self, *, blob_ids: list[str], **_kwargs) -> None:
+            self.deleted_ids.extend(blob_ids)
+
+        def delete_for_session(self, *, kinds: list[str], **_kwargs) -> None:
+            self.deleted_kinds.extend(kinds)
+
+    store, csv_runtime, manifest_store, notebook_store, _upload, _source, session_id = (
+        _service_stack(tmp_path)
+    )
+    orchestrator = NotebookOrchestrator(notebook_store)
+    blob_store = BlobStore()
+    upload = TabularUploadService(
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=orchestrator,
+        storage_dir=tmp_path,
+        blob_store=blob_store,  # type: ignore[arg-type]
+    )
+    source_service = SessionSourceService(
+        store=store,
+        csv_runtime=csv_runtime,
+        manifest_store=manifest_store,
+        notebook_orchestrator=orchestrator,
+        storage_dir=tmp_path,
+        blob_store=blob_store,  # type: ignore[arg-type]
+        user_id=7,
+    )
+    upload.ingest_files(
+        session_id=session_id,
+        user_id=7,
+        files=[TabularUploadFile(file_name="orders.csv", content=b"order_id\n1\n")],
+    )
+
+    source_service.remove_source(
+        session_id=session_id,
+        alias="orders_csv",
+        refresh_catalog=False,
+    )
+
+    assert blob_store.deleted_ids == ["blob-0"]
+
+    manifest = manifest_store.load(session_id)
+    manifest.add_source(SessionSource(alias="planfact", source_type="planfact"))
+    manifest_store.save(session_id, manifest)
+    store.set_source(
+        session_id,
+        source_type="planfact",
+        source_ref_id="planfact",
+        source_label="Plan/fact",
+        source_mode="duckdb",
+    )
+    source_service.remove_source(
+        session_id=session_id,
+        alias="planfact",
+        refresh_catalog=False,
+    )
+
+    assert set(blob_store.deleted_kinds) == {
+        "planfact_plan",
+        "planfact_fact",
+        "planfact_mapping",
+        "planfact_config",
+        "runtime_snapshot",
+    }

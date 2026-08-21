@@ -1,20 +1,21 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BookOpen, Brain, Cpu, Database, Eye, HelpCircle, Info, Loader2, Radio, RefreshCw, Settings, Sliders, X } from "lucide-react";
+import { BookOpen, Brain, Cpu, Database, Eye, HelpCircle, Info, ListTodo, Loader2, Radio, RefreshCw, Settings, Sliders, X } from "lucide-react";
 import { Switch } from "../ui/switch";
-import {
-  getSession,
-  getSessionNotebookCells,
-  type NotebookCell,
-} from "../../lib/backend-api";
+import { getSession, getSessionNotebookCells, type NotebookCell } from "../../lib/backend-api";
 import {
   ANALYSIS_DEPTH_STEP_CEILING,
   clampAgentMaxStepsForDepth,
   type AnalysisDepth,
   type RuntimeModelProfile,
+  type SemanticCatalogStatusResponse,
   type UserSettings,
 } from "../../lib/backend-types";
 import { MarkdownBlock } from "../MarkdownBlock";
 import { SemanticCatalogBlock } from "./SemanticCatalogBlock";
+
+const BUILD_COMMIT =
+  (((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_BUILD_COMMIT ?? "").trim() ||
+    "unknown").slice(0, 10);
 
 type Props = {
   onClose: () => void;
@@ -26,6 +27,9 @@ type Props = {
   isAdmin?: boolean;
   onSave: (payload: Partial<UserSettings>) => Promise<void>;
   isStreaming?: boolean;
+  semanticConnectionId?: string | null;
+  semanticState: SemanticCatalogStatusResponse;
+  onSemanticStateRefresh: () => Promise<SemanticCatalogStatusResponse>;
 };
 
 export function SettingsPanel({
@@ -38,6 +42,9 @@ export function SettingsPanel({
   isAdmin = false,
   onSave,
   isStreaming,
+  semanticConnectionId,
+  semanticState,
+  onSemanticStateRefresh,
 }: Props) {
   const [draft, setDraft] = useState<UserSettings>(settings);
   const [isSaving, setIsSaving] = useState(false);
@@ -91,6 +98,7 @@ return (
               <>
                 <MetaRow label="Провайдер" value={modelProfile?.provider || "бэкенд"} />
                 <MetaRow label="Модель" value={modelProfile?.model || "n/a"} />
+                <MetaRow label="Commit" value={BUILD_COMMIT} />
               </>
             ) : null}
           </div>
@@ -101,7 +109,12 @@ return (
           icon={<Database className="h-3.5 w-3.5" />}
           help="Семантический слой связывает бизнес-термины, метрики и связи с реальными таблицами источника. Для одного и того же файла или БД он сохраняется и переиспользуется между сессиями."
         >
-          <SemanticCatalogBlock sessionId={sessionId} />
+          <SemanticCatalogBlock
+            sessionId={sessionId}
+            connectionId={semanticConnectionId}
+            semanticState={semanticState}
+            onSemanticStateRefresh={onSemanticStateRefresh}
+          />
         </SectionCard>
 
         <SectionCard title="Профиль ответа" icon={<Brain className="h-3.5 w-3.5" />}>
@@ -204,6 +217,19 @@ return (
                   />
                 </div>
               ))}
+            </div>
+
+            <div className="inline-flex items-center justify-between rounded-xl border border-border/40 bg-background/25 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <ListTodo className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm">Вызывать план при каждом запросе</span>
+              </div>
+              <Switch
+                checked={draft.always_use_analysis_plan}
+                aria-label="Вызывать план при каждом запросе"
+                onCheckedChange={(checked) => setDraft((prev) => ({ ...prev, always_use_analysis_plan: checked }))}
+                className="ml-3"
+              />
             </div>
           </div>
         </SectionCard>

@@ -17,16 +17,10 @@ Returns a catalog table with available schemas/tables.
 Returns column metadata for one or more tables. The aliases `table`, `table_name`, and a single string `table_names` are accepted and normalized to `table_names`.
 
 ```json
-{"mode": "execute_sql", "sql": "SELECT ...", "artifact_name": "plan_fact_result"}
+{"mode": "execute_sql", "sql": "SELECT project_id, SUM(actual) - SUM(plan) AS variance FROM project_values GROUP BY project_id", "artifact_name": "plan_fact_result"}
 ```
 
 Executes a read-only `SELECT`/`WITH` query. Use this for explicit joins and aggregations after you know table and column names.
-
-```json
-{"mode": "nl_query", "question": "Join actuals and plan by project_id and aggregate variance"}
-```
-
-Lets the tool generate safe SQL from a concrete analytical question.
 
 ### Result handoff
 
@@ -49,7 +43,7 @@ Do not assume the SQL result is named `df`. `df` may refer to the initially load
 
 1. `catalog_tables`
 2. `describe_table` for relevant tables
-3. `execute_sql` for deterministic SQL joins/aggregations, or `nl_query` for generated SQL
+3. `execute_sql` for SQL joins and aggregations written by the main agent
 4. Use the returned artifact variable name in `pandas_tool` or `plotly_tool`
 
 ### SQL rules

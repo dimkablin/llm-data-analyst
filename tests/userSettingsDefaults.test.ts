@@ -12,7 +12,7 @@ import {
 test("frontend fallback user settings match backend defaults", () => {
   assert.equal(DEFAULT_USER_SETTINGS.llm_temperature_chat, 0.7);
   assert.equal(DEFAULT_USER_SETTINGS.llm_temperature_tool, 0.5);
-  assert.equal(DEFAULT_USER_SETTINGS.llm_max_tokens_default, 2048);
+  assert.equal(DEFAULT_USER_SETTINGS.llm_max_tokens_default, 4096);
   assert.equal(DEFAULT_USER_SETTINGS.llm_max_tokens_reasoning, 4096);
   assert.equal(DEFAULT_USER_SETTINGS.backend_query_timeout_sec, 180);
   assert.equal(
@@ -20,6 +20,8 @@ test("frontend fallback user settings match backend defaults", () => {
     ANALYSIS_DEPTH_STEP_CEILING[DEFAULT_USER_SETTINGS.analysis_depth],
   );
   assert.equal(DEFAULT_USER_SETTINGS.agent_inner_recursion_limit, 32);
+  assert.equal(DEFAULT_USER_SETTINGS.anomaly_check_enabled, false);
+  assert.equal(DEFAULT_USER_SETTINGS.always_use_analysis_plan, false);
 });
 
 test("frontend settings do not expose unsupported placeholders", () => {
@@ -91,4 +93,17 @@ test("workspace settings expose a single analysis depth control", () => {
 
   assert.equal(panel.includes("Режим анализа"), false);
   assert.equal(panel.includes("draft.analysis_mode"), false);
+});
+
+test("workspace settings place the optional plan toggle below reasoning visibility", () => {
+  const panel = readFileSync(
+    new URL("../frontend/src/app/components/workspace/SettingsPanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  const reasoning = panel.indexOf("Показывать блоки рассуждения в чате");
+  const reasoningDetails = panel.indexOf("Финальный вывод");
+  const plan = panel.indexOf("Вызывать план при каждом запросе");
+  assert.ok(reasoning >= 0 && reasoningDetails > reasoning && plan > reasoningDetails);
+  assert.match(panel.slice(reasoningDetails, plan + 100), /ListTodo/);
 });

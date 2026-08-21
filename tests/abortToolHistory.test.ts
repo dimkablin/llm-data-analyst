@@ -5,6 +5,10 @@ import {
   INTERRUPTED_TOOL_OUTPUT,
   finalizeInterruptedAssistantState,
 } from "../frontend/src/app/lib/stream-abort.ts";
+import {
+  analysisPlanDisplayState,
+  latestAnalysisPlan,
+} from "../frontend/src/app/lib/analysis-plan.ts";
 import type { AssistantBlock, StreamToolCall } from "../frontend/src/app/lib/backend-types.ts";
 
 test("finalizes tool-only aborted stream without dropping tool history", () => {
@@ -80,4 +84,73 @@ test("finalizes tool-only aborted stream without dropping tool history", () => {
   const completedResult = result.blocks?.find((block) => block.id === "result-done");
   assert.equal(completedResult?.type, "tool_result");
   assert.equal(completedResult?.output_preview, "rows: 2");
+});
+
+test("interrupted plan update keeps the last successful plan as stopped", () => {
+  const plan = [{ step: "Inspect data", status: "in_progress" as const }];
+  const output = JSON.stringify({ plan, completed: 0, total: 1 });
+  const tools: StreamToolCall[] = [
+    {
+      id: "plan-done",
+      tool_call_id: "plan-call-1",
+      tool_name: "update_plan",
+      input_summary: "update plan",
+      output_preview: output,
+      status: "done",
+      started_at: 100,
+    },
+    {
+      id: "plan-running",
+      tool_call_id: "plan-call-2",
+      tool_name: "update_plan",
+      input_summary: "update plan",
+      status: "running",
+      started_at: 200,
+    },
+  ];
+  const blocks: AssistantBlock[] = [
+    {
+      type: "tool_use",
+      id: "plan-use-1",
+      tool_name: "update_plan",
+      input_summary: "update plan",
+      status: "done",
+      started_at: 100,
+    },
+    {
+      type: "tool_result",
+      id: "plan-result-1",
+      tool_use_id: "plan-use-1",
+      tool_name: "update_plan",
+      status: "ok",
+      result_summary: "",
+      output_preview: output,
+    },
+    {
+      type: "tool_use",
+      id: "plan-use-2",
+      tool_name: "update_plan",
+      input_summary: "update plan",
+      status: "running",
+      started_at: 200,
+    },
+  ];
+
+  const result = finalizeInterruptedAssistantState({
+    text: "",
+    reasoning: null,
+    phases: [],
+    tools,
+    blocks,
+  });
+  const state = latestAnalysisPlan(result.blocks ?? []);
+
+  assert.deepEqual(state.plan, plan);
+  assert.equal(analysisPlanDisplayState(state.plan!, false), "stopped");
+  assert.equal(
+    result.blocks?.find(
+      (block) => block.type === "tool_result" && block.tool_use_id === "plan-use-2",
+    )?.status,
+    "error",
+  );
 });

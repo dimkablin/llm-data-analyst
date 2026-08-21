@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from backend.data_access.semantic_models import (
     SemanticCatalog,
@@ -11,13 +11,22 @@ from backend.data_access.semantic_models import (
     SemanticFact,
     SemanticMetric,
 )
-from backend.data_access.semantic_validator import relationship_safety_error
+from backend.data_access.semantic_validator import metric_references, relationship_safety_error
 
 
 class SemanticQueryFilter(BaseModel):
     field: str
-    op: Literal["=", "!=", ">", ">=", "<", "<=", "in"]
-    value: str | int | float | list[str | int | float]
+    op: Literal["=", "!=", ">", ">=", "<", "<=", "in", "not_in", "starts_with"]
+    value: str | int | float | bool | list[str | int | float | bool]
+
+    @model_validator(mode="after")
+    def validate_value_shape(self) -> SemanticQueryFilter:
+        if self.op in {"in", "not_in"}:
+            if not isinstance(self.value, list) or not self.value:
+                raise ValueError(f"{self.op} filter requires a non-empty list or tuple")
+        elif isinstance(self.value, list):
+            raise ValueError(f"{self.op} filter requires a scalar value")
+        return self
 
 
 class SemanticQueryOrder(BaseModel):
@@ -40,8 +49,24 @@ class SemanticQueryCompiler:
         self.catalog = catalog
         self.dialect = dialect
         self.metrics = {metric.key: metric for metric in catalog.metrics if metric.is_active}
-        self.dimensions = {dimension.name: dimension for dimension in catalog.dimensions if dimension.is_active}
-        self.facts = {fact.name: fact for fact in catalog.facts}
+        self.columns_by_table = {
+            table: {column.name for column in catalog.columns if column.table == table}
+            for table in {column.table for column in catalog.columns}
+        }
+        self.dimensions_by_name: dict[str, list[SemanticDimension]] = {}
+        self.dimensions_by_ref: dict[str, SemanticDimension] = {}
+        for dimension in catalog.dimensions:
+            if not dimension.is_active:
+                continue
+            self.dimensions_by_name.setdefault(dimension.name, []).append(dimension)
+            self.dimensions_by_ref[f"{dimension.table}.{dimension.name}"] = dimension
+            self.dimensions_by_ref[dimension.dimension_id] = dimension
+        self.facts_by_name: dict[str, list[SemanticFact]] = {}
+        self.facts_by_ref: dict[str, SemanticFact] = {}
+        for fact in catalog.facts:
+            self.facts_by_name.setdefault(fact.name, []).append(fact)
+            self.facts_by_ref[f"{fact.table}.{fact.name}"] = fact
+            self.facts_by_ref[fact.fact_id] = fact
 
     def compile(self, query: SemanticQuery) -> str:
         metrics = [self._metric(key) for key in query.metrics]
@@ -49,10 +74,46 @@ class SemanticQueryCompiler:
         if len(metric_base_tables) != 1:
             raise ValueError("Only one metric base table is supported")
         base_table = next(iter(metric_base_tables))
-        dimensions = [self._dimension(name) for name in query.dimensions]
-        if query.time_dimension and query.time_dimension not in query.dimensions:
-            dimensions.append(self._dimension(query.time_dimension))
-        joins = self._joins_for_dimensions(base_table, dimensions)
+        time_dimension_name = query.time_dimension
+        if query.time_grain and not time_dimension_name:
+            time_dimension_name = self.shared_default_time_dimension(metrics)
+            if time_dimension_name is None:
+                raise ValueError(
+                    "time_grain requires an explicit time_dimension or one shared metric default"
+                )
+        dimensions = [self._dimension(name, base_table=base_table) for name in query.dimensions]
+        time_dimension = None
+        if time_dimension_name:
+            time_dimension = self._dimension(time_dimension_name, base_table=base_table)
+            if query.time_grain and time_dimension.type != "time":
+                raise ValueError("time_grain requires an active time dimension")
+            if all(item.dimension_id != time_dimension.dimension_id for item in dimensions):
+                dimensions.append(time_dimension)
+        common_filters = self._fixed_filter_contract(metrics)
+        dimension_filters = []
+        for item in query.filters:
+            try:
+                signature = self._filter_signature(item, base_table=base_table)
+            except ValueError:
+                dimension_filters.append(item)
+                continue
+            if signature in common_filters:
+                continue
+            dimension_filters.append(item)
+        resolved_filters = [
+            (item, self._filter_dimension(item.field, base_table=base_table)) for item in dimension_filters
+        ]
+        unsupported_filters = [item.field for item, dimension in resolved_filters if dimension is None]
+        if unsupported_filters:
+            raise ValueError(
+                "Query filters require active semantic dimensions: " + ", ".join(unsupported_filters)
+            )
+        filter_dimensions = [dimension for _item, dimension in resolved_filters if dimension is not None]
+        required_dimensions = list(
+            {dimension.dimension_id: dimension for dimension in [*dimensions, *filter_dimensions]}.values()
+        )
+        self._validate_allowed_dimensions(metrics, required_dimensions)
+        joins = self._joins_for_dimensions(base_table, required_dimensions)
         aliases = self._aliases(base_table, joins)
         qualified = bool(joins)
 
@@ -61,25 +122,40 @@ class SemanticQueryCompiler:
         for dimension in dimensions:
             expr = self._dimension_expr(
                 dimension,
-                query.time_grain if dimension.name == query.time_dimension else None,
+                (
+                    query.time_grain
+                    if time_dimension is not None and dimension.dimension_id == time_dimension.dimension_id
+                    else None
+                ),
                 aliases if qualified else None,
             )
-            select_parts.append(f'{expr} AS {self._quote(dimension.name)}')
+            select_parts.append(f"{expr} AS {self._quote(dimension.name)}")
             group_parts.append(expr)
-        for metric in metrics:
-            select_parts.append(f'{self._metric_expr(metric, aliases if qualified else None)} AS {self._quote(metric.key)}')
+        select_parts.extend(
+            (f"{self._metric_expr(metric, aliases if qualified else None)} AS {self._quote(metric.key)}")
+            for metric in metrics
+        )
 
         sql = f"SELECT {', '.join(select_parts)} FROM {self._from_clause(base_table, joins, aliases)}"
-        where = self._where(query.filters, aliases if qualified else None)
+        where = self._where(dimension_filters, aliases if qualified else None, base_table=base_table)
         if where:
             sql += f" WHERE {where}"
         if group_parts:
             sql += f" GROUP BY {', '.join(group_parts)}"
-        order_by = self._order_by(query.order_by, metrics)
+        order_by = self._order_by(query.order_by, metrics, dimensions)
         if order_by:
             sql += f" ORDER BY {order_by}"
         sql += f" LIMIT {int(query.limit)}"
         return sql
+
+    def shared_default_time_dimension(self, metrics: list[SemanticMetric]) -> str | None:
+        base_tables = {metric.base_table for metric in metrics}
+        defaults = [str(metric.default_time_dimension or "").strip() for metric in metrics]
+        if len(base_tables) != 1 or not defaults or any(not item for item in defaults):
+            return None
+        base_table = next(iter(base_tables))
+        resolved = {self._dimension(item, base_table=base_table).dimension_id for item in defaults}
+        return defaults[0] if len(resolved) == 1 else None
 
     def _metric(self, key: str) -> SemanticMetric:
         metric = self.metrics.get(key)
@@ -87,11 +163,11 @@ class SemanticQueryCompiler:
             raise ValueError(f"Unknown semantic metric: {key}")
         return metric
 
-    def _dimension(self, name: str) -> SemanticDimension:
-        dimension = self.dimensions.get(name)
-        if dimension is None:
+    def _dimension(self, name: str, *, base_table: str) -> SemanticDimension:
+        candidates = self._dimension_candidates(name)
+        if not candidates:
             raise ValueError(f"Unknown semantic dimension: {name}")
-        return dimension
+        return self._prefer_base_table(candidates, name=name, base_table=base_table, kind="dimension")
 
     def _metric_expr(self, metric: SemanticMetric, aliases: dict[str, str] | None = None) -> str:
         if metric.type == "simple":
@@ -106,16 +182,79 @@ class SemanticQueryCompiler:
 
     def _simple_metric_expr(self, metric: SemanticMetric, aliases: dict[str, str] | None) -> str:
         column = self._column_ref(metric.base_table, str(metric.expr), aliases)
+        filtered_column = column
+        if metric.filters:
+            predicate = self._where(
+                [SemanticQueryFilter.model_validate(item.model_dump()) for item in metric.filters],
+                aliases,
+                base_table=metric.base_table,
+            )
+            filtered_column = f"CASE WHEN {predicate} THEN {column} END"
         if metric.agg == "count_distinct":
-            return f"COUNT(DISTINCT {column})"
-        return f"{str(metric.agg).upper()}({column})"
+            return f"COUNT(DISTINCT {filtered_column})"
+        return f"{str(metric.agg).upper()}({filtered_column})"
+
+    def _fixed_filter_contract(
+        self,
+        metrics: list[SemanticMetric],
+    ) -> set[tuple[Any, ...]]:
+        leaf_filters = [
+            filters for metric in metrics for filters in self._metric_leaf_filters(metric, visiting=set())
+        ]
+        if not leaf_filters:
+            return set()
+        return set.intersection(*leaf_filters)
+
+    def _metric_leaf_filters(
+        self,
+        metric: SemanticMetric,
+        *,
+        visiting: set[str],
+    ) -> list[set[tuple[Any, ...]]]:
+        if metric.key in visiting:
+            raise ValueError(f"Metric dependency cycle detected: {metric.key}")
+        if metric.type == "simple":
+            return [{self._filter_signature(item, base_table=metric.base_table) for item in metric.filters}]
+
+        next_visiting = {*visiting, metric.key}
+        dependencies = [self.metrics[ref] for ref in metric_references(metric) if ref in self.metrics]
+        leaves = [
+            filters
+            for dependency in dependencies
+            for filters in self._metric_leaf_filters(dependency, visiting=next_visiting)
+        ]
+        if metric.type == "derived" and not self._is_metric_only_formula(metric):
+            leaves.append(set())
+        return leaves or [set()]
+
+    def _is_metric_only_formula(self, metric: SemanticMetric) -> bool:
+        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", metric.formula or ""))
+        # ponytail: fail closed; use a SQL AST if more scalar wrappers need filter inheritance.
+        return all(token in self.metrics or token.upper() == "NULLIF" for token in tokens)
 
     def _derived_metric_expr(self, metric: SemanticMetric, aliases: dict[str, str] | None) -> str:
-        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", metric.formula))
         expr = metric.formula
+        for column in sorted(
+            self.columns_by_table.get(metric.base_table, set()),
+            key=len,
+            reverse=True,
+        ):
+            qualified = f"{metric.base_table}.{column}"
+            column_ref = self._column_ref(metric.base_table, column, aliases)
+            expr = re.sub(
+                rf"(?<![\w.\"']){re.escape(qualified)}(?![\w.\"'])",
+                lambda _match, replacement=column_ref: replacement,
+                expr,
+            )
+        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", expr))
         for token in sorted(tokens, key=len, reverse=True):
             if token in self.metrics:
-                expr = re.sub(rf"\b{re.escape(token)}\b", f"({self._metric_expr(self.metrics[token], aliases)})", expr)
+                replacement = f"({self._metric_expr(self.metrics[token], aliases)})"
+                expr = re.sub(
+                    rf"(?<![\w.\"']){re.escape(token)}(?![\w.\"'])",
+                    lambda _match, value=replacement: value,
+                    expr,
+                )
         return expr
 
     def _dimension_expr(
@@ -127,11 +266,46 @@ class SemanticQueryCompiler:
         column = self._column_ref(dimension.table, dimension.expr, aliases)
         if dimension.type != "time" or not grain:
             return column
+        if dimension.grains and grain not in dimension.grains:
+            raise ValueError(f"Unsupported time grain {grain} for semantic dimension {dimension.name}")
         if self.dialect in {"duckdb", "postgres", "postgresql"}:
             return f"DATE_TRUNC('{grain}', {column})"
-        return column
+        if self.dialect == "clickhouse":
+            function = {
+                "day": "toStartOfDay",
+                "week": "toStartOfWeek",
+                "month": "toStartOfMonth",
+                "quarter": "toStartOfQuarter",
+                "year": "toStartOfYear",
+            }[grain]
+            return f"{function}({column})"
+        raise ValueError(f"Semantic time grain is not supported for dialect: {self.dialect}")
 
-    def _joins_for_dimensions(self, base_table: str, dimensions: list[SemanticDimension]) -> list[tuple[str, str, str, str]]:
+    @staticmethod
+    def _validate_allowed_dimensions(
+        metrics: list[SemanticMetric],
+        dimensions: list[SemanticDimension],
+    ) -> None:
+        for metric in metrics:
+            if not metric.allowed_dimensions:
+                continue
+            allowed = set(metric.allowed_dimensions)
+            unsupported = [
+                dimension.name
+                for dimension in dimensions
+                if not allowed
+                & {
+                    dimension.name,
+                    f"{dimension.table}.{dimension.name}",
+                    dimension.dimension_id,
+                }
+            ]
+            if unsupported:
+                raise ValueError(f"Metric {metric.key} does not allow dimensions: {', '.join(unsupported)}")
+
+    def _joins_for_dimensions(
+        self, base_table: str, dimensions: list[SemanticDimension]
+    ) -> list[tuple[str, str, str, str]]:
         joins: list[tuple[str, str, str, str]] = []
         for dimension in dimensions:
             if dimension.table == base_table:
@@ -177,36 +351,139 @@ class SemanticQueryCompiler:
             return self._quote_table(base_table)
         sql = f"{self._quote_table(base_table)} AS {aliases[base_table]}"
         for from_table, from_column, to_table, to_column in joins:
-            sql += (
-                f" LEFT JOIN {self._quote_table(to_table)} AS {aliases[to_table]}"
-                f" ON {self._column_ref(from_table, from_column, aliases)} = {self._column_ref(to_table, to_column, aliases)}"
-            )
+            left = self._column_ref(from_table, from_column, aliases)
+            right = self._column_ref(to_table, to_column, aliases)
+            sql += f" LEFT JOIN {self._quote_table(to_table)} AS {aliases[to_table]} ON {left} = {right}"
         return sql
 
-    def _where(self, filters: list[SemanticQueryFilter], aliases: dict[str, str] | None) -> str:
+    def _where(
+        self,
+        filters: list[SemanticQueryFilter],
+        aliases: dict[str, str] | None,
+        *,
+        base_table: str,
+    ) -> str:
         parts = []
         for item in filters:
-            field = self._filter_field(item.field, aliases)
-            if item.op == "in":
+            field = self._filter_field(item.field, aliases, base_table=base_table)
+            if item.op in {"in", "not_in"}:
                 values = item.value if isinstance(item.value, list) else [item.value]
-                parts.append(f"{field} IN ({', '.join(self._literal(value) for value in values)})")
+                operator = "IN" if item.op == "in" else "NOT IN"
+                parts.append(f"{field} {operator} ({', '.join(self._literal(value) for value in values)})")
+            elif item.op == "starts_with":
+                parts.append(f"{field} LIKE {self._literal(str(item.value) + '%')}")
             else:
                 parts.append(f"{field} {item.op} {self._literal(item.value)}")
         return " AND ".join(parts)
 
-    def _filter_field(self, field: str, aliases: dict[str, str] | None) -> str:
+    def _filter_field(
+        self,
+        field: str,
+        aliases: dict[str, str] | None,
+        *,
+        base_table: str,
+    ) -> str:
+        table, column = self._filter_binding(field, base_table=base_table)
+        return self._column_ref(table, column, aliases)
+
+    def _filter_binding(self, field: str, *, base_table: str) -> tuple[str, str]:
         name = str(field or "").strip()
-        dimension = self.dimensions.get(name)
-        if dimension is not None:
-            return self._dimension_expr(dimension, None, aliases)
-        fact = self.facts.get(name)
-        if fact is not None:
-            return self._column_ref(fact.table, fact.expr, aliases)
+        dimension_candidates = self._dimension_candidates(name)
+        if dimension_candidates:
+            dimension = self._prefer_base_table(
+                dimension_candidates,
+                name=name,
+                base_table=base_table,
+                kind="dimension",
+            )
+            return dimension.table, dimension.expr
+        fact_candidates = self._fact_candidates(name)
+        if fact_candidates:
+            fact = self._prefer_base_table(
+                fact_candidates,
+                name=name,
+                base_table=base_table,
+                kind="fact",
+            )
+            if fact.table != base_table:
+                raise ValueError("Semantic fact filters must use the metric base table")
+            return fact.table, fact.expr
+        raw_name = name.rsplit(".", 1)[-1]
+        if raw_name in self.columns_by_table.get(base_table, set()):
+            return base_table, raw_name
         raise ValueError(f"Unknown semantic filter field: {field}")
 
-    def _order_by(self, order_by: list[SemanticQueryOrder], metrics: list[SemanticMetric]) -> str:
+    def _filter_signature(self, item: Any, *, base_table: str) -> tuple[Any, ...]:
+        table, column = self._filter_binding(item.field, base_table=base_table)
+        value = item.value
+        if isinstance(value, list):
+            value_key: Any = frozenset((type(member).__name__, member) for member in value)
+        else:
+            value_key = (type(value).__name__, value)
+        return table, column, str(item.op), value_key
+
+    def _filter_dimension(
+        self,
+        field: str,
+        *,
+        base_table: str,
+    ) -> SemanticDimension | None:
+        candidates = self._dimension_candidates(field)
+        if not candidates:
+            return None
+        return self._prefer_base_table(
+            candidates,
+            name=field,
+            base_table=base_table,
+            kind="dimension",
+        )
+
+    def _dimension_candidates(self, name: str) -> list[SemanticDimension]:
+        exact = self.dimensions_by_ref.get(str(name or "").strip())
+        if exact is not None:
+            return [exact]
+        return list(self.dimensions_by_name.get(str(name or "").strip(), []))
+
+    def _fact_candidates(self, name: str) -> list[SemanticFact]:
+        exact = self.facts_by_ref.get(str(name or "").strip())
+        if exact is not None:
+            return [exact]
+        return list(self.facts_by_name.get(str(name or "").strip(), []))
+
+    @staticmethod
+    def _prefer_base_table(candidates: list[Any], *, name: str, base_table: str, kind: str) -> Any:
+        local = [item for item in candidates if item.table == base_table]
+        if len(local) == 1:
+            return local[0]
+        if len(candidates) == 1:
+            return candidates[0]
+        refs = ", ".join(sorted(f"{item.table}.{item.name}" for item in candidates))
+        raise ValueError(f"Ambiguous semantic {kind}: {name}. Use a qualified reference; candidates: {refs}")
+
+    def _order_by(
+        self,
+        order_by: list[SemanticQueryOrder],
+        metrics: list[SemanticMetric],
+        dimensions: list[SemanticDimension],
+    ) -> str:
+        aliases = {metric.key: metric.key for metric in metrics}
+        for dimension in dimensions:
+            for ref in (
+                dimension.name,
+                f"{dimension.table}.{dimension.name}",
+                dimension.dimension_id,
+            ):
+                aliases[ref] = dimension.name
         if order_by:
-            return ", ".join(f"{self._quote(item.field)} {item.direction.upper()}" for item in order_by)
+            unknown = [item.field for item in order_by if item.field not in aliases]
+            if unknown:
+                raise ValueError(f"Unknown semantic order field: {', '.join(unknown)}")
+            return ", ".join(
+                f"{self._quote(aliases[item.field])} {item.direction.upper()}" for item in order_by
+            )
+        time_dimensions = [dimension for dimension in dimensions if dimension.type == "time"]
+        if time_dimensions:
+            return f"{self._quote(time_dimensions[0].name)} ASC"
         return f"{self._quote(metrics[0].key)} DESC" if metrics else ""
 
     @staticmethod
@@ -229,42 +506,3 @@ class SemanticQueryCompiler:
     @staticmethod
     def _quote(value: str) -> str:
         return '"' + str(value).replace('"', '""') + '"'
-
-
-def semantic_query_from_hints(
-    hints: dict[str, object],
-    *,
-    question: str,
-    catalog: SemanticCatalog,
-) -> SemanticQuery | None:
-    metrics = [item for item in hints.get("metrics", []) if isinstance(item, dict)]
-    if not metrics:
-        return None
-    metric_keys = [
-        str(item.get("key") or "").strip()
-        for item in metrics
-        if str(item.get("key") or "").strip()
-    ]
-    q = str(question or "").lower()
-    for metric in catalog.metrics:
-        haystack = " ".join([metric.key, metric.name, *metric.synonyms]).lower()
-        if any(token and token in q for token in _tokens(haystack)):
-            metric_keys.append(metric.key)
-    metric_keys = list(dict.fromkeys(metric_keys))
-    if not metric_keys:
-        return None
-    dimensions = [
-        dim.name
-        for dim in catalog.dimensions
-        if dim.is_active and dim.name.lower() in q
-    ]
-    time_dimension = next((dim.name for dim in catalog.dimensions if dim.type == "time" and dim.name.lower() in q), None)
-    return SemanticQuery(metrics=metric_keys, dimensions=dimensions[:3], time_dimension=time_dimension)
-
-
-def _tokens(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", str(text or "").lower())
-        if len(token) >= 3
-    }

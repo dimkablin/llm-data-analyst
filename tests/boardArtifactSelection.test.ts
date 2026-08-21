@@ -33,6 +33,18 @@ function noteArtifact(sessionId: string, messageId: string, timestamp: string): 
   };
 }
 
+function planfactStory(id: string, storyOrder: number): ArtifactPayload {
+  return {
+    ...artifact(id, "note", "2026-06-16T10:01:04.000Z"),
+    meta: {
+      source_type: "planfact",
+      producer_tool: "planfact_first_look",
+      report_kind: "story",
+      story_order: storyOrder,
+    },
+  };
+}
+
 const sessionId = "session-1";
 
 const messages: ChatMessage[] = [
@@ -146,6 +158,19 @@ test("identifies highlighted board artifacts with plot before json fallback", ()
     ]),
     ["json-result"],
   );
+});
+
+test("prioritizes plan-fact story artifacts in their business order", () => {
+  const storyArtifacts = [
+    artifact("regular-plot", "plot", "2026-06-16T10:01:01.000Z"),
+    planfactStory("quality", 50),
+    planfactStory("overview", 10),
+  ];
+
+  assert.deepEqual(selectDefaultHighlightedBoardArtifactIds(storyArtifacts), [
+    "overview",
+    "quality",
+  ]);
 });
 
 test("shows user pinned artifacts plus the default highlighted board artifacts", () => {

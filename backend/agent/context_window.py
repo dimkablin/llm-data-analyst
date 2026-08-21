@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
@@ -265,7 +266,7 @@ def _fit_tool_exchange_messages(
 ) -> list[BaseMessage]:
     candidates = [
         list(messages),
-        [_compact_tool_message(message) for message in messages],
+        _compact_tool_exchange_messages(messages),
     ]
     if candidates[-1] and isinstance(candidates[-1][0], SystemMessage):
         candidates.append(candidates[-1][1:])
@@ -285,8 +286,45 @@ def _fit_tool_exchange_messages(
     )
 
 
+def _compact_tool_exchange_messages(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    latest_plan_call_id = next(
+        (
+            str(message.tool_call_id).strip()
+            for message in reversed(messages)
+            if _is_plan_result(message)
+        ),
+        "",
+    )
+    return [
+        message
+        if isinstance(message, ToolMessage)
+        and str(message.tool_call_id).strip() == latest_plan_call_id
+        else _compact_tool_message(message)
+        for message in messages
+    ]
+
+
+def _is_plan_result(message: BaseMessage) -> bool:
+    if not isinstance(message, ToolMessage) or getattr(message, "name", None) != "update_plan":
+        return False
+    try:
+        payload = json.loads(str(message.content))
+    except (TypeError, ValueError):
+        return False
+    plan = payload.get("plan") if isinstance(payload, dict) else None
+    return bool(plan) and all(
+        isinstance(item, dict)
+        and str(item.get("step") or "").strip()
+        and item.get("status") in {"pending", "in_progress", "completed"}
+        for item in plan
+    )
+
+
 def _compact_tool_message(message: BaseMessage) -> BaseMessage:
-    if not isinstance(message, ToolMessage):
+    if not isinstance(message, ToolMessage) or getattr(message, "name", None) in {
+        "planner_tool",
+        "get_tool_instructions",
+    }:
         return message
     return message.model_copy(update={"content": _COMPACT_TOOL_RESULT_TEXT})
 

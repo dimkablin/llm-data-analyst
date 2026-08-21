@@ -7,6 +7,10 @@ import {
   streamQuery,
 } from "../lib/backend-api";
 import { finalizeInterruptedAssistantState } from "../lib/stream-abort";
+import {
+  loadQueryExecutionOptions,
+  saveQueryExecutionOptions,
+} from '../lib/query-execution-options';
 import type {
   ArtifactPayload,
   AssistantBlock,
@@ -16,6 +20,7 @@ import type {
   PersistedToolCall,
   PhaseEvent,
   QueryResponse,
+  QueryExecutionOptions,
   SessionState,
   StreamToolCall,
 } from "../lib/backend-types";
@@ -200,6 +205,7 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
     output_preview: p.output_preview ?? (p.error ? `Error: ${p.error}` : undefined),
     result_summary: p.result_summary,
     pre_reasoning: p.pre_reasoning || undefined,
+    pre_text: p.pre_text || undefined,
   };
 }
 
@@ -208,7 +214,7 @@ function persistedToolToStream(p: PersistedToolCall, idx: number): StreamToolCal
  * renders thinking interleaved with tool calls exactly as it did live.
  *
  * Order rule (mirrors backend `_build_reasoning_steps` + live stream order):
- *   pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
+ *   pre_text_i → pre_reasoning_i → tool_use_i → tool_result_i (for each tool call i)
  *   followed by unique orphan reasoning_steps not already captured as pre_reasoning.
  *
  * Deduplication: the backend `_build_reasoning_steps` uses index-based mapping
@@ -246,6 +252,14 @@ function buildBlocksFromHistory(
 
   if (tools && tools.length > 0) {
     for (const tool of tools) {
+      const trimmedPreText = tool.pre_text?.trim();
+      if (trimmedPreText) {
+        blocks.push({
+          type: "text",
+          id: nextId("text"),
+          content: trimmedPreText,
+        });
+      }
       const trimmedPre = tool.pre_reasoning?.trim();
       if (trimmedPre) {
         preReasoningSet.add(trimmedPre);
@@ -329,6 +343,7 @@ function toChatMessages(
     reasoning_steps?: import("../lib/backend-types").PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
     tools?: PersistedToolCall[];
+    anomaly_check?: import("../lib/backend-types").AnomalyCheck | null;
   }>,
 ): ChatMessage[] {
   const messages = history.map((item, index) => {
@@ -355,6 +370,7 @@ function toChatMessages(
       artifacts: item.artifacts ?? [],
       tools,
       blocks,
+      anomalyCheck: item.anomaly_check ?? null,
     };
   });
   return applyLiveReasoningSnapshot(sessionId, messages as ChatMessage[]);
@@ -394,7 +410,6 @@ type UseChatAgentArgs = {
   includeReasoning: boolean;
   useHistory: boolean;
   analysisDepth?: string;
-  selectedSkillIds?: string[];
 };
 
 type UseChatAgentResult = {
@@ -417,7 +432,7 @@ type UseChatAgentResult = {
     session: SessionState,
     options?: { preserveStreamingForSessionId?: string | null; suppressRestoredArtifactsMessage?: boolean },
   ) => void;
-  sendQuery: (query: string) => Promise<void>;
+  sendQuery: (query: string, options?: QueryExecutionOptions) => Promise<void>;
   retryLast: () => Promise<void>;
   stopStreaming: () => void;
   reset: () => void;
@@ -430,7 +445,6 @@ export function useChatAgent({
   includeReasoning,
   useHistory,
   analysisDepth,
-  selectedSkillIds,
 }: UseChatAgentArgs): UseChatAgentResult {
   // Per-session storage: messages and artifacts are keyed by session ID.
   const [sessionData, setSessionData] = useState<Map<string, SessionSlot>>(new Map());
@@ -448,6 +462,7 @@ export function useChatAgent({
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const lastExecutionOptionsRef = useRef<Map<string, QueryExecutionOptions>>(new Map());
 
   // Derived values for the currently displayed session.
   const messages = sessionData.get(displayedSessionId)?.messages ?? [];
@@ -608,10 +623,11 @@ export function useChatAgent({
     setContextUsage(null);
     setError(null);
     setLastQuery(null);
+    lastExecutionOptionsRef.current.clear();
   }, []);
 
   const sendQuery = useCallback(
-    async (query: string) => {
+    async (query: string, options: QueryExecutionOptions = {}) => {
       const prompt = query.trim();
       if (!sessionId || !prompt || isStreaming) {
         return;
@@ -625,6 +641,12 @@ export function useChatAgent({
 
       setError(null);
       setLastQuery(prompt);
+      lastExecutionOptionsRef.current.set(capturedSessionId, options);
+      try {
+        saveQueryExecutionOptions(window.sessionStorage, capturedSessionId, prompt, options);
+      } catch {
+        // Retry metadata is best-effort; sending the query must still work.
+      }
       setStreamDraft("");
       setStreamReasoning("");
       setStreamPhases([]);
@@ -759,8 +781,10 @@ export function useChatAgent({
               const inputSummary = event.input_summary || parseInputSummary(event.tool_name, event.input_preview ?? "");
               pendingThinkingBlock = "";
 
-              const intentText = pendingIntentText.trim();
+              const intentText = (event.pre_text || pendingIntentText).trim();
               pendingIntentText = "";
+              streamState.streamedText = "";
+              setStreamDraft("");
               if (intentText) {
                 collectedBlocks.push({
                   type: "text",
@@ -876,7 +900,8 @@ export function useChatAgent({
           },
           controller.signal,
           analysisDepth,
-          selectedSkillIds,
+          options.selectedSkillId ? [options.selectedSkillId] : [],
+          options.requestedToolKey,
         );
       } catch (err) {
         if ((err as Error)?.name === "AbortError") {
@@ -983,6 +1008,7 @@ export function useChatAgent({
                 metrics: finalPayload.metrics,
                 artifacts: finalPayload.artifacts,
                 executionGraph: (finalPayload as Record<string, unknown>).execution_graph as ExecutionGraph | undefined,
+                anomalyCheck: finalPayload.anomaly_check ?? null,
               },
             ],
             artifacts: [...slot.artifacts, ...finalPayload.artifacts],
@@ -1055,7 +1081,6 @@ export function useChatAgent({
       isStreaming,
       patchSlotMessages,
       replaceSlot,
-      selectedSkillIds,
       sessionId,
       useHistory,
     ],
@@ -1112,7 +1137,15 @@ export function useChatAgent({
       }
       return newMap;
     });
-    await sendQuery(query);
+    let retryOptions = lastExecutionOptionsRef.current.get(sessionId);
+    if (!retryOptions) {
+      try {
+        retryOptions = loadQueryExecutionOptions(window.sessionStorage, sessionId, query);
+      } catch {
+        retryOptions = {};
+      }
+    }
+    await sendQuery(query, retryOptions);
   }, [isStreaming, lastQuery, sendQuery, sessionId]);
 
   return {

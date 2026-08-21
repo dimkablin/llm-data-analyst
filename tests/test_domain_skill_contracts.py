@@ -1,25 +1,12 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from backend.agent.prompts import execution_agent_prompt
-from backend.data_access.sql_table_service import SQLTableService, TableCandidate
 
 
-def _table(name: str, columns: list[str]) -> TableCandidate:
-    return TableCandidate(
-        source_kind="db",
-        dialect="sqlite",
-        table_name=name,
-        qualified_name=name,
-        schema="main",
-        columns=columns,
-        source_label="test",
-        source_ref_id="test-db",
-    )
-
-
-def test_domain_skills_declare_tool_artifact_and_evidence_sections() -> None:
+def test_domain_skills_declare_capability_artifact_and_evidence_sections() -> None:
     for skill_id in (
         "portfolio_risk_analysis",
         "investment_market_analysis",
@@ -27,7 +14,7 @@ def test_domain_skills_declare_tool_artifact_and_evidence_sections() -> None:
     ):
         text = Path("skills", skill_id, "SKILL.md").read_text(encoding="utf-8").lower()
 
-        assert "### required tools" in text
+        assert "### required capabilities" in text
         assert "### required artifacts" in text
         assert "### evidence rules" in text
 
@@ -47,27 +34,6 @@ def test_general_analytics_no_longer_owns_investment_or_portfolio_workflows() ->
     assert moved_domain_tokens.isdisjoint(text)
 
 
-def test_sql_table_service_ranks_by_generic_table_and_column_matches() -> None:
-    service = SQLTableService.__new__(SQLTableService)
-    candidates = [
-        _table("orders", ["customer", "amount", "month"]),
-        _table("instrument_snapshot", ["ticker", "sector", "market_value"]),
-        _table("price_history", ["ticker", "close_price", "trade_date"]),
-        _table("news_impact", ["ticker", "headline", "impact_score"]),
-    ]
-
-    ranked = service._rank_candidates(
-        "show portfolio risk and finance trend by customer amount",
-        candidates,
-    )
-
-    assert ranked[0].table_name == "orders"
-    assert SQLTableService._score_table_candidate(
-        "portfolio risk finance market news",
-        _table("instrument_snapshot", ["ticker", "sector"]),
-    ) == 0
-
-
 def test_general_analytics_declares_default_tabular_workflow() -> None:
     text = Path("skills/general_analytics/SKILL.md").read_text(encoding="utf-8")
 
@@ -75,6 +41,24 @@ def test_general_analytics_declares_default_tabular_workflow() -> None:
     assert "default workflow" in text.lower()
     assert "CSV/XLSX" in text
     assert "DuckDB" in text
+    assert "The plan is not an answer" in text
+    assert "main agent reasoning" in text
+
+
+def test_general_analytics_recovers_without_reusing_bad_intermediate_results() -> None:
+    text = Path("skills/general_analytics/SKILL.md").read_text(encoding="utf-8")
+
+    assert "Never use preview, head, sample, or limited rows as the analysis dataset" in text
+    assert "complete non-overlapping partitions" in text
+    assert "add a chart" in text
+    assert "materially improves" in text
+    assert "Explicit chart bans win" in text
+    assert "answer immediately" in text
+    assert "Do not repeat an equivalent successful call that returned an empty candidate" in text
+    assert "Never combine mutually exclusive scenario rows" in text
+    assert "roll-up" in text
+    assert "components" in text
+    assert "Keep the intervention distinct from the problem and KPI" in text
 
 
 def test_data_quality_audit_materializes_source_before_pandas() -> None:
@@ -90,7 +74,8 @@ def test_data_quality_audit_materializes_source_before_pandas() -> None:
 def test_execution_prompt_keeps_domain_routing_out_of_generic_table() -> None:
     prompt = execution_agent_prompt.lower()
 
-    assert 'get_tool_instructions("<skill_id>")' in prompt
+    assert "semantic capabilities and task outcomes" in prompt
+    assert "active capability catalog" in prompt
 
     moved_domain_tokens = {
         "demo_invest",
@@ -103,3 +88,42 @@ def test_execution_prompt_keeps_domain_routing_out_of_generic_table() -> None:
         "`portfolio_weight_pct`",
     }
     assert moved_domain_tokens.isdisjoint(prompt)
+
+
+def test_fpk_skill_is_domain_reference_not_demo_script() -> None:
+    skill = Path("skills/fpk-management-analysis/SKILL.md").read_text(encoding="utf-8")
+    details = Path("skills/fpk-management-analysis/DETAILS.md").read_text(encoding="utf-8")
+    combined = f"{skill}\n{details}".casefold()
+    metadata = skill.split("---", maxsplit=2)[1].casefold()
+    normalized_skill = " ".join(skill.split()).casefold()
+    normalized_details = " ".join(details.split())
+
+    assert "enabled_by_default: false" in metadata
+    assert "triggers:" not in metadata
+    assert "terminal_artifacts" not in combined
+    assert re.search(r"(?im)^```(?:sql|python)\b", combined) is None
+    assert re.search(r"(?im)^#{2,}\s+\d+[.)]\s+", details) is None
+
+    required_skill_contracts = (
+        "рабочий план в основном цикле",
+        "`rag_tool`",
+        "capability `forecast`",
+        "связанный с ней инструмент",
+        "Период, зерно, разрезы",
+        "семантического слоя",
+        "явного сообщения пользователя",
+    )
+    assert all(contract in skill for contract in required_skill_contracts)
+    assert "не смешивать" in normalized_skill
+    assert all(token in skill for token in ("`plan`", "`fact`", "`forecast`"))
+    assert all(
+        f"`demo_fpk.{table}`" in skill for table in ("stat_stats", "stat_csi", "stat_isoo", "stat_manual")
+    )
+    assert "`шифр` — код темы" in skill
+    assert "не соединять `шифр`" in skill
+
+    for table in ("stat_stats", "stat_csi", "stat_isoo", "stat_manual"):
+        assert f"## `{table}`" in details
+    assert "## Сопоставление филиалов" in details
+    assert "Дата без филиала не является достаточным ключом соединения." in normalized_details
+    assert "Формулы именованных бизнес-метрик" in details

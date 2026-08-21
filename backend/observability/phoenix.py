@@ -189,6 +189,55 @@ def record_llm_usage_on_active_span(
     return usage
 
 
+def record_agent_outcome_on_active_span(response: Any) -> None:
+    """Reflect embedded tool/contract failures on the active query span."""
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace.status import Status, StatusCode
+    except Exception:
+        return
+
+    span = trace.get_current_span()
+    try:
+        if span is None or not span.is_recording():
+            return
+    except Exception:
+        return
+
+    envelope_valid = bool(getattr(response, "response_envelope_valid", False))
+    task_satisfied = bool(getattr(response, "task_contract_satisfied", False))
+    terminal_status = str(getattr(response, "terminal_status", "failed") or "failed")
+    error_category = str(getattr(response, "error_category", "internal") or "internal")
+    outcomes = list(getattr(response, "capability_outcomes", []) or [])
+    error_count = sum(
+        1
+        for outcome in outcomes
+        if str(outcome.get("status") if isinstance(outcome, dict) else getattr(outcome, "status", ""))
+        == "error"
+    )
+    fingerprints = list(getattr(response, "error_fingerprints", []) or [])
+    span.set_attribute("agent.response_envelope_valid", envelope_valid)
+    span.set_attribute("agent.task_contract_satisfied", task_satisfied)
+    span.set_attribute("agent.contract_valid", task_satisfied)
+    span.set_attribute("agent.terminal_status", terminal_status)
+    span.set_attribute("agent.error_category", error_category)
+    span.set_attribute("agent.tool_error_count", error_count)
+    span.set_attribute("agent.error_fingerprint_count", len(fingerprints))
+    span.set_attribute("agent.retry_count", int(getattr(response, "retry_count", 0) or 0))
+    if terminal_status in {"failed", "unavailable", "cancelled"}:
+        reason = (
+            f"agent outcome={terminal_status}; task_satisfied={task_satisfied}; "
+            f"error_category={error_category}; "
+            f"tool_errors={error_count}; fingerprints={len(fingerprints)}"
+        )
+        span.set_status(Status(StatusCode.ERROR, reason))
+    elif terminal_status == "partial":
+        span.set_attribute("agent.degraded", True)
+        # Partial outcomes are expected recoveries (e.g. useful interim results after retryable errors).
+    else:
+        span.set_status(Status(StatusCode.OK))
+
+
 def _is_phoenix_reachable() -> bool:
     global _connectivity_checked_at, _connectivity_ok
 
@@ -226,8 +275,7 @@ def initialize_phoenix() -> None:
     if not _is_phoenix_reachable():
         if not _connect_warned:
             logger.warning(
-                "Phoenix collector '%s' is unreachable. Tracing is disabled until "
-                "connectivity is restored.",
+                "Phoenix collector '%s' is unreachable. Tracing is disabled until connectivity is restored.",
                 settings.phoenix_collector_endpoint,
             )
             _connect_warned = True
@@ -244,8 +292,7 @@ def initialize_phoenix() -> None:
         except Exception as exc:
             if not _import_warned:
                 logger.warning(
-                    "Phoenix instrumentation packages are unavailable (%s). "
-                    "Tracing is disabled.",
+                    "Phoenix instrumentation packages are unavailable (%s). Tracing is disabled.",
                     exc,
                 )
                 _import_warned = True
@@ -331,6 +378,7 @@ def query_trace_context(
 
     try:
         from openinference.instrumentation import using_attributes
+        from opentelemetry import trace
     except Exception:
         yield
         return
@@ -368,6 +416,10 @@ def query_trace_context(
         metadata=metadata,
         tags=tags,
     ):
-        yield
-
-
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span("agent.query") as span:
+            span.set_attribute("session.id", session_id)
+            span.set_attribute("user.id", str(user_id))
+            for key, value in metadata.items():
+                span.set_attribute(f"metadata.{key}", value)
+            yield

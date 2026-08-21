@@ -17,6 +17,8 @@ import type {
   OpenProjectProjectsResponse,
   OpenProjectSyncRequest,
   OpenProjectSyncResponse,
+  PlanfactConfirmResponse,
+  PlanfactDetectResponse,
   PhaseEvent,
   PhoenixOverview,
   PhoenixTraceDetail,
@@ -36,6 +38,8 @@ import type {
   SemanticMetricPayload,
   SemanticRelationship,
   SemanticRelationshipPayload,
+  SemanticScenarioApplyResponse,
+  SemanticScenarioReview,
   SemanticTerm,
   SemanticTermPayload,
   SessionState,
@@ -75,7 +79,10 @@ async function assertOk(response: Response): Promise<void> {
     return;
   }
   const body = await parseJsonSafe(response);
-  throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
+  const detail = typeof body === "object" && body !== null && Object.hasOwn(body, "detail")
+    ? (body as { detail?: unknown }).detail
+    : null;
+  throw new Error(typeof detail === "string" ? detail : `HTTP ${response.status}: ${JSON.stringify(body)}`);
 }
 
 export function getStoredToken(): string | null {
@@ -309,6 +316,19 @@ export async function updateAdminMcpServer(
   return (await response.json()) as AdminMCPServerConfig;
 }
 
+export async function testAdminMcpServer(
+  serverId: string,
+  payload: Partial<AdminMCPServerPayload>,
+): Promise<void> {
+  const { server_id: _serverId, ...body } = payload;
+  const response = await authFetch(`/admin/mcp/servers/${encodeURIComponent(serverId)}/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await assertOk(response);
+}
+
 export async function deleteAdminMcpServer(serverId: string): Promise<void> {
   const response = await authFetch(
     `/admin/mcp/servers/${encodeURIComponent(serverId)}`,
@@ -424,6 +444,26 @@ export async function getSemanticCatalog(sessionId: string): Promise<SemanticCat
   return (await response.json()) as SemanticCatalog;
 }
 
+export async function getConnectionSemanticCatalog(connectionId: string): Promise<SemanticCatalog> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog`);
+  await assertOk(response);
+  return (await response.json()) as SemanticCatalog;
+}
+
+export async function clearSemanticCatalog(sessionId: string): Promise<void> {
+  const response = await authFetch(`/sessions/${sessionId}/semantic-catalog`, {
+    method: "DELETE",
+  });
+  await assertOk(response);
+}
+
+export async function clearConnectionSemanticCatalog(connectionId: string): Promise<void> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog`, {
+    method: "DELETE",
+  });
+  await assertOk(response);
+}
+
 export async function getSemanticCatalogStatus(
   sessionId: string,
 ): Promise<SemanticCatalogStatusResponse> {
@@ -432,12 +472,42 @@ export async function getSemanticCatalogStatus(
   return (await response.json()) as SemanticCatalogStatusResponse;
 }
 
-export async function refreshSemanticCatalog(sessionId: string): Promise<SemanticCatalog> {
+export async function getConnectionSemanticCatalogStatus(
+  connectionId: string,
+): Promise<SemanticCatalogStatusResponse> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog/status`);
+  await assertOk(response);
+  return (await response.json()) as SemanticCatalogStatusResponse;
+}
+
+export async function refreshSemanticCatalog(
+  sessionId: string,
+): Promise<SemanticCatalogGenerationAcceptedResponse> {
   const response = await authFetch(`/sessions/${sessionId}/semantic-catalog/refresh`, {
     method: "POST",
   });
   await assertOk(response);
-  return (await response.json()) as SemanticCatalog;
+  return (await response.json()) as SemanticCatalogGenerationAcceptedResponse;
+}
+
+export async function buildConnectionSemanticCatalog(
+  connectionId: string,
+): Promise<SemanticCatalogGenerationAcceptedResponse> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog/build`, {
+    method: "POST",
+  });
+  await assertOk(response);
+  return (await response.json()) as SemanticCatalogGenerationAcceptedResponse;
+}
+
+export async function refreshConnectionSemanticCatalog(
+  connectionId: string,
+): Promise<SemanticCatalogGenerationAcceptedResponse> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog/refresh`, {
+    method: "POST",
+  });
+  await assertOk(response);
+  return (await response.json()) as SemanticCatalogGenerationAcceptedResponse;
 }
 
 export async function generateSemanticCatalog(
@@ -466,11 +536,60 @@ export async function startSemanticCatalogGeneration(
   return (await response.json()) as SemanticCatalogGenerationAcceptedResponse;
 }
 
+export async function analyzeSemanticScenarios(
+  sessionId: string,
+  title: string,
+  questions: string[],
+): Promise<SemanticScenarioReview> {
+  const response = await authFetch(`/sessions/${sessionId}/semantic-catalog/scenario-reviews`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, questions }),
+  });
+  await assertOk(response);
+  return (await response.json()) as SemanticScenarioReview;
+}
+
+export async function applySemanticScenarioReview(
+  sessionId: string,
+  review: SemanticScenarioReview,
+  proposalIds: string[],
+): Promise<SemanticScenarioApplyResponse> {
+  const reviewId = encodeURIComponent(review.review_id);
+  const response = await authFetch(
+    `/sessions/${sessionId}/semantic-catalog/scenario-reviews/${reviewId}/apply`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        proposal_ids: proposalIds,
+        expected_review_version: review.review_version,
+        expected_source_fingerprint: review.source_fingerprint,
+      }),
+    },
+  );
+  await assertOk(response);
+  return (await response.json()) as SemanticScenarioApplyResponse;
+}
+
 export async function createSemanticMetric(
   sessionId: string,
   payload: SemanticMetricPayload,
 ): Promise<SemanticMetric> {
   const response = await authFetch(`/sessions/${sessionId}/semantic-catalog/metrics`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await assertOk(response);
+  return (await response.json()) as SemanticMetric;
+}
+
+export async function createConnectionSemanticMetric(
+  connectionId: string,
+  payload: SemanticMetricPayload,
+): Promise<SemanticMetric> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog/metrics`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -496,9 +615,75 @@ export async function updateSemanticMetric(
   return (await response.json()) as SemanticMetric;
 }
 
+export async function updateConnectionSemanticMetric(
+  connectionId: string,
+  metricId: string,
+  payload: Partial<SemanticMetricPayload> & { is_active?: boolean },
+): Promise<SemanticMetric> {
+  const response = await authFetch(
+    `/db-connections/${connectionId}/semantic-catalog/metrics/${encodeURIComponent(metricId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  await assertOk(response);
+  return (await response.json()) as SemanticMetric;
+}
+
 export async function deleteSemanticMetric(sessionId: string, metricId: string): Promise<void> {
   const response = await authFetch(
     `/sessions/${sessionId}/semantic-catalog/metrics/${encodeURIComponent(metricId)}`,
+    { method: "DELETE" },
+  );
+  await assertOk(response);
+}
+
+export async function deleteConnectionSemanticMetric(connectionId: string, metricId: string): Promise<void> {
+  const response = await authFetch(
+    `/db-connections/${connectionId}/semantic-catalog/metrics/${encodeURIComponent(metricId)}`,
+    { method: "DELETE" },
+  );
+  await assertOk(response);
+}
+
+export async function createConnectionSemanticRelationship(
+  connectionId: string,
+  payload: SemanticRelationshipPayload,
+): Promise<SemanticRelationship> {
+  const response = await authFetch(`/db-connections/${connectionId}/semantic-catalog/relationships`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await assertOk(response);
+  return (await response.json()) as SemanticRelationship;
+}
+
+export async function updateConnectionSemanticRelationship(
+  connectionId: string,
+  relationshipId: string,
+  payload: Partial<SemanticRelationshipPayload>,
+): Promise<SemanticRelationship> {
+  const response = await authFetch(
+    `/db-connections/${connectionId}/semantic-catalog/relationships/${encodeURIComponent(relationshipId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  await assertOk(response);
+  return (await response.json()) as SemanticRelationship;
+}
+
+export async function deleteConnectionSemanticRelationship(
+  connectionId: string,
+  relationshipId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/db-connections/${connectionId}/semantic-catalog/relationships/${encodeURIComponent(relationshipId)}`,
     { method: "DELETE" },
   );
   await assertOk(response);
@@ -672,6 +857,37 @@ export async function uploadTabularFiles(
   });
   await assertOk(response);
   return (await response.json()) as BatchUploadResponse;
+}
+
+export async function detectPlanfactSource(
+  sessionId: string,
+  planFile: File,
+  factFile: File,
+  mappingFile?: File | null,
+): Promise<PlanfactDetectResponse> {
+  const formData = new FormData();
+  formData.append("plan_file", planFile);
+  formData.append("fact_file", factFile);
+  if (mappingFile) formData.append("mapping_file", mappingFile);
+  const response = await authFetch(`/sessions/${sessionId}/source/planfact/detect`, {
+    method: "POST",
+    body: formData,
+  });
+  await assertOk(response);
+  return (await response.json()) as PlanfactDetectResponse;
+}
+
+export async function confirmPlanfactSource(
+  sessionId: string,
+  config: Record<string, unknown>,
+): Promise<PlanfactConfirmResponse> {
+  const response = await authFetch(`/sessions/${sessionId}/source/planfact/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  await assertOk(response);
+  return (await response.json()) as PlanfactConfirmResponse;
 }
 
 export async function uploadCsv(sessionId: string, file: File): Promise<void> {
@@ -858,6 +1074,7 @@ type ToolEvent = {
   input_preview?: string;
   input_summary?: string;
   input_code?: string;
+  pre_text?: string;
   output_preview?: string;
   result_summary?: string;
   status?: string;
@@ -963,6 +1180,7 @@ export async function streamQuery(
   signal?: AbortSignal,
   analysisDepth?: string,
   selectedSkillIds?: string[],
+  requestedToolKey?: string,
 ): Promise<void> {
   const body = buildQueryPayload(
     query,
@@ -970,6 +1188,7 @@ export async function streamQuery(
     useHistory,
     analysisDepth,
     selectedSkillIds,
+    requestedToolKey,
   );
   const response = await authFetch(`/sessions/${sessionId}/query/stream`, {
     method: "POST",
@@ -1032,6 +1251,7 @@ function buildQueryPayload(
   useHistory: boolean,
   analysisDepth?: string,
   selectedSkillIds?: string[],
+  requestedToolKey?: string,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     query,
@@ -1041,9 +1261,8 @@ function buildQueryPayload(
   if (analysisDepth) {
     body.analysis_depth = analysisDepth;
   }
-  if (selectedSkillIds && selectedSkillIds.length > 0) {
-    body.selected_skill_ids = selectedSkillIds;
-  }
+  body.selected_skill_ids = selectedSkillIds ?? [];
+  body.requested_tool_key = requestedToolKey ?? null;
   return body;
 }
 
@@ -1057,6 +1276,7 @@ export async function exportBoardReport(
   artifacts: ArtifactPayload[],
   title: string,
   sections: BoardExportSectionPayload[] = [],
+  sessionId?: string,
 ): Promise<void> {
   const response = await authFetch("/reports/board-export", {
     method: "POST",
@@ -1066,6 +1286,7 @@ export async function exportBoardReport(
       title,
       artifacts,
       sections,
+      session_id: sessionId || null,
     }),
   });
 

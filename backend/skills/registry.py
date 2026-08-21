@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from backend.instructions import InstructionMarkdownError, read_instruction_document
-from backend.skills.contracts import SkillExecutionRequirement, parse_skill_execution_contract
 from backend.skills.models import (
     Skill,
     SkillExample,
@@ -88,8 +87,7 @@ class SkillRegistry:
     def reload_skill(self, skill_id: str) -> Skill | None:
         self.load()
         skill_dir_candidates = [
-            d for d in self.skills_dir.iterdir()
-            if d.is_dir() and (d / "SKILL.md").exists()
+            d for d in self.skills_dir.iterdir() if d.is_dir() and (d / "SKILL.md").exists()
         ]
         for skill_dir in skill_dir_candidates:
             skill_md = skill_dir / "SKILL.md"
@@ -123,15 +121,9 @@ class SkillRegistry:
     def _merge_override(base: Skill, override: SkillOverride) -> Skill:
         new_meta = dict(base.metadata)
         new_meta["overridden"] = True
-        core_markdown = (
-            override.core_markdown
-            if override.core_markdown is not None
-            else base.core_markdown
-        )
+        core_markdown = override.core_markdown if override.core_markdown is not None else base.core_markdown
         details_markdown = (
-            override.details_markdown
-            if override.details_markdown is not None
-            else base.details_markdown
+            override.details_markdown if override.details_markdown is not None else base.details_markdown
         )
         return Skill(
             skill_id=base.skill_id,
@@ -146,7 +138,6 @@ class SkillRegistry:
             kind=base.kind,
             tool_key=base.tool_key,
             enabled_by_default=base.enabled_by_default,
-            execution_contract=parse_skill_execution_contract(core_markdown),
         )
 
     def list_skills(self) -> tuple[Skill, ...]:
@@ -191,36 +182,6 @@ class SkillRegistry:
             seen.add(normalized)
         return tuple(resolved)
 
-    def execution_requirements_for_prompt(
-        self,
-        *,
-        selected_skill_ids: list[str] | tuple[str, ...] | None,
-        enabled_skill_ids: set[str] | frozenset[str] | None = None,
-    ) -> tuple[SkillExecutionRequirement, ...]:
-        allow = (
-            {str(skill_id).strip() for skill_id in enabled_skill_ids if str(skill_id).strip()}
-            if enabled_skill_ids is not None
-            else None
-        )
-        selected = [
-            skill
-            for skill in self.resolve_selection(selected_skill_ids)
-            if allow is None or skill.kind != "analytical" or skill.skill_id in allow
-        ]
-        requirements: list[SkillExecutionRequirement] = []
-        seen: set[str] = set()
-        for skill in selected:
-            if skill.skill_id in seen or skill.execution_contract.is_empty:
-                continue
-            seen.add(skill.skill_id)
-            requirements.append(
-                SkillExecutionRequirement(
-                    skill_id=skill.skill_id,
-                    execution_contract=skill.execution_contract,
-                )
-            )
-        return tuple(requirements)
-
     def build_prompt_block(
         self,
         selected_skill_ids: list[str] | tuple[str, ...] | None,
@@ -255,7 +216,6 @@ class SkillRegistry:
             lines.append("")
         return "\n".join(lines).strip()
 
-
     def build_analytical_skills_brief_block(
         self,
         *,
@@ -263,18 +223,14 @@ class SkillRegistry:
     ) -> str:
         """Analytical skills prompt section — brief list only.
 
-        Skills are never auto-expanded inline. The agent must always call
-        ``get_tool_instructions(skill_id)`` to receive the full step-by-step
-        algorithm as a tool result. This prevents the agent from reading code
-        examples in the system prompt and hallucinating results instead of
-        actually executing the tools.
+        Skills are never auto-expanded inline. The agent can call
+        ``get_tool_instructions(skill_id)`` when a specialized method is needed;
+        the base workflow is already present in the execution prompt.
 
         - If *enabled_skill_ids* is provided, only those analytical skills are listed.
         """
         self.load()
-        analytical_skills = [
-            skill for skill in self._skills_by_id.values() if skill.kind == "analytical"
-        ]
+        analytical_skills = [skill for skill in self._skills_by_id.values() if skill.kind == "analytical"]
         if enabled_skill_ids is not None:
             allow = {str(sid).strip() for sid in enabled_skill_ids if str(sid).strip()}
             analytical_skills = [s for s in analytical_skills if s.skill_id in allow]
@@ -284,12 +240,11 @@ class SkillRegistry:
         lines = [
             "## Аналитические скилы",
             "",
-            "ОБЯЗАТЕЛЬНО: для CSV/XLSX/DuckDB/БД/session artifacts первым аналитическим "
-            "tool-вызовом загрузи `get_tool_instructions(\"general_analytics\")`. "
-            "Если после этого запрос совпадает с триггерами одного из методов ниже — "
-            "вызови `get_tool_instructions(skill_id)` и получи пошаговый алгоритм. "
-            "Затем выполняй каждый шаг алгоритма вызовами tools. "
-            "Не начинай анализ без инструкций. Не синтезируй результаты без tool output.",
+            "Базовый аналитический workflow уже есть в активном prompt. "
+            "Вызывай `get_tool_instructions(skill_id)` только когда нужен специализированный "
+            "метод или конкретная деталь, которой нет в текущем контексте. "
+            "Не загружай `general_analytics` рутинно перед каждым SQL. "
+            "Не синтезируй результаты без tool output.",
             "",
         ]
         for skill in analytical_skills:
@@ -300,7 +255,6 @@ class SkillRegistry:
             lines.append(f"- `{skill.skill_id}`: {skill.description}{triggers_hint}")
 
         return "\n".join(lines).strip()
-
 
     def _lint_core_markdown(self, path: Path, core: str, kind: str) -> None:
         """Validate core markdown structure and content limits."""
@@ -313,9 +267,7 @@ class SkillRegistry:
                 )
         if kind == "tool":
             if "### API" not in core:
-                raise SkillValidationError(
-                    f"{path.name}: tool skill missing '### API' section."
-                )
+                raise SkillValidationError(f"{path.name}: tool skill missing '### API' section.")
             if "### Final result protocol" not in core:
                 raise SkillValidationError(
                     f"{path.name}: tool skill missing '### Final result protocol' section."
@@ -368,5 +320,4 @@ class SkillRegistry:
             kind=kind,
             tool_key=instruction_metadata.tool_key,
             enabled_by_default=instruction_metadata.enabled_by_default,
-            execution_contract=parse_skill_execution_contract(body),
         )

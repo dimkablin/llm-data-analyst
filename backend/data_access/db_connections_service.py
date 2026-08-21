@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, status
+from psycopg.errors import UniqueViolation
 
 from backend.auth.auth_db import AuthDB, DBConnectionRecord
 from backend.core.config import Settings
@@ -233,7 +234,7 @@ class DBConnectionsService:
                 username=self._normalize_optional_text(username),
                 options_json=normalized_options,
             )
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, UniqueViolation) as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists."
             ) from exc
@@ -280,7 +281,7 @@ class DBConnectionsService:
                 options_json=self._normalize_options_json(options_json),
                 options_json_set=options_json_set,
             )
-        except sqlite3.IntegrityError as exc:
+        except (sqlite3.IntegrityError, UniqueViolation) as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="Connection name already exists."
             ) from exc
@@ -296,6 +297,13 @@ class DBConnectionsService:
     def delete_connection(self, user_id: int, connection_id: str) -> None:
         deleted = self.auth_db.delete_db_connection(user_id, connection_id)
         if not deleted:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found.")
+
+    def grant_access(self, user_id: int, connection_id: str, grantee_user_id: int) -> None:
+        if grantee_user_id == user_id:
+            return
+        granted = self.auth_db.grant_db_connection_access(user_id, connection_id, grantee_user_id)
+        if not granted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DB connection not found.")
 
     def resolve_connection_for_runtime(

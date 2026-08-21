@@ -14,7 +14,8 @@ import pandas as pd
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
-from backend.agent.models import AgentResponse
+from backend.agent.anomaly_guard import check_numeric_consistency
+from backend.agent.models import AgentOutcome, AgentResponse, ErrorCategory
 from backend.agent.reasoning import MAX_REASONING_STEPS, ReasoningStep
 from backend.agent.runtime_contracts import AgentRunRequest
 from backend.agent.runtime_llm import build_runtime_llm
@@ -29,10 +30,7 @@ from backend.core.config import Settings
 from backend.core.config import settings as default_settings
 from backend.core.json_utils import make_json_safe
 from backend.core.public_identity import display_model_name
-from backend.data_access.catalog_refresh import (
-    attach_catalog_to_session_source,
-    refresh_session_catalog,
-)
+from backend.data_access.catalog_refresh import attach_catalog_to_session_source
 from backend.data_access.csv_runtime_state_service import (
     CSVRuntimeStateError,
     CSVRuntimeStateService,
@@ -42,10 +40,11 @@ from backend.data_access.db_runtime_service import DBRuntimeService
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
-from backend.integrations.search import SearchIntegrationService
 from backend.mcp.models import MCPServerConfig, MCPToolDescriptor
 from backend.mcp.service import MCPServerService, MCPToolProvider
 from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.session_source import is_duckdb_source_type
+from backend.observability.phoenix import record_agent_outcome_on_active_span
 from backend.sessions.session_store import SessionState, SessionStore
 from backend.skills import SkillSelectionError
 from backend.skills.registry import SkillRegistry
@@ -54,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 INTERRUPTED_STREAM_TEXT = "Остановлено пользователем."
 
+
 class QueryExecutionDependencies(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -61,7 +61,6 @@ class QueryExecutionDependencies(BaseModel):
     store: SessionStore
     skill_registry: SkillRegistry
     db_runtime_service: SkipValidation[DBRuntimeService | None]
-    search_integration_service: SkipValidation[SearchIntegrationService]
     forecast_integration_service: SkipValidation[ForecastIntegrationService]
     anomaly_planfact_integration_service: SkipValidation[AnomalyPlanfactIntegrationService]
     rag_service: SkipValidation[RAGService]
@@ -72,6 +71,7 @@ class QueryExecutionDependencies(BaseModel):
     csv_runtime: CSVSessionRuntime
     manifest_store: ManifestStore
     storage_dir: Path
+    blob_store: SkipValidation[Any | None] = None
     llm_text_collector_cls: Callable[..., Any]
     tool_collector_cls: Callable[..., Any]
     build_stream_callbacks_fn: Callable[..., tuple[list[Any], Any, Any, Any, Any]] | None = None
@@ -80,6 +80,8 @@ class QueryExecutionDependencies(BaseModel):
     build_tool_catalog_fn: Callable[..., list[dict[str, Any]]]
     mcp_service: SkipValidation[MCPServerService | None] = None
     semantic_context_builder: SkipValidation[Any | None] = None
+    semantic_catalog_service: SkipValidation[Any | None] = None
+    semantic_generation_service: SkipValidation[Any | None] = None
 
 
 class MCPRuntimeContext(BaseModel):
@@ -115,6 +117,7 @@ class QueryStreamExecutionContext(BaseModel):
     request: QueryStreamExecutionRequest
     state: SessionState
     selected_skill_ids: list[str]
+    requested_tool_key: str | None = None
     df: pd.DataFrame | None = None
     session_source: dict[str, Any]
     session_db_connection_id: str | None = None
@@ -125,6 +128,7 @@ class QueryStreamExecutionContext(BaseModel):
     query_runtime: Any
     show_thinking: bool
     started_at: float
+    query_lease: SkipValidation[Any | None] = None
 
 
 class PreparedAgentRuntime(BaseModel):
@@ -132,6 +136,7 @@ class PreparedAgentRuntime(BaseModel):
 
     state: SessionState
     selected_skill_ids: list[str]
+    requested_tool_key: str | None = None
     df: pd.DataFrame | None = None
     session_source: dict[str, Any]
     session_db_connection_id: str | None = None
@@ -151,6 +156,13 @@ class QueryExecutionService(BaseModel):
     dependencies: QueryExecutionDependencies
 
     async def execute(self, request: QueryExecutionRequest) -> QueryResponse:
+        lease = self.dependencies.store.acquire_query_lease(request.session_id)
+        try:
+            return await self._execute_locked(request)
+        finally:
+            lease.release()
+
+    async def _execute_locked(self, request: QueryExecutionRequest) -> QueryResponse:
         deps = self.dependencies
         request_kind = "query" if request.persist else "evaluate"
         prepared = self._prepare_agent_runtime(
@@ -159,7 +171,6 @@ class QueryExecutionService(BaseModel):
             current_user=request.current_user,
             request_kind=request_kind,
         )
-
         from backend.artifacts.execution import ExecutionStore
 
         exec_store = ExecutionStore(session_id=request.session_id)
@@ -167,9 +178,21 @@ class QueryExecutionService(BaseModel):
         tool_collector = deps.tool_collector_cls(
             source_context=prepared.session_source,
             execution_store=exec_store,
+            artifact_sink=(
+                lambda artifacts: (
+                    deps.store.add_artifacts(
+                        request.session_id,
+                        artifacts,
+                        user_id=request.current_user.id,
+                    )
+                    if request.persist
+                    else None
+                )
+            ),
         )
         active_callbacks = list(request.callbacks)
         active_callbacks.extend([text_collector, tool_collector])
+        cancel_event = threading.Event()
 
         try:
             with deps.query_trace_context_fn(
@@ -198,12 +221,17 @@ class QueryExecutionService(BaseModel):
                             trace_context=prepared.trace_context,
                             session_source=prepared.session_source,
                             selected_skill_ids=prepared.selected_skill_ids,
+                            requested_tool_key=prepared.requested_tool_key,
+                            cancel_event=cancel_event,
                         ),
+                        abandon_on_cancel=True,
                     )
                     response = run_result.response
+                    record_agent_outcome_on_active_span(response)
         except SkillSelectionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except TimeoutError:
+            cancel_event.set()
             return self._fallback(
                 request=request,
                 reason="timeout",
@@ -230,6 +258,12 @@ class QueryExecutionService(BaseModel):
             runtime_settings=prepared.runtime_settings,
         )
         artifacts = self._serialize_execution_artifacts(response.artifacts)
+        anomaly_check = self._anomaly_check(
+            request.current_user.id,
+            response.final_text,
+            artifacts,
+            request.payload.query,
+        )
         duration_ms = int((time.perf_counter() - prepared.started_at) * 1000)
         effective_reasoning = self._build_reasoning_trace(
             response_text=response.final_text,
@@ -249,8 +283,15 @@ class QueryExecutionService(BaseModel):
                 response.final_text,
                 artifacts=artifacts,
                 reasoning=effective_reasoning,
+                anomaly_check=anomaly_check,
             )
-            deps.store.add_artifacts(request.session_id, response.artifacts)
+            self._persist_uncollected_artifacts(
+                store=deps.store,
+                session_id=request.session_id,
+                user_id=request.current_user.id,
+                artifacts=response.artifacts,
+                tool_collector=tool_collector,
+            )
             self._persist_context_usage_snapshot(
                 deps.store,
                 request.session_id,
@@ -269,12 +310,27 @@ class QueryExecutionService(BaseModel):
             artifacts,
             duration_ms,
             prepared.runtime_settings.llm_model,
+            llm_duration_ms=int(getattr(text_collector, "llm_duration_ms", 0)),
+            llm_calls=int(getattr(text_collector, "llm_calls", 0)),
             is_admin=request.current_user.is_admin,
             include_reasoning=request.payload.include_reasoning,
             force_reasoning=request.persist,
+            agent_response=response,
+            anomaly_check=anomaly_check,
         )
 
     async def stream_events(
+        self,
+        context: QueryStreamExecutionContext,
+    ):
+        try:
+            async for event in self._stream_events_locked(context):
+                yield event
+        finally:
+            if context.query_lease is not None:
+                context.query_lease.release()
+
+    async def _stream_events_locked(
         self,
         context: QueryStreamExecutionContext,
     ):
@@ -282,6 +338,7 @@ class QueryExecutionService(BaseModel):
         request = context.request
         state = context.state
         selected_skill_ids = context.selected_skill_ids
+        requested_tool_key = context.requested_tool_key
         df = context.df
         session_source = context.session_source
         session_db_connection_id = context.session_db_connection_id
@@ -315,6 +372,11 @@ class QueryExecutionService(BaseModel):
                 show_thinking=context.show_thinking,
             )
         )
+        tool_collector.artifact_sink = lambda artifacts: deps.store.add_artifacts(
+            request.session_id,
+            artifacts,
+            user_id=request.current_user.id,
+        )
 
         def persist_interrupted_once() -> None:
             nonlocal partial_persisted
@@ -323,6 +385,7 @@ class QueryExecutionService(BaseModel):
             try:
                 partial_persisted = self._persist_interrupted_stream_turn(
                     session_id=request.session_id,
+                    user_id=request.current_user.id,
                     query_text=request.payload.query,
                     token_collector=token_collector,
                     tool_collector=tool_collector,
@@ -366,10 +429,13 @@ class QueryExecutionService(BaseModel):
                                 trace_context=trace_context,
                                 session_source=session_source,
                                 selected_skill_ids=selected_skill_ids,
+                                requested_tool_key=requested_tool_key,
                                 cancel_event=cancel_event,
                             ),
+                            abandon_on_cancel=True,
                         )
                         response = run_result.response
+                        record_agent_outcome_on_active_span(response)
                 if client_cancelled.is_set():
                     return
                 self._persist_runtime_effects(
@@ -395,6 +461,12 @@ class QueryExecutionService(BaseModel):
                     ordered_start_names,
                 )
                 artifacts = self._serialize_execution_artifacts(response.artifacts)
+                anomaly_check = self._anomaly_check(
+                    request.current_user.id,
+                    response.final_text,
+                    artifacts,
+                    request.payload.query,
+                )
                 try:
                     effective_reasoning = self._build_reasoning_trace(
                         response_text=response.final_text,
@@ -419,8 +491,15 @@ class QueryExecutionService(BaseModel):
                         reasoning=effective_reasoning,
                         reasoning_steps=[step.to_dict() for step in reasoning_steps] or None,
                         tools=tool_collector.to_persisted_activities() or None,
+                        anomaly_check=anomaly_check,
                     )
-                    deps.store.add_artifacts(request.session_id, response.artifacts)
+                    self._persist_uncollected_artifacts(
+                        store=deps.store,
+                        session_id=request.session_id,
+                        user_id=request.current_user.id,
+                        artifacts=response.artifacts,
+                        tool_collector=tool_collector,
+                    )
                     self._persist_context_usage_snapshot(
                         deps.store,
                         request.session_id,
@@ -450,9 +529,31 @@ class QueryExecutionService(BaseModel):
                     artifacts,
                     duration_ms,
                     runtime_settings.llm_model,
+                    llm_duration_ms=int(
+                        getattr(
+                            next(
+                                (callback for callback in callbacks if hasattr(callback, "llm_duration_ms")),
+                                None,
+                            ),
+                            "llm_duration_ms",
+                            0,
+                        )
+                    ),
+                    llm_calls=int(
+                        getattr(
+                            next(
+                                (callback for callback in callbacks if hasattr(callback, "llm_calls")),
+                                None,
+                            ),
+                            "llm_calls",
+                            0,
+                        )
+                    ),
                     is_admin=request.current_user.is_admin,
                     include_reasoning=request.payload.include_reasoning,
                     force_reasoning=True,
+                    agent_response=response,
+                    anomaly_check=anomaly_check,
                 ).model_dump()
                 if persistence_failed:
                     final_payload["persistence_failed"] = True
@@ -466,6 +567,7 @@ class QueryExecutionService(BaseModel):
                 await queue.put(("error", {"detail": str(exc)}))
                 return
             except TimeoutError:
+                cancel_event.set()
                 if client_cancelled.is_set():
                     return
                 duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -478,6 +580,15 @@ class QueryExecutionService(BaseModel):
                     is_admin=request.current_user.is_admin,
                     include_reasoning=request.payload.include_reasoning,
                     force_reasoning=True,
+                )
+                record_agent_outcome_on_active_span(
+                    AgentResponse(
+                        final_text=fallback_payload.text,
+                        reasoning=fallback_payload.reasoning,
+                        artifacts=[],
+                        route="analysis",
+                        outcome=AgentOutcome.unavailable(ErrorCategory.TRANSPORT),
+                    )
                 )
                 self._persist_fallback_response(
                     request.session_id,
@@ -505,6 +616,15 @@ class QueryExecutionService(BaseModel):
                     is_admin=request.current_user.is_admin,
                     include_reasoning=request.payload.include_reasoning,
                     force_reasoning=True,
+                )
+                record_agent_outcome_on_active_span(
+                    AgentResponse(
+                        final_text=fallback_payload.text,
+                        reasoning=fallback_payload.reasoning,
+                        artifacts=[],
+                        route="analysis",
+                        outcome=AgentOutcome.failed(ErrorCategory.INTERNAL),
+                    )
                 )
                 self._persist_fallback_response(
                     request.session_id,
@@ -594,31 +714,38 @@ class QueryExecutionService(BaseModel):
         request: QueryStreamExecutionRequest,
     ) -> QueryStreamExecutionContext:
         deps = self.dependencies
-        prepared = self._prepare_agent_runtime(
-            session_id=request.session_id,
-            payload=request.payload,
-            current_user=request.current_user,
-            request_kind="stream",
-        )
-        user_stream_settings = deps.auth_db.get_user_settings(request.current_user.id)
-        if deps.build_stream_callbacks_fn is None:
-            raise RuntimeError("Query stream callback builder is not configured")
+        lease = deps.store.acquire_query_lease(request.session_id)
+        try:
+            prepared = self._prepare_agent_runtime(
+                session_id=request.session_id,
+                payload=request.payload,
+                current_user=request.current_user,
+                request_kind="stream",
+            )
+            user_stream_settings = deps.auth_db.get_user_settings(request.current_user.id)
+            if deps.build_stream_callbacks_fn is None:
+                raise RuntimeError("Query stream callback builder is not configured")
 
-        return QueryStreamExecutionContext(
-            request=request,
-            state=prepared.state,
-            selected_skill_ids=prepared.selected_skill_ids,
-            df=prepared.df,
-            session_source=prepared.session_source,
-            session_db_connection_id=prepared.session_db_connection_id,
-            has_active_source=prepared.has_active_source,
-            selected_skill_names=prepared.selected_skill_names,
-            trace_context=prepared.trace_context,
-            runtime_settings=prepared.runtime_settings,
-            query_runtime=prepared.query_runtime,
-            show_thinking=bool(user_stream_settings.show_thinking),
-            started_at=prepared.started_at,
-        )
+            return QueryStreamExecutionContext(
+                request=request,
+                state=prepared.state,
+                selected_skill_ids=prepared.selected_skill_ids,
+                requested_tool_key=prepared.requested_tool_key,
+                df=prepared.df,
+                session_source=prepared.session_source,
+                session_db_connection_id=prepared.session_db_connection_id,
+                has_active_source=prepared.has_active_source,
+                selected_skill_names=prepared.selected_skill_names,
+                trace_context=prepared.trace_context,
+                runtime_settings=prepared.runtime_settings,
+                query_runtime=prepared.query_runtime,
+                show_thinking=bool(user_stream_settings.show_thinking),
+                started_at=prepared.started_at,
+                query_lease=lease,
+            )
+        except Exception:
+            lease.release()
+            raise
 
     def _prepare_agent_runtime(
         self,
@@ -630,12 +757,13 @@ class QueryExecutionService(BaseModel):
     ) -> PreparedAgentRuntime:
         deps = self.dependencies
         state = self._load_owned_session(session_id, current_user)
-        if self._session_source_type(state) == "csv":
+        if is_duckdb_source_type(self._session_source_type(state)):
             state = self._ensure_csv_runtime_state(session_id, state)
 
-        selected_skill_ids = self._filter_selected_skill_ids_for_user(
+        selected_skill_ids = self._validated_selected_skill_ids(
             current_user.id,
-            self._effective_selected_skill_ids(state, payload),
+            state,
+            payload,
         )
         df = self._active_session_dataframe(state, session_id)
         session_source = self._session_runtime_source_payload(state)
@@ -652,6 +780,7 @@ class QueryExecutionService(BaseModel):
             or bool(session_source.get("csv_loaded"))
             or self._session_source_type(state) == "rag"
         )
+        requested_tool_key = str(payload.requested_tool_key or "").strip() or None
         started_at = time.perf_counter()
         deps.auth_db.touch_session(session_id)
         selected_skill_names = self._resolve_skill_names(selected_skill_ids)
@@ -677,7 +806,6 @@ class QueryExecutionService(BaseModel):
         query_runtime = deps.agent_runner_cls(
             runtime_settings,
             db_runtime_service=deps.db_runtime_service,
-            search_service=deps.search_integration_service,
             forecast_service=deps.forecast_integration_service,
             anomaly_planfact_service=deps.anomaly_planfact_integration_service,
             rag_service=deps.rag_service,
@@ -691,10 +819,15 @@ class QueryExecutionService(BaseModel):
             mcp_tool_provider=mcp_runtime.provider,
             mcp_server_configs=mcp_runtime.configs_by_id,
             mcp_tool_descriptors=mcp_runtime.tool_descriptors,
+            semantic_catalog_service=deps.semantic_catalog_service,
+            semantic_generation_service=deps.semantic_generation_service,
+            session_store=deps.store,
+            blob_store=deps.blob_store,
         )
         return PreparedAgentRuntime(
             state=state,
             selected_skill_ids=selected_skill_ids,
+            requested_tool_key=requested_tool_key,
             df=df,
             session_source=session_source,
             session_db_connection_id=session_db_connection_id,
@@ -725,6 +858,18 @@ class QueryExecutionService(BaseModel):
             include_reasoning=request.payload.include_reasoning,
             force_reasoning=request.persist,
         )
+        fallback_agent_response = AgentResponse(
+            final_text=fallback.text,
+            reasoning=fallback.reasoning,
+            artifacts=[],
+            route="analysis",
+            outcome=(
+                AgentOutcome.unavailable(ErrorCategory.TRANSPORT)
+                if reason == "timeout"
+                else AgentOutcome.failed(ErrorCategory.INTERNAL)
+            ),
+        )
+        record_agent_outcome_on_active_span(fallback_agent_response)
         if request.persist:
             self._persist_fallback_response(
                 request.session_id,
@@ -751,7 +896,7 @@ class QueryExecutionService(BaseModel):
     def _session_runtime_source_payload(self, state: SessionState) -> dict[str, Any]:
         payload = self._session_source_payload(state)
         source_type = self._session_source_type(state)
-        if source_type == "csv":
+        if is_duckdb_source_type(source_type):
             payload["csv_loaded"] = bool(state.csv_loaded)
             payload["csv_session_id"] = state.csv_session_id
             payload["csv_table_names"] = list(state.csv_table_names or [])
@@ -780,7 +925,11 @@ class QueryExecutionService(BaseModel):
             return session_source
         payload = dict(session_source)
         try:
-            context = builder.build(session_id=session_id, user_id=user_id, query=query)
+            context = builder.build(
+                session_id=session_id,
+                user_id=user_id,
+                query=query,
+            )
         except Exception as exc:
             logger.warning("Failed to build semantic context: %s", exc)
             payload["semantic_context_status"] = "failed"
@@ -798,7 +947,7 @@ class QueryExecutionService(BaseModel):
         state: SessionState,
     ) -> SessionState:
         deps = self.dependencies
-        if self._session_source_type(state) != "csv":
+        if not is_duckdb_source_type(self._session_source_type(state)):
             return state
         try:
             refreshed = CSVRuntimeStateService(
@@ -806,6 +955,7 @@ class QueryExecutionService(BaseModel):
                 csv_runtime=deps.csv_runtime,
                 manifest_store=deps.manifest_store,
                 storage_dir=deps.storage_dir,
+                blob_store=deps.blob_store,
             ).ensure_csv_runtime(
                 session_id=session_id,
                 ttl_seconds=getattr(
@@ -821,14 +971,6 @@ class QueryExecutionService(BaseModel):
                 status_code=500,
                 detail=f"Failed to initialize CSV runtime: {exc}",
             ) from exc
-        try:
-            refresh_session_catalog(
-                deps.store,
-                session_id,
-                csv_runtime=deps.csv_runtime,
-            )
-        except Exception as exc:
-            logger.warning("Failed to refresh data catalog after CSV runtime init: %s", exc)
         return refreshed
 
     def _active_session_dataframe(
@@ -836,7 +978,7 @@ class QueryExecutionService(BaseModel):
         state: SessionState,
         session_id: str,
     ) -> pd.DataFrame | None:
-        if self._session_source_type(state) != "csv":
+        if not is_duckdb_source_type(self._session_source_type(state)):
             return None
         return self.dependencies.store.get_dataframe(session_id)
 
@@ -862,7 +1004,6 @@ class QueryExecutionService(BaseModel):
     def _integration_source_descriptors(self) -> list[dict[str, Any]]:
         deps = self.dependencies
         return [
-            deps.search_integration_service.source_descriptor(),
             deps.rag_service.source_descriptor(),
             deps.forecast_integration_service.source_descriptor(),
             deps.anomaly_planfact_integration_service.source_descriptor(),
@@ -924,6 +1065,22 @@ class QueryExecutionService(BaseModel):
         allowed_skill_ids = self._enabled_analytical_skill_ids_for_user(user_id)
         return [skill_id for skill_id in selected_skill_ids if skill_id in allowed_skill_ids]
 
+    def _validated_selected_skill_ids(
+        self,
+        user_id: int,
+        state: SessionState,
+        payload: QueryRequest,
+    ) -> list[str]:
+        selected = self._effective_selected_skill_ids(state, payload)
+        allowed = self._enabled_analytical_skill_ids_for_user(user_id)
+        unavailable = [skill_id for skill_id in selected if skill_id not in allowed]
+        if payload.selected_skill_ids is not None and unavailable:
+            raise HTTPException(
+                status_code=422,
+                detail="Selected skill is unavailable: " + ", ".join(unavailable),
+            )
+        return [skill_id for skill_id in selected if skill_id in allowed]
+
     def _resolve_skill_names(self, skill_ids: list[str]) -> str | None:
         if not skill_ids:
             return None
@@ -953,6 +1110,8 @@ class QueryExecutionService(BaseModel):
             agent_inner_recursion_limit=user_runtime.agent_inner_recursion_limit,
             agent_analysis_depth=depth,
             llm_streaming=user_runtime.llm_streaming,
+            anomaly_check_enabled=user_runtime.anomaly_check_enabled,
+            always_use_analysis_plan=user_runtime.always_use_analysis_plan,
         )
         return runtime
 
@@ -1016,6 +1175,7 @@ class QueryExecutionService(BaseModel):
         self,
         *,
         session_id: str,
+        user_id: int,
         query_text: str,
         token_collector: Any,
         tool_collector: Any,
@@ -1080,10 +1240,32 @@ class QueryExecutionService(BaseModel):
             tools=tools or None,
         )
         if getattr(tool_collector, "artifacts", None):
-            deps.store.add_artifacts(session_id, tool_collector.artifacts)
+            self._persist_uncollected_artifacts(
+                store=deps.store,
+                session_id=session_id,
+                user_id=user_id,
+                artifacts=tool_collector.artifacts,
+                tool_collector=tool_collector,
+            )
         self._persist_context_usage_snapshot(deps.store, session_id, callbacks)
         deps.auth_db.update_session_after_reply(session_id, text, auto_title=None)
         return True
+
+    @staticmethod
+    def _persist_uncollected_artifacts(
+        *,
+        store: Any,
+        session_id: str,
+        user_id: int,
+        artifacts: list[Any],
+        tool_collector: Any,
+    ) -> None:
+        persisted_ids = set(getattr(tool_collector, "persisted_artifact_ids", set()) or set())
+        remaining = [
+            artifact for artifact in artifacts if str(getattr(artifact, "id", "")) not in persisted_ids
+        ]
+        if remaining:
+            store.add_artifacts(session_id, remaining, user_id=user_id)
 
     @staticmethod
     def _persist_context_usage_snapshot(
@@ -1116,6 +1298,17 @@ class QueryExecutionService(BaseModel):
                 )
         return serialized
 
+    def _anomaly_check(
+        self,
+        user_id: int,
+        text: str,
+        artifacts: list[dict[str, Any]],
+        source_text: str,
+    ) -> dict[str, Any] | None:
+        if not self.dependencies.auth_db.get_user_settings(user_id).anomaly_check_enabled:
+            return None
+        return check_numeric_consistency(text, artifacts, source_text)
+
     @staticmethod
     def _build_response(
         session_id: str,
@@ -1125,9 +1318,16 @@ class QueryExecutionService(BaseModel):
         duration_ms: int,
         model_name: str,
         *,
+        llm_duration_ms: int = 0,
+        llm_calls: int = 0,
         is_admin: bool = False,
         include_reasoning: bool = False,
         force_reasoning: bool = False,
+        agent_response: AgentResponse | None = None,
+        contract_valid: bool = False,
+        terminal_status: str = "failed",
+        error_category: str = "internal",
+        anomaly_check: dict[str, Any] | None = None,
     ) -> QueryResponse:
         table_count = 0
         plot_count = 0
@@ -1153,8 +1353,12 @@ class QueryExecutionService(BaseModel):
             reasoning=reasoning if (include_reasoning or force_reasoning) else None,
             artifacts=artifacts,
             values=values or None,
+            anomaly_check=anomaly_check,
             metrics=QueryMetrics(
                 duration_ms=duration_ms,
+                llm_duration_ms=llm_duration_ms,
+                non_llm_duration_ms=max(0, duration_ms - llm_duration_ms),
+                llm_calls=llm_calls,
                 artifact_count=len(artifacts),
                 table_count=table_count,
                 plot_count=plot_count,
@@ -1162,6 +1366,30 @@ class QueryExecutionService(BaseModel):
                 json_count=json_count,
                 model=display_model_name(is_admin=is_admin, model=model_name),
             ),
+            response_envelope_valid=(
+                agent_response.response_envelope_valid if agent_response is not None else True
+            ),
+            task_contract_satisfied=(
+                agent_response.task_contract_satisfied if agent_response is not None else contract_valid
+            ),
+            contract_valid=(
+                agent_response.task_contract_satisfied if agent_response is not None else contract_valid
+            ),
+            terminal_status=(
+                agent_response.terminal_status if agent_response is not None else terminal_status
+            ),
+            error_category=(agent_response.error_category if agent_response is not None else error_category),
+            partial_result=(agent_response.partial_result if agent_response is not None else False),
+            capability_outcomes=(
+                [outcome.model_dump(mode="json") for outcome in agent_response.capability_outcomes]
+                if agent_response is not None
+                else []
+            ),
+            error_fingerprints=(
+                list(agent_response.error_fingerprints) if agent_response is not None else []
+            ),
+            retry_count=(agent_response.retry_count if agent_response is not None else 0),
+            tool_error_count=(agent_response.tool_error_count if agent_response is not None else 0),
         )
 
     def _build_fallback_response(
@@ -1191,6 +1419,9 @@ class QueryExecutionService(BaseModel):
             is_admin=is_admin,
             include_reasoning=include_reasoning,
             force_reasoning=force_reasoning,
+            contract_valid=False,
+            terminal_status="unavailable" if reason == "timeout" else "failed",
+            error_category="transport" if reason == "timeout" else "internal",
         )
 
     @staticmethod

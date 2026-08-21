@@ -79,7 +79,10 @@ def _to_settings_response(user_id: int) -> UserSettingsResponse:
         show_think_planning=settings_row.show_think_planning,
         show_think_tool=settings_row.show_think_tool,
         show_think_final=settings_row.show_think_final,
+        always_use_analysis_plan=settings_row.always_use_analysis_plan,
         show_detailed_tool_steps=settings_row.show_detailed_tool_steps,
+        show_rag_errors=settings_row.show_rag_errors,
+        anomaly_check_enabled=settings_row.anomaly_check_enabled,
     )
 
 
@@ -163,7 +166,10 @@ def auth_update_settings(
             show_think_planning=payload.show_think_planning,
             show_think_tool=payload.show_think_tool,
             show_think_final=payload.show_think_final,
+            always_use_analysis_plan=payload.always_use_analysis_plan,
             show_detailed_tool_steps=payload.show_detailed_tool_steps,
+            show_rag_errors=payload.show_rag_errors,
+            anomaly_check_enabled=payload.anomaly_check_enabled,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -188,7 +194,10 @@ def auth_update_settings(
         show_think_planning=updated.show_think_planning,
         show_think_tool=updated.show_think_tool,
         show_think_final=updated.show_think_final,
+        always_use_analysis_plan=updated.always_use_analysis_plan,
         show_detailed_tool_steps=updated.show_detailed_tool_steps,
+        show_rag_errors=updated.show_rag_errors,
+        anomaly_check_enabled=updated.anomaly_check_enabled,
     )
 
 

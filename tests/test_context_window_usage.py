@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -35,6 +36,32 @@ def _loop_messages(
             messages.append(HumanMessage(content=content))
     messages.append(HumanMessage(content=prompt))
     return messages
+
+
+def _tool_exchange(
+    tool_name: str,
+    call_id: str,
+    content: str,
+    *,
+    status: str | None = None,
+) -> list:
+    tool_message = ToolMessage(content=content, name=tool_name, tool_call_id=call_id)
+    if status is not None:
+        tool_message = tool_message.model_copy(update={"status": status})
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": tool_name,
+                    "args": {},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        tool_message,
+    ]
 
 
 def test_context_usage_snapshot_accepts_message_token_counter() -> None:
@@ -237,6 +264,71 @@ def test_trim_context_messages_preserves_latest_tool_exchange_after_large_tool_o
     )
 
 
+def test_trim_context_messages_preserves_only_latest_valid_analysis_plan() -> None:
+    first_plan = json.dumps(
+        {"plan": [{"step": "Inspect the original source", "status": "in_progress"}]}
+    )
+    latest_plan = json.dumps(
+        {
+            "plan": [
+                {"step": "Inspect the discovered relationship", "status": "completed"},
+                {"step": "Calculate the requested comparison", "status": "in_progress"},
+            ]
+        }
+    )
+    messages = [SystemMessage(content="system"), HumanMessage(content="analyze")]
+    for call_id, tool_name, content in [
+        ("plan-1", "update_plan", first_plan),
+        ("sql-1", "sql_tool", "large result " * 200),
+        ("plan-2", "update_plan", latest_plan),
+        ("pandas-1", "pandas_tool", "another result " * 200),
+    ]:
+        messages.extend(_tool_exchange(tool_name, call_id, content))
+
+    trimmed = trim_context_messages(
+        messages,
+        max_input_tokens=45,
+        count_message_tokens=_message_count_tokens,
+    )
+    results = {
+        message.tool_call_id: str(message.content)
+        for message in trimmed
+        if isinstance(message, ToolMessage)
+    }
+
+    assert results["plan-1"] == "[tool result compacted because context limit was reached]"
+    assert results["plan-2"] == latest_plan
+    assert results["sql-1"] == "[tool result compacted because context limit was reached]"
+    assert results["pandas-1"] == "[tool result compacted because context limit was reached]"
+
+
+def test_invalid_plan_result_does_not_replace_latest_valid_plan_during_compaction() -> None:
+    valid_plan = json.dumps(
+        {"plan": [{"step": "Inspect the source", "status": "in_progress"}]}
+    )
+    messages = [
+        SystemMessage(content="system"),
+        HumanMessage(content="analyze"),
+        *_tool_exchange("update_plan", "plan-1", valid_plan),
+        *_tool_exchange("update_plan", "plan-2", "plan validation failed", status="error"),
+        *_tool_exchange("sql_tool", "sql-1", "large result " * 200),
+    ]
+
+    trimmed = trim_context_messages(
+        messages,
+        max_input_tokens=35,
+        count_message_tokens=_message_count_tokens,
+    )
+    results = {
+        message.tool_call_id: str(message.content)
+        for message in trimmed
+        if isinstance(message, ToolMessage)
+    }
+
+    assert results["plan-1"] == valid_plan
+    assert results["plan-2"] == "[tool result compacted because context limit was reached]"
+
+
 def test_direct_tool_loop_emits_context_usage_before_model_response() -> None:
     class FakeLLM:
         def bind_tools(self, _tools):
@@ -275,6 +367,73 @@ def test_direct_tool_loop_emits_context_usage_before_model_response() -> None:
     assert collector.snapshots
     assert collector.snapshots[0]["max_context_tokens"] == 1000
     assert collector.snapshots[0]["reserved_response_tokens"] == 77
+
+
+def test_direct_tool_loop_reserves_bound_tool_schema_tokens() -> None:
+    class FakeLLM:
+        def __init__(self) -> None:
+            self.kwargs = {}
+            self.invoked_messages = []
+
+        def bind_tools(self, _tools):
+            self.kwargs = {"tools": [{"type": "function", "function": {"name": "fake_tool"}}]}
+            return self
+
+        def get_num_tokens(self, _text):
+            return 200
+
+        def get_num_tokens_from_messages(self, messages):
+            return _message_count_tokens(messages)
+
+        def invoke(self, messages, config=None):
+            del config
+            self.invoked_messages = list(messages)
+            assert _message_count_tokens(messages) <= 188
+            return AIMessage(content="Done")
+
+    @tool
+    def fake_tool() -> str:
+        """Return a fake result."""
+        return "ok"
+
+    settings = replace(
+        Settings(),
+        llm_provider="vllm",
+        llm_num_ctx=1000,
+        llm_max_tokens_default=100,
+        llm_warmup_enabled=False,
+    )
+    collector = ContextUsageCollector()
+    fake_llm = FakeLLM()
+    messages = _loop_messages(
+        "system",
+        "current prompt",
+        [
+            {"role": "user", "content": "old1 " * 100},
+            {"role": "assistant", "content": "old2 " * 100},
+            {"role": "user", "content": "old3 " * 100},
+            {"role": "assistant", "content": "old4 " * 100},
+        ],
+    )
+
+    with patch("backend.agent.tool_loop.build_runtime_llm", return_value=fake_llm):
+        response = direct_tool_loop(
+            ToolLoopRequest(
+                settings=settings,
+                include_reasoning=False,
+                tools=[fake_tool],
+                callbacks=[collector],
+                max_iterations=1,
+                trace_context={"session_id": "context-tool-schema-budget"},
+                messages=messages,
+            )
+        )
+
+    assert response.final_text == "Done"
+    assert collector.snapshots[0]["input_tokens"] == (
+        _message_count_tokens(fake_llm.invoked_messages) + 200
+    )
+    assert collector.snapshots[0]["used_tokens"] <= 1000 - 512
 
 
 def test_direct_tool_loop_preserves_tool_result_when_trimming_before_next_model_call() -> None:

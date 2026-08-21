@@ -70,9 +70,7 @@ def _write_skill(tmp_path: Path, folder: str, content: str) -> None:
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
-def _write_skill_with_details(
-    tmp_path: Path, folder: str, skill_content: str, details_content: str
-) -> None:
+def _write_skill_with_details(tmp_path: Path, folder: str, skill_content: str, details_content: str) -> None:
     skill_dir = tmp_path / folder
     skill_dir.mkdir(exist_ok=True)
     (skill_dir / "SKILL.md").write_text(skill_content, encoding="utf-8")
@@ -142,9 +140,7 @@ def test_registry_rejects_unknown_explicit_selection(tmp_path: Path) -> None:
         registry.resolve_selection(["missing_skill"])
 
 
-def test_execution_requirements_ignore_trigger_matches_until_skill_is_selected(
-    tmp_path: Path,
-) -> None:
+def test_required_sections_remain_selected_skill_prompt_text(tmp_path: Path) -> None:
     _write_skill(
         tmp_path,
         "cohort_analysis",
@@ -157,17 +153,11 @@ def test_execution_requirements_ignore_trigger_matches_until_skill_is_selected(
         "### Rules\n- Rule one.\n\n"
         "### Required tools\n- pandas_tool\n",
     )
-    registry = SkillRegistry.from_path(tmp_path)
+    registry = SkillRegistry.from_path(tmp_path).load()
+    prompt = registry.build_prompt_block(["cohort_analysis"])
 
-    implicit = registry.execution_requirements_for_prompt(
-        selected_skill_ids=[],
-    )
-    explicit = registry.execution_requirements_for_prompt(
-        selected_skill_ids=["cohort_analysis"],
-    )
-
-    assert implicit == ()
-    assert [requirement.skill_id for requirement in explicit] == ["cohort_analysis"]
+    assert "### Required tools" in prompt
+    assert "pandas_tool" in prompt
 
 
 def test_prompt_block_includes_only_explicitly_selected_skills(tmp_path: Path) -> None:
@@ -190,7 +180,7 @@ def test_prompt_block_includes_only_explicitly_selected_skills(tmp_path: Path) -
     assert "не выполнять напрямую" in prompt
 
 
-def test_analytical_skills_brief_keeps_general_analytics_as_base_workflow(
+def test_analytical_skills_brief_uses_active_base_workflow_without_reloading_it(
     tmp_path: Path,
 ) -> None:
     _write_skill(
@@ -219,11 +209,10 @@ def test_analytical_skills_brief_keeps_general_analytics_as_base_workflow(
 
     prompt = SkillRegistry.from_path(tmp_path).build_analytical_skills_brief_block()
 
-    general_call = 'get_tool_instructions("general_analytics")'
-    specialized_call = 'get_tool_instructions(skill_id)'
-    assert general_call in prompt
+    specialized_call = "get_tool_instructions(skill_id)"
     assert specialized_call in prompt
-    assert prompt.index(general_call) < prompt.index(specialized_call)
+    assert "Базовый аналитический workflow уже есть" in prompt
+    assert "Не загружай `general_analytics` рутинно" in prompt
 
 
 # ---------------------------------------------------------------------------

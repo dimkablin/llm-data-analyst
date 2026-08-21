@@ -36,8 +36,8 @@ data:
 
   BACKEND_SESSION_TTL_DAYS: "7"
   BACKEND_MAX_DATASET_MB: "100"
-  BACKEND_STORAGE_DIR: "/app/backend_storage"
-  AUTH_DB_PATH: "/app/backend_storage/app.db"
+  BACKEND_STORAGE_DIR: "/tmp/llm-data-analyst"
+  CSV_SESSION_BASE_DIR: "/tmp/llm-data-analyst/csv_sessions"
   AUTH_TOKEN_TTL_DAYS: "30"
   AUTH_DEFAULT_ADMIN_USERNAME: "admin"
   BACKEND_CORS_ALLOW_ORIGINS: "*"

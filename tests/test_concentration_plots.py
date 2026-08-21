@@ -11,7 +11,6 @@ def test_concentration_plot_specs_from_generic_segment_table() -> None:
         }
     )
     specs = plot_recipes.build_autogen_plot_specs_for_frames(
-        "show concentration by channel",
         [("channel_mix", df)],
     )
 

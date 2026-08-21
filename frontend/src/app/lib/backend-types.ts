@@ -20,16 +20,49 @@ export type QueryMetrics = {
   model: string;
 };
 
+export type AnomalySource = {
+  value: number;
+  artifact_id: string;
+  artifact_title: string;
+  row?: string | null;
+  column?: string | null;
+  raw_value: unknown;
+  difference_percent: number;
+};
+
+export type AnomalyCheck = {
+  status: "passed" | "warning" | "no_values";
+  checked: number;
+  matched: number;
+  warnings: number;
+  items: Array<{
+    id: string;
+    text: string;
+    normalized_value: number;
+    unit?: string | null;
+    status: "matched" | "unmatched";
+    sources: AnomalySource[];
+  }>;
+};
+
 export type QueryResponse = {
   session_id: string;
   text: string;
   reasoning?: string | null;
   artifacts: ArtifactPayload[];
   values?: Record<string, unknown> | null;
+  anomaly_check?: AnomalyCheck | null;
   metrics: QueryMetrics;
+  response_envelope_valid?: boolean;
+  task_contract_satisfied?: boolean;
+  terminal_status?: "success" | "partial" | "unavailable" | "failed" | "cancelled";
+  error_category?: string;
+  partial_result?: boolean;
+  /** @deprecated Use task_contract_satisfied. */
+  contract_valid?: boolean;
 };
 
-export type SourceType = "csv" | "db_connection" | "rag" | "openproject";
+export type SourceType = "csv" | "db_connection" | "rag" | "openproject" | "planfact";
 
 export type SessionSource = {
   alias: string;
@@ -45,6 +78,7 @@ export type SessionSource = {
 };
 
 export type SemanticCatalogStatus =
+  | "not_built"
   | "pending"
   | "indexing"
   | "ready"
@@ -53,6 +87,35 @@ export type SemanticCatalogStatus =
   | "degraded"
   | "unbound"
   | "empty";
+
+export type SemanticOperationType = "build" | "refresh" | "generate";
+export type SemanticOperationStage =
+  | "queued"
+  | "profiling"
+  | "publishing"
+  | "indexing"
+  | "generating";
+export type SemanticOperationStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+
+export type SemanticCatalogOperation = {
+  operation_id: number;
+  source_key: string;
+  catalog_id: string;
+  connection_id?: string | null;
+  operation_type: SemanticOperationType;
+  stage: SemanticOperationStage;
+  status: SemanticOperationStatus;
+  actor_user_id: number;
+  error?: string | null;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string | null;
+};
 
 export type SemanticTable = {
   table_id: string;
@@ -132,6 +195,12 @@ export type SemanticMetricKind =
 
 export type SemanticMetricAggregation = "sum" | "avg" | "count" | "count_distinct" | "min" | "max";
 
+export type SemanticMetricFilter = {
+  field: string;
+  op: "=" | "!=" | ">" | ">=" | "<" | "<=" | "in" | "not_in" | "starts_with";
+  value: string | number | boolean | Array<string | number | boolean>;
+};
+
 export type SemanticMetric = {
   metric_id: string;
   key: string;
@@ -145,7 +214,7 @@ export type SemanticMetric = {
   formula: string;
   default_time_dimension?: string | null;
   allowed_dimensions: string[];
-  filters: string[];
+  filters: SemanticMetricFilter[];
   format: string;
   description: string;
   synonyms: string[];
@@ -201,7 +270,7 @@ export type SemanticMetricPayload = {
   formula?: string;
   default_time_dimension?: string | null;
   allowed_dimensions?: string[];
-  filters?: string[];
+  filters?: SemanticMetricFilter[];
   format?: string;
   synonyms?: string[];
   description?: string;
@@ -242,6 +311,8 @@ export type SemanticCatalog = {
   error?: string | null;
   built_at: string;
   updated_at: string;
+  profile_sample_strategy?: string;
+  profile_sample_limit?: number | null;
   tables: SemanticTable[];
   columns: SemanticColumn[];
   entities: SemanticEntity[];
@@ -260,11 +331,13 @@ export type SemanticCatalogStatusResponse = {
   source_fingerprint?: string | null;
   updated_at?: string | null;
   error?: string | null;
+  operation?: SemanticCatalogOperation | null;
 };
 
 export type SemanticCatalogGenerationRequest = {
   sample_rows?: number;
   max_tables?: number;
+  ensure_metrics?: boolean;
 };
 
 export type SemanticCatalogGenerationSummary = {
@@ -286,6 +359,54 @@ export type SemanticCatalogGenerationResponse = {
 export type SemanticCatalogGenerationAcceptedResponse = {
   accepted: true;
   status: string;
+  operation_id?: number | null;
+};
+
+export type SemanticScenarioCoverage = {
+  question_index: number;
+  status: "covered" | "partial" | "gap";
+  rationale: string;
+  existing_metric_keys: string[];
+  proposal_ids: string[];
+  missing_requirements: string[];
+};
+
+export type SemanticScenarioProposal = {
+  proposal_id: string;
+  kind: "metric" | "metric_update" | "modeling_gap" | "rollup_rule";
+  title: string;
+  rationale: string;
+  confidence: number;
+  question_indexes: number[];
+  evidence: string[];
+  warnings: string[];
+  metric?: SemanticMetricPayload | null;
+  target_metric_key?: string | null;
+  status: "pending" | "approved" | "rejected" | "applied" | "failed";
+  error?: string | null;
+};
+
+export type SemanticScenarioReview = {
+  review_id: string;
+  source_key: string;
+  source_fingerprint: string;
+  catalog_overlay_version: number;
+  review_version: number;
+  title: string;
+  questions: string[];
+  coverage: SemanticScenarioCoverage[];
+  proposals: SemanticScenarioProposal[];
+  status: "draft" | "partially_applied" | "applied";
+  created_by_user_id: number;
+  applied_by_user_id?: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SemanticScenarioApplyResponse = {
+  review: SemanticScenarioReview;
+  applied_metric_keys: string[];
+  rejected_items: string[];
 };
 
 export type SessionState = {
@@ -300,6 +421,7 @@ export type SessionState = {
     reasoning_steps?: PersistedReasoningStep[] | null;
     artifacts?: ArtifactPayload[];
     tools?: PersistedToolCall[];
+    anomaly_check?: AnomalyCheck | null;
   }>;
   artifacts: ArtifactPayload[];
   has_dataset: boolean;
@@ -372,6 +494,33 @@ export type BatchUploadResponse = {
   total_rows: number;
   total_columns: number;
   dataset_name: string;
+};
+
+export type PlanfactDetectionSide = {
+  file_name: string;
+  sheets: Array<string | number>;
+  columns: string[];
+  row_count: number;
+  preview: Record<string, unknown>[];
+};
+
+export type PlanfactDetectResponse = {
+  session_id: string;
+  source_type: "planfact";
+  plan: PlanfactDetectionSide;
+  fact: PlanfactDetectionSide;
+  suggested_config: Record<string, unknown>;
+  warnings: string[];
+};
+
+export type PlanfactConfirmResponse = {
+  session_id: string;
+  source_type: "planfact";
+  csv_session_id: string;
+  table_names: string[];
+  config: Record<string, unknown>;
+  rows: Record<string, number>;
+  expires_at: number;
 };
 
 export type SessionSourceState = {
@@ -552,8 +701,11 @@ export type UserSettings = {
   show_think_planning: boolean;
   show_think_tool: boolean;
   show_think_final: boolean;
+  always_use_analysis_plan: boolean;
   /** Admin: show raw planner/sql/pandas rows instead of 5 high-level stages. */
   show_detailed_tool_steps: boolean;
+  show_rag_errors: boolean;
+  anomaly_check_enabled: boolean;
 };
 
 export type RuntimeModelProfile = {
@@ -618,6 +770,10 @@ export type MCPToolDescriptor = {
   description?: string | null;
   input_schema: Record<string, unknown>;
   output_schema?: Record<string, unknown> | null;
+  capability_key?: string | null;
+  provider_identity?: string | null;
+  binding_priority?: number;
+  binding_preferred?: boolean;
 };
 
 export type MCPServerAvailability = {
@@ -645,12 +801,22 @@ export type AdminMCPServerConfig = {
   command?: string | null;
   args: string[];
   env: Record<string, string>;
+  tool_bindings?: Record<
+    string,
+    {
+      capability_key: string;
+      provider_identity?: string | null;
+      priority: number;
+      preferred: boolean;
+    }
+  >;
   timeout_sec: number;
   enabled: boolean;
   enabled_by_default: boolean;
   created_at?: string | null;
   updated_at?: string | null;
   updated_by?: number | null;
+  secret_configured: boolean;
 };
 
 export type AdminMCPServerPayload = {
@@ -662,6 +828,8 @@ export type AdminMCPServerPayload = {
   command?: string | null;
   args?: string[];
   env?: Record<string, string>;
+  tool_bindings?: AdminMCPServerConfig["tool_bindings"];
+  bearer_token?: string | null;
   timeout_sec?: number;
   enabled?: boolean;
   enabled_by_default?: boolean;
@@ -724,6 +892,8 @@ export type PersistedToolCall = {
   error?: string;
   /** Thinking text that preceded this tool call. */
   pre_reasoning?: string;
+  /** Visible agent narration that preceded this tool call. */
+  pre_text?: string;
 };
 
 export type StreamToolCall = {
@@ -745,6 +915,8 @@ export type StreamToolCall = {
   started_at: number;
   /** Reasoning text that preceded this tool call (delta since previous tool call). */
   pre_reasoning?: string;
+  /** Visible agent narration that preceded this tool call. */
+  pre_text?: string;
 };
 
 // ─── Assistant block model (Claude-like sequential rendering) ────────────────
@@ -826,6 +998,7 @@ export type ChatMessage = {
   metrics?: QueryMetrics;
   artifacts?: ArtifactPayload[];
   executionGraph?: ExecutionGraph;
+  anomalyCheck?: AnomalyCheck | null;
 };
 
 export type PhoenixOverviewStats = {
@@ -931,6 +1104,11 @@ export type Skill = {
   enabled_for_user: boolean;
 };
 
+export type QueryExecutionOptions = {
+  selectedSkillId?: string;
+  requestedToolKey?: string;
+};
+
 export type AdminSkillDetail = {
   skill_id: string;
   name: string;
@@ -951,5 +1129,5 @@ export type AdminSkillUpdatePayload = {
   description?: string;
   triggers?: string[];
   core_markdown?: string;
-  details_markdown?: string;
+  details_markdown?: string | null;
 };

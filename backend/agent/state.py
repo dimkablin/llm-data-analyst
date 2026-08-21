@@ -6,10 +6,9 @@ import pandas as pd
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
-from backend.agent.contracts import AnalysisTaskContract
 from backend.agent.models import AgentResponse
 from backend.agent.working_memory import AnalysisWorkingMemory
-from backend.skills.contracts import SkillExecutionRequirement
+from backend.tools.active_catalog import ActiveRegistrySnapshot
 
 
 class AgentGraphState(TypedDict, total=False):
@@ -24,6 +23,7 @@ class AgentGraphState(TypedDict, total=False):
     trace_context: dict[str, Any]
     session_source: dict[str, Any]
     selected_skill_ids: list[str]
+    requested_tool_key: str | None
     cancel_event: Any
 
     # Prepare -> Agent handoff
@@ -32,9 +32,8 @@ class AgentGraphState(TypedDict, total=False):
     step_index: int
     max_steps: int
     tools: list
+    registry_snapshot: ActiveRegistrySnapshot
     capability_context: dict[str, Any]
-    task_contract: AnalysisTaskContract
-    skill_execution_requirements: list[SkillExecutionRequirement]
     llm_unreachable: bool
     sandbox: Any
     tool_db_runtime: Any  # RuntimeDBConnectionConfig | None - resolved once in context preparation

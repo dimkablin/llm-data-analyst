@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
@@ -34,10 +35,36 @@ class DBToolMetadataResultTests(unittest.TestCase):
         self.assertIn("LIMIT 26", result["normalized_sql"])
         self.assertTrue(result["warnings"])
 
+    def test_validate_sql_uses_sentinel_for_explicit_limit(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        result = helper.validate_sql("SELECT id FROM public.orders LIMIT 2 OFFSET 4", max_rows=25)
+
+        self.assertIn("LIMIT 3 OFFSET 4", result["normalized_sql"])
+        self.assertEqual(result["requested_limit"], 2)
+
     def test_validate_sql_rejects_mutating_statement(self) -> None:
         helper = DBDemoHelper(runtime=_runtime())
         with self.assertRaises(ValueError):
             helper.validate_sql("DELETE FROM public.orders")
+
+    def test_validate_sql_ignores_keywords_in_literals_identifiers_and_comments(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        sql = (
+            'SELECT "system", COUNT(*) FROM public.logs '
+            "WHERE action = 'update; delete' /* drop old records */ GROUP BY \"system\""
+        )
+
+        result = helper.validate_sql(sql, max_rows=25)
+
+        self.assertEqual(result["requested_sql"], sql)
+
+    def test_validate_sql_rejects_mutation_in_cte_and_multiple_statements(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+
+        with self.assertRaisesRegex(ValueError, "Non-read-only"):
+            helper.validate_sql("WITH removed AS (DELETE FROM orders RETURNING *) SELECT * FROM removed")
+        with self.assertRaisesRegex(ValueError, "Multiple SQL statements"):
+            helper.validate_sql("SELECT 1; SELECT 2")
 
     def test_list_schemas_result_contains_source_and_recipe(self) -> None:
         helper = DBDemoHelper(runtime=_runtime())
@@ -242,3 +269,48 @@ class DBToolMetadataResultTests(unittest.TestCase):
         self.assertEqual(result["meta"]["query"]["returned_rows"], 2)
         self.assertTrue(result["meta"]["query"]["truncated"])
         self.assertTrue(result["meta"]["warnings"])
+
+    def test_execute_analytic_query_preserves_date_columns_for_dataframe_work(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        sample = pd.DataFrame({"month": [date(2025, 1, 1), date(2025, 2, 1)], "revenue": [10, 20]})
+
+        with patch.object(DBDemoHelper, "query_dataframe", return_value=sample):
+            result = helper.execute_analytic_query(
+                "SELECT month, revenue FROM public.orders",
+                artifact_name="monthly_revenue",
+            )
+
+        frame = result["items"]["monthly_revenue"]
+        self.assertTrue(pd.api.types.is_datetime64_any_dtype(frame["month"]))
+        self.assertIsNone(frame["month"].dt.tz)
+        self.assertEqual(frame["month"].dt.month.tolist(), [1, 2])
+
+    def test_explicit_limit_reports_additional_rows_without_marking_preview(self) -> None:
+        helper = DBDemoHelper(runtime=_runtime())
+        sample = pd.DataFrame(
+            [
+                {"month": "2025-01-01", "revenue": 10},
+                {"month": "2025-02-01", "revenue": 20},
+                {"month": "2025-03-01", "revenue": 30},
+            ]
+        )
+        with patch.object(DBDemoHelper, "query_dataframe", return_value=sample) as query:
+            result = helper.execute_analytic_query(
+                "SELECT month, revenue FROM public.orders LIMIT 2",
+                max_rows=25,
+                artifact_name="top_rows",
+            )
+
+        self.assertIn("LIMIT 3", query.call_args.args[0])
+        self.assertEqual(len(result["items"]["top_rows"]), 2)
+        self.assertTrue(result["meta"]["query"]["has_more_rows"])
+        self.assertFalse(result["meta"]["query"]["truncated"])
+        self.assertTrue(result["meta"]["warnings"])
+
+        with patch.object(DBDemoHelper, "query_dataframe", return_value=sample.head(2)):
+            complete = helper.execute_analytic_query(
+                "SELECT month, revenue FROM public.orders LIMIT 2",
+                max_rows=25,
+                artifact_name="complete_rows",
+            )
+        self.assertFalse(complete["meta"]["query"]["has_more_rows"])

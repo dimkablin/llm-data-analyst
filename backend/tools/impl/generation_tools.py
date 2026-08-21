@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -71,9 +72,7 @@ class GenerateSummaryTool(BaseTool):
         self._history = [dict(item) for item in history if isinstance(item, dict)]
         self._session_notes = str(session_notes or "").strip()
         self._artifact_summaries = [
-            str(item).strip()
-            for item in (artifact_summaries or [])
-            if str(item or "").strip()
+            str(item).strip() for item in (artifact_summaries or []) if str(item or "").strip()
         ]
 
     def _run(self, focus: str = "", max_history_items: int = 12) -> str:
@@ -122,10 +121,12 @@ class GenerateSummaryTool(BaseTool):
             content = truncate(str(item.get("content", "")).strip(), 700)
             if not content:
                 continue
-            recent.append({
-                "role": str(item.get("role") or "assistant").strip() or "assistant",
-                "content": content,
-            })
+            recent.append(
+                {
+                    "role": str(item.get("role") or "assistant").strip() or "assistant",
+                    "content": content,
+                }
+            )
         return recent
 
     def _render_markdown(
@@ -140,11 +141,13 @@ class GenerateSummaryTool(BaseTool):
             "",
         ]
         if self._session_notes:
-            lines.extend([
-                "### Session Notes",
-                self._session_notes,
-                "",
-            ])
+            lines.extend(
+                [
+                    "### Session Notes",
+                    self._session_notes,
+                    "",
+                ]
+            )
         if recent_history:
             lines.append("### Recent Context")
             for item in recent_history:
@@ -182,24 +185,29 @@ class GenerateReportTool(BaseTool):
     parallel_safe: ClassVar[bool] = False
 
     _session_id: str = PrivateAttr(default="")
-    _storage_dir: str = PrivateAttr(default="storage")
-    _session_ttl_days: int = PrivateAttr(default=7)
+    _user_id: int = PrivateAttr(default=0)
+    _session_store: Any = PrivateAttr(default=None)
+    _blob_store: Any = PrivateAttr(default=None)
 
     def __init__(
         self,
         *,
         session_id: str,
-        storage_dir: str,
-        session_ttl_days: int,
+        user_id: int,
+        session_store: Any,
+        blob_store: Any,
     ) -> None:
         super().__init__()
         self._session_id = str(session_id or "").strip()
-        self._storage_dir = str(storage_dir or "storage")
-        self._session_ttl_days = int(session_ttl_days)
+        self._user_id = int(user_id)
+        self._session_store = session_store
+        self._blob_store = blob_store
 
     def _run(self, title: str = "") -> str:
         del title
         result = self._build_report()
+        if result.status == "error":
+            raise RuntimeError(result.message)
         return result.model_dump_json(indent=2)
 
     async def _arun(self, title: str = "") -> str:
@@ -213,11 +221,12 @@ class GenerateReportTool(BaseTool):
             )
 
         try:
+            from backend.auth.blob_store import BlobWrite
             from backend.services.report_export import build_report_docx
-            from backend.sessions.session_store import SessionStore
 
-            store = SessionStore(self._storage_dir, self._session_ttl_days)
-            state = store.load_session(self._session_id)
+            if self._session_store is None or self._blob_store is None or self._user_id <= 0:
+                raise RuntimeError("persistent report storage is unavailable")
+            state = self._session_store.load_session(self._session_id)
             if state is None:
                 return GenerateReportToolResult(
                     status="session_not_found",
@@ -234,17 +243,34 @@ class GenerateReportTool(BaseTool):
                     message="Cannot generate report: session has no artifacts.",
                 )
 
-            result = build_report_docx(
+            with tempfile.TemporaryDirectory(prefix="analyst-report-") as temp_dir:
+                result = build_report_docx(
+                    session_id=self._session_id,
+                    chat_history=state.chat_history,
+                    artifacts=state.artifacts,
+                    output_dir=Path(temp_dir),
+                    base_download_url="reports/download/",
+                )
+                content = Path(result.file_path).read_bytes()
+            blob_id = self._blob_store.put_many(
+                user_id=self._user_id,
                 session_id=self._session_id,
-                chat_history=state.chat_history,
-                artifacts=state.artifacts,
-                output_dir=Path(self._storage_dir) / "report_exports",
-                base_download_url="reports/download/",
-            )
+                kind="report",
+                items=[
+                    BlobWrite(
+                        logical_name=result.file_name,
+                        media_type=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "wordprocessingml.document"
+                        ),
+                        content=content,
+                    )
+                ],
+            )[0]
             return GenerateReportToolResult(
                 status="ok",
                 message="Report generated.",
-                download_url=result.download_url,
+                download_url=f"reports/download/{blob_id}/{result.file_name}",
                 file_name=result.file_name,
             )
         except Exception as exc:

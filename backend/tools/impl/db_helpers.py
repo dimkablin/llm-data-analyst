@@ -20,11 +20,7 @@ from backend.artifacts.artifact_meta import (
 )
 from backend.data_access.db_connectors import ResolvedDBConnection, build_connection_adapter
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
-from backend.tools.impl.base_tool import BaseExecTool
 
-BASE_FORBIDDEN_CODE_PATTERNS: tuple[tuple[str, str], ...] = tuple(
-    BaseExecTool.model_fields["forbidden_code_patterns"].default
-)
 READ_ONLY_SQL_RE = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
 FORBIDDEN_SQL_RE = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|attach|detach|optimize|system|rename)\b",
@@ -53,6 +49,48 @@ def _strip_sql(sql: str) -> str:
     return str(sql or "").strip().rstrip(";").strip()
 
 
+def _mask_sql_non_code(sql: str) -> str:
+    """Replace quoted text and comments with spaces while preserving positions."""
+    masked = list(sql)
+    index = 0
+    while index < len(sql):
+        start = index
+        delimiter = ""
+        if sql.startswith("--", index):
+            end = sql.find("\n", index + 2)
+            end = len(sql) if end < 0 else end
+        elif sql.startswith("/*", index):
+            close = sql.find("*/", index + 2)
+            end = len(sql) if close < 0 else close + 2
+        elif sql[index] in {"'", '"', "`"}:
+            delimiter = sql[index]
+            end = index + 1
+            while end < len(sql):
+                if sql[end] == "\\":
+                    end += 2
+                    continue
+                if sql[end] == delimiter:
+                    if end + 1 < len(sql) and sql[end + 1] == delimiter:
+                        end += 2
+                        continue
+                    end += 1
+                    break
+                end += 1
+        elif sql[index] == "$" and (match := re.match(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$", sql[index:])):
+            delimiter = match.group(0)
+            close = sql.find(delimiter, index + len(delimiter))
+            end = len(sql) if close < 0 else close + len(delimiter)
+        else:
+            index += 1
+            continue
+
+        for position in range(start, end):
+            if masked[position] not in "\r\n":
+                masked[position] = " "
+        index = end
+    return "".join(masked)
+
+
 def _escape_literal_percent_for_psycopg(sql: str) -> str:
     """Double '%' that are not psycopg placeholders (%s, %b, %f, %t)."""
     if "%" not in sql:
@@ -61,16 +99,21 @@ def _escape_literal_percent_for_psycopg(sql: str) -> str:
 
 
 def _assert_read_only_sql(sql: str) -> str:
-    clean = _strip_sql(sql)
-    if not clean:
+    raw = str(sql or "").strip()
+    if not raw:
         raise ValueError("SQL query is empty.")
-    if not READ_ONLY_SQL_RE.match(clean):
+    masked = _mask_sql_non_code(raw)
+    semicolons = [index for index, char in enumerate(masked) if char == ";"]
+    if semicolons:
+        if len(semicolons) != 1 or semicolons[0] != len(raw) - 1:
+            raise ValueError("Multiple SQL statements are not allowed.")
+        raw = raw[:-1].rstrip()
+        masked = masked[:-1].rstrip()
+    if not READ_ONLY_SQL_RE.match(masked):
         raise ValueError("Only read-only SELECT/WITH queries are allowed.")
-    if FORBIDDEN_SQL_RE.search(clean):
+    if FORBIDDEN_SQL_RE.search(masked):
         raise ValueError("Non-read-only SQL keywords are not allowed.")
-    if ";" in clean:
-        raise ValueError("Multiple SQL statements are not allowed.")
-    return clean
+    return raw
 
 
 def _coerce_max_rows(
@@ -99,24 +142,24 @@ def _normalize_analytic_sql(
     if limit_match:
         requested_limit = int(limit_match.group("limit"))
         if requested_limit <= max_rows:
-            fetch_limit = requested_limit
+            fetch_limit = requested_limit + 1
         else:
             truncated_by_guardrail = True
-            warnings.append(
-                f"Original LIMIT {requested_limit} exceeded max_rows={max_rows} and was reduced."
-            )
+            warnings.append(f"Original LIMIT {requested_limit} exceeded max_rows={max_rows} and was reduced.")
     else:
         truncated_by_guardrail = True
         warnings.append(f"Appended LIMIT {max_rows} to keep the result compact.")
 
     if SELECT_STAR_RE.search(clean_sql):
-        warnings.append(
-            "Query uses SELECT *. Prefer explicit columns for large or production queries."
-        )
+        warnings.append("Query uses SELECT *. Prefer explicit columns for large or production queries.")
 
     normalized_sql = clean_sql
-    if limit_match and requested_limit is not None and requested_limit > max_rows:
-        normalized_sql = TERMINAL_LIMIT_RE.sub(f"LIMIT {fetch_limit}", clean_sql)
+    if limit_match and requested_limit is not None:
+        offset = int(limit_match.group("offset") or 0)
+        replacement = f"LIMIT {fetch_limit}"
+        if offset:
+            replacement += f" OFFSET {offset}"
+        normalized_sql = TERMINAL_LIMIT_RE.sub(replacement, clean_sql)
     elif limit_match is None:
         normalized_sql = f"{clean_sql} LIMIT {fetch_limit}"
 
@@ -153,8 +196,29 @@ def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         return df.copy()
     safe_df = df.copy()
     for column in safe_df.columns:
+        values = safe_df[column].dropna()
+        if not values.empty:
+            date_like = values.map(
+                lambda value: (
+                    isinstance(value, (datetime, date))
+                    or (isinstance(value, str) and len(value.strip()) >= 10 and _is_iso_datetime(value))
+                )
+            ).all()
+            if date_like:
+                safe_df[column] = pd.to_datetime(safe_df[column], errors="coerce", utc=True).dt.tz_localize(
+                    None
+                )
+                continue
         safe_df[column] = safe_df[column].map(_make_json_safe)
     return safe_df
+
+
+def _is_iso_datetime(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass
@@ -340,6 +404,7 @@ class DBAnalyticsHelper:
         warnings: list[str] | None = None,
         truncated: bool = False,
         requested_limit: int | None = None,
+        has_more_rows: bool = False,
     ) -> dict[str, Any]:
         safe_rows = _normalize_dataframe(rows)
         query_meta = {
@@ -351,6 +416,7 @@ class DBAnalyticsHelper:
             "returned_rows": len(safe_rows),
             "column_count": len(safe_rows.columns),
             "truncated": bool(truncated),
+            "has_more_rows": bool(has_more_rows),
             "execution_time_ms": int(execution_time_ms),
             "warnings": list(warnings or []),
         }
@@ -360,6 +426,7 @@ class DBAnalyticsHelper:
                 "row_count": query_meta["returned_rows"],
                 "column_count": query_meta["column_count"],
                 "truncated": query_meta["truncated"],
+                "has_more_rows": query_meta["has_more_rows"],
                 "execution_time_ms": query_meta["execution_time_ms"],
             },
             "warnings": list(warnings or []),
@@ -405,7 +472,9 @@ class DBAnalyticsHelper:
         port = kwargs.get("port") or (8443 if secure else 8123)
         params = urlencode(
             {
-                "database": database if database is not None else (self._configured_schema() or kwargs.get("database") or ""),  # noqa: E501
+                "database": database
+                if database is not None
+                else (self._configured_schema() or kwargs.get("database") or ""),
                 "user": kwargs.get("username") or "",
                 "password": kwargs.get("password") or "",
                 "default_format": "JSON",
@@ -487,7 +556,7 @@ class DBAnalyticsHelper:
         adapter = self._catalog_adapter()
         combined = adapter.list_tables_with_columns(target_schema)
         result: list[dict[str, Any]] = []
-        for (cat_table, cat_columns) in combined.values():
+        for cat_table, cat_columns in combined.values():
             result.append(
                 {
                     "schema": cat_table.schema,
@@ -495,6 +564,7 @@ class DBAnalyticsHelper:
                     "table_type": cat_table.table_type,
                     "qualified_name": cat_table.qualified_name,
                     "columns": [col.name for col in cat_columns],
+                    "column_types": {col.name: col.data_type for col in cat_columns},
                 }
             )
         return result
@@ -709,19 +779,24 @@ class DBAnalyticsHelper:
 
         warnings = list(validation["warnings"])
         truncated = False
+        requested_limit = validation["requested_limit"]
+        has_more_rows = bool(
+            requested_limit is not None
+            and requested_limit <= effective_max_rows
+            and len(rows) > requested_limit
+        )
+        if has_more_rows:
+            rows = rows.head(requested_limit).copy()
+            warnings.append(f"Explicit LIMIT {requested_limit} omitted additional rows.")
         rows, capped = self._cap_dataframe_rows(rows, max_rows=effective_max_rows)
         truncated = truncated or capped
         if capped:
-            warnings.append(
-                f"Result exceeded max_rows={effective_max_rows} and was truncated."
-            )
+            warnings.append(f"Result exceeded max_rows={effective_max_rows} and was truncated.")
 
         rows, cell_capped = self._shrink_for_cell_budget(rows)
         truncated = truncated or cell_capped
         if cell_capped:
-            warnings.append(
-                f"Result exceeded cell budget={MAX_RESULT_CELLS} and was truncated."
-            )
+            warnings.append(f"Result exceeded cell budget={MAX_RESULT_CELLS} and was truncated.")
 
         return self._package_query_result(
             rows,
@@ -733,7 +808,8 @@ class DBAnalyticsHelper:
             execution_time_ms=execution_time_ms,
             warnings=warnings,
             truncated=truncated,
-            requested_limit=validation["requested_limit"],
+            requested_limit=requested_limit,
+            has_more_rows=has_more_rows,
         )
 
     def execute_analytic_query(
@@ -820,8 +896,7 @@ class DBAnalyticsHelper:
         target_schema = str(schema or self._default_schema()).strip()
         resolved_name = artifact_name or f"preview_{target_schema}_{table}"
         qualified = (
-            f"{self._quote_identifier(target_schema)}."
-            f"{self._quote_identifier(str(table or '').strip())}"
+            f"{self._quote_identifier(target_schema)}.{self._quote_identifier(str(table or '').strip())}"
         )
         return self.execute_analytic_query(
             f"SELECT * FROM {qualified}",
@@ -910,4 +985,3 @@ class DemoDBConnectionView:
             "for demo operations, or `db_connection.build_dsn()` / "
             "`db_connection.to_driver_kwargs()` for advanced tool code."
         )
-

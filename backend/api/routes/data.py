@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+import duckdb
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 
 from backend.api.deps import get_current_user
 from backend.api.models import BatchUploadResponse, UploadResponse
 from backend.auth.auth_db import AuthDB, AuthUser
+from backend.auth.blob_store import PostgresBlobStore
 from backend.core.config import settings
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
+from backend.data_access.planfact_source_service import (
+    PlanfactSourceError,
+    PlanfactSourceService,
+    PlanfactUploadFile,
+)
 from backend.data_access.tabular_preprocessing import TabularPreprocessingOptions
 from backend.data_access.tabular_upload_service import (
     TabularUploadError,
@@ -33,6 +49,7 @@ _manifest_store: ManifestStore = None  # type: ignore
 _orchestrator: NotebookOrchestrator = None  # type: ignore
 _storage_dir: Path | None = None
 _semantic_catalog_service = None  # type: ignore
+_blob_store: PostgresBlobStore | None = None
 
 
 def setup(
@@ -43,9 +60,10 @@ def setup(
     notebook_orchestrator: NotebookOrchestrator,
     storage_dir: str | Path | None = None,
     semantic_catalog_service=None,
+    blob_store: PostgresBlobStore | None = None,
 ) -> None:
     global _auth_db, _store, _csv_runtime, _manifest_store, _orchestrator, _storage_dir
-    global _semantic_catalog_service
+    global _semantic_catalog_service, _blob_store
     _auth_db = auth_db
     _store = store
     _csv_runtime = csv_runtime
@@ -53,6 +71,7 @@ def setup(
     _orchestrator = notebook_orchestrator
     _storage_dir = Path(storage_dir) if storage_dir is not None else Path(settings.storage_dir)
     _semantic_catalog_service = semantic_catalog_service
+    _blob_store = blob_store
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -63,20 +82,16 @@ def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState
         raise HTTPException(status_code=404, detail="Session not found")
     return state
 
-_READ_ONLY_SQL_RE = re.compile(r"^\s*(select|with)\b", re.IGNORECASE)
-_FORBIDDEN_SQL_RE = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|truncate|replace|pragma|vacuum|call)\b",
-    re.IGNORECASE,
-)
-
 
 def _ensure_safe_readonly_sql(sql: str) -> str:
     clean = str(sql or "").strip()
     if not clean:
         raise HTTPException(status_code=400, detail="sql must not be empty")
-    if not _READ_ONLY_SQL_RE.match(clean):
-        raise HTTPException(status_code=400, detail="Only SELECT/WITH queries are allowed")
-    if _FORBIDDEN_SQL_RE.search(clean):
+    try:
+        statements = duckdb.extract_statements(clean)
+    except duckdb.ParserException as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid SQL: {exc}") from exc
+    if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
         raise HTTPException(status_code=400, detail="Only read-only queries are allowed")
     return clean
 
@@ -92,6 +107,17 @@ def _upload_service() -> TabularUploadService:
         manifest_store=_manifest_store,
         notebook_orchestrator=_orchestrator,
         storage_dir=_storage_dir or Path(settings.storage_dir),
+        blob_store=_blob_store,
+    )
+
+
+def _planfact_service() -> PlanfactSourceService:
+    return PlanfactSourceService(
+        store=_store,
+        csv_runtime=_csv_runtime,
+        manifest_store=_manifest_store,
+        storage_dir=_storage_dir or Path(settings.storage_dir),
+        blob_store=_blob_store,
     )
 
 
@@ -115,7 +141,27 @@ async def _read_tabular_uploads(files: list[UploadFile]) -> list[TabularUploadFi
     return uploads
 
 
-def _refresh_catalog(session_id: str) -> None:
+async def _read_planfact_upload(file: UploadFile) -> PlanfactUploadFile:
+    max_bytes = settings.max_dataset_mb * 1024 * 1024
+    file_name = (file.filename or "uploaded.xlsx").strip()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail=f"Uploaded file '{file_name}' is empty")
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail=f"Dataset '{file_name}' exceeds size limit")
+    return PlanfactUploadFile(
+        file_name=file_name,
+        content=content,
+        content_type=file.content_type,
+    )
+
+
+def _build_csv_semantic_catalog(
+    session_id: str,
+    user_id: int,
+    source_key: str,
+    operation_id: int,
+) -> None:
     try:
         from backend.data_access.catalog_refresh import refresh_session_catalog
 
@@ -124,24 +170,38 @@ def _refresh_catalog(session_id: str) -> None:
             session_id,
             csv_runtime=_csv_runtime,
         )
+        _semantic_catalog_service.refresh(
+            session_id=session_id,
+            user_id=user_id,
+            operation_id=operation_id,
+        )
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Failed to refresh data catalog after tabular upload: %s", exc
+        _semantic_catalog_service.mark_build_failed(
+            source_key=source_key,
+            error=str(exc),
+            operation_id=operation_id,
         )
 
 
-def _refresh_semantic_catalog(session_id: str, user_id: int) -> None:
+def _queue_csv_semantic_build(
+    background_tasks: BackgroundTasks,
+    *,
+    session_id: str,
+    user_id: int,
+) -> None:
     if _semantic_catalog_service is None or not settings.semantic_layer_enabled:
         return
-    try:
-        _semantic_catalog_service.refresh(session_id=session_id, user_id=user_id)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Failed to refresh semantic catalog after tabular upload: %s", exc
+    pending, operation = _semantic_catalog_service.claim_session_build(
+        session_id=session_id,
+        user_id=user_id,
+    )
+    if operation is not None:
+        background_tasks.add_task(
+            _build_csv_semantic_catalog,
+            session_id,
+            user_id,
+            pending.source_key,
+            operation.operation_id,
         )
 
 
@@ -162,10 +222,19 @@ def _mark_dataset_loaded(session_id: str) -> None:
     _auth_db.mark_session_has_dataset(session_id, True)
 
 
+def _handle_planfact_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
+    if isinstance(exc, PlanfactSourceError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=f"Failed to process planfact source: {exc}")
+
+
 async def _ingest_tabular_uploads(
     *,
     session_id: str,
     files: list[UploadFile],
+    background_tasks: BackgroundTasks,
     current_user: AuthUser,
     preprocessing_options: str | None,
     failure_message: str,
@@ -178,6 +247,7 @@ async def _ingest_tabular_uploads(
             ttl_seconds=settings.csv_session_ttl_sec,
             max_bytes_per_file=settings.max_dataset_mb * 1024 * 1024,
             preprocessing_options=_parse_preprocessing_options(preprocessing_options),
+            user_id=current_user.id,
         )
     except TabularUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -185,14 +255,18 @@ async def _ingest_tabular_uploads(
         raise HTTPException(status_code=400, detail=f"{failure_message}: {exc}") from exc
 
     _mark_dataset_loaded(session_id)
-    _refresh_catalog(session_id)
-    _refresh_semantic_catalog(session_id, current_user.id)
+    _queue_csv_semantic_build(
+        background_tasks,
+        session_id=session_id,
+        user_id=current_user.id,
+    )
     return result
 
 
 @router.post("/sessions/{session_id}/data", response_model=UploadResponse)
 async def upload_data(
     session_id: str,
+    background_tasks: BackgroundTasks,
     file: Annotated[UploadFile, File()],
     current_user: Annotated[AuthUser, Depends(get_current_user)],
     preprocessing_options: Annotated[str | None, Form()] = None,
@@ -200,6 +274,7 @@ async def upload_data(
     result = await _ingest_tabular_uploads(
         session_id=session_id,
         files=[file],
+        background_tasks=background_tasks,
         current_user=current_user,
         preprocessing_options=preprocessing_options,
         failure_message="Failed to read tabular file",
@@ -216,6 +291,7 @@ async def upload_data(
 @router.post("/sessions/{session_id}/data/batch", response_model=BatchUploadResponse)
 async def upload_data_batch(
     session_id: str,
+    background_tasks: BackgroundTasks,
     files: Annotated[list[UploadFile], File()],
     current_user: Annotated[AuthUser, Depends(get_current_user)],
     preprocessing_options: Annotated[str | None, Form()] = None,
@@ -223,11 +299,91 @@ async def upload_data_batch(
     result = await _ingest_tabular_uploads(
         session_id=session_id,
         files=files,
+        background_tasks=background_tasks,
         current_user=current_user,
         preprocessing_options=preprocessing_options,
         failure_message="Failed to read tabular files",
     )
     return _batch_response(result)
+
+
+@router.post("/sessions/{session_id}/source/planfact/detect")
+async def detect_planfact_source(
+    session_id: str,
+    plan_file: Annotated[UploadFile, File()],
+    fact_file: Annotated[UploadFile, File()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+    mapping_file: Annotated[UploadFile | None, File()] = None,
+) -> dict:
+    _load_owned_session(session_id, current_user)
+    try:
+        plan_upload = await _read_planfact_upload(plan_file)
+        fact_upload = await _read_planfact_upload(fact_file)
+        mapping_upload = (
+            await _read_planfact_upload(mapping_file) if mapping_file is not None else None
+        )
+        result = _planfact_service().detect(
+            session_id=session_id,
+            plan_file=plan_upload,
+            fact_file=fact_upload,
+            mapping_file=mapping_upload,
+            user_id=current_user.id,
+        )
+    except Exception as exc:
+        raise _handle_planfact_error(exc) from exc
+    return result.model_dump()
+
+
+@router.post("/sessions/{session_id}/source/planfact/confirm")
+async def confirm_planfact_source(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    config: Annotated[dict, Body()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    _load_owned_session(session_id, current_user)
+    try:
+        result = _planfact_service().confirm(
+            session_id=session_id,
+            config=config,
+            ttl_seconds=settings.csv_session_ttl_sec,
+            user_id=current_user.id,
+        )
+    except Exception as exc:
+        raise _handle_planfact_error(exc) from exc
+
+    _mark_dataset_loaded(session_id)
+    _queue_csv_semantic_build(
+        background_tasks,
+        session_id=session_id,
+        user_id=current_user.id,
+    )
+    return result.model_dump()
+
+
+@router.get("/sessions/{session_id}/source/planfact/config")
+async def get_planfact_config(
+    session_id: str,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    _load_owned_session(session_id, current_user)
+    try:
+        return _planfact_service().get_config(session_id)
+    except Exception as exc:
+        raise _handle_planfact_error(exc) from exc
+
+
+@router.patch("/sessions/{session_id}/source/planfact/config")
+async def patch_planfact_config(
+    session_id: str,
+    patch: Annotated[dict, Body()],
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    _load_owned_session(session_id, current_user)
+    try:
+        return _planfact_service().update_config(session_id, patch, user_id=current_user.id)
+    except Exception as exc:
+        raise _handle_planfact_error(exc) from exc
 
 
 # Predict-service calls this endpoint without a bearer token and passes the CSV

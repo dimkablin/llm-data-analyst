@@ -17,6 +17,9 @@ import logging
 import threading
 from pathlib import Path
 
+from psycopg.types.json import Jsonb
+
+from backend.auth.app_data_postgres import AppDataPostgresStore
 from backend.notebook.models import (
     NotebookCell,
     NotebookDocument,
@@ -96,3 +99,52 @@ class NotebookStore:
             if session_id not in self._locks:
                 self._locks[session_id] = threading.Lock()
             return self._locks[session_id]
+
+
+class PostgresNotebookStore(NotebookStore):
+    def __init__(self, store: AppDataPostgresStore) -> None:
+        self._store = store
+        self._locks = {}
+        self._global_lock = threading.Lock()
+
+    def exists(self, session_id: str) -> bool:
+        with self._store.connect() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM session_notebooks WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def load(self, session_id: str) -> NotebookDocument:
+        with self._store.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM session_notebooks WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return NotebookDocument(session_id=session_id, created_at=utcnow_iso())
+        return NotebookDocument.from_ipynb_dict(dict(row["payload"]))
+
+    def save(self, session_id: str, notebook: NotebookDocument) -> Path:
+        with self._session_lock(session_id), self._store.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO session_notebooks(session_id, payload, version, updated_at)
+                VALUES (?, ?, 1, now())
+                ON CONFLICT(session_id) DO UPDATE SET
+                    payload = excluded.payload,
+                    version = session_notebooks.version + 1,
+                    updated_at = now()
+                """,
+                (session_id, Jsonb(notebook.to_ipynb_dict())),
+            )
+        return Path(session_id) / "notebook.ipynb"
+
+    def delete(self, session_id: str) -> None:
+        with self._store.connect() as connection:
+            connection.execute(
+                "DELETE FROM session_notebooks WHERE session_id = ?",
+                (session_id,),
+            )

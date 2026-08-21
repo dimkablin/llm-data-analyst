@@ -158,7 +158,7 @@ interface MemoryBlockProps {
   isEditing: boolean;
   draft: string;
   isSaving: boolean;
-  textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  textareaRef?: React.RefObject<HTMLTextAreaElement>;
   onEdit: () => void;
   onCancel: () => void;
   onSave: () => void;

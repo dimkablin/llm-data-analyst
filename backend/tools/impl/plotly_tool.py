@@ -13,22 +13,6 @@ from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.base_tool import BaseExecTool
 from backend.tools.instructions import tool_description
 
-_BASE_FORBIDDEN_CODE_PATTERNS: tuple[tuple[str, str], ...] = tuple(
-    BaseExecTool.model_fields["forbidden_code_patterns"].default
-)
-_PLOTLY_FORBIDDEN_CODE_PATTERNS: tuple[tuple[str, str], ...] = tuple(
-    (
-        (
-            pattern,
-            "В plotly_tool нельзя использовать matplotlib. "
-            "Построй Plotly Figure через px или go.",
-        )
-        if pattern == r"\bmatplotlib\b|\bplt\."
-        else (pattern, message)
-    )
-    for pattern, message in _BASE_FORBIDDEN_CODE_PATTERNS
-)
-
 # Cohesive palette + dark layout aligned with frontend `ArtifactSurface`.
 CHART_COLORWAY: tuple[str, ...] = (
     "#2563eb",  # blue
@@ -38,9 +22,7 @@ CHART_COLORWAY: tuple[str, ...] = (
 )
 _CHART_COLORWAY = CHART_COLORWAY
 _MAX_BAR_VALUE_LABELS = 6
-_AXIS_SPAN_COMPAT_NOTE = (
-    "# plotly_tool normalized axis-spanning annotation through Plotly `shape.label`."
-)
+_AXIS_SPAN_COMPAT_NOTE = "# plotly_tool normalized axis-spanning annotation through Plotly `shape.label`."
 
 
 def _plotly_json_dict(value: Any) -> dict[str, Any]:
@@ -120,7 +102,7 @@ def _mark_axis_span_compat(fig: go.Figure) -> None:
     notes = list(getattr(fig, "_llm_data_analyst_tool_notes", []))
     if _AXIS_SPAN_COMPAT_NOTE not in notes:
         notes.append(_AXIS_SPAN_COMPAT_NOTE)
-    setattr(fig, "_llm_data_analyst_tool_notes", notes)
+    fig.__dict__["_llm_data_analyst_tool_notes"] = notes
 
 
 def _install_axis_span_annotation_compat() -> None:
@@ -158,7 +140,7 @@ def _install_axis_span_annotation_compat() -> None:
                 _mark_axis_span_compat(self)
                 return result
 
-        _safe_axis_span._llm_data_analyst_axis_span_compat = True  # type: ignore[attr-defined]
+        _safe_axis_span.__dict__["_llm_data_analyst_axis_span_compat"] = True
         setattr(go.Figure, method_name, _safe_axis_span)
 
 
@@ -184,6 +166,30 @@ def _plotly_sequence(value: Any) -> list[Any]:
             return list(value)
         except TypeError:
             return [value]
+
+
+def _figure_has_data_points(fig: go.Figure) -> bool:
+    data_fields = (
+        "x",
+        "y",
+        "z",
+        "values",
+        "labels",
+        "locations",
+        "lat",
+        "lon",
+        "open",
+        "high",
+        "low",
+        "close",
+        "ids",
+    )
+    for trace in fig.to_plotly_json().get("data", []):
+        for data_field in data_fields:
+            values = trace.get(data_field)
+            if values is not None and _plotly_sequence(values):
+                return True
+    return False
 
 
 def _format_compact_number(value: float) -> str:
@@ -470,18 +476,24 @@ class PlotlyTool(BaseExecTool):
     artifact_name: str = "plot"
     human_name: str = "графиков"
     description: str = tool_description("plotly_tool")
-    forbidden_code_patterns: ClassVar[tuple[tuple[str, str], ...]] = (
-        *_PLOTLY_FORBIDDEN_CODE_PATTERNS,
-        (
-            r"\.plot\.(?:bar|line|pie|scatter|area|hist)\s*\(",
-            "pandas .plot.* запрещён. Используй px.bar / px.pie / go.Bar.",
-        ),
+    matplotlib_message: ClassVar[str] = (
+        "В plotly_tool нельзя использовать matplotlib. Построй Plotly Figure через px или go."
     )
+    pandas_plot_message: ClassVar[str] = "pandas .plot.* запрещён. Используй px.bar / px.pie / go.Bar."
     allowed_libs: set[str] = {
-        "plotly", "pandas", "numpy",
-        "datetime", "math", "statistics", "calendar", "collections", "itertools", "re",
+        "plotly",
+        "pandas",
+        "numpy",
+        "datetime",
+        "math",
+        "statistics",
+        "calendar",
+        "collections",
+        "itertools",
+        "re",
     }
     allowed_artifact_types: tuple = (go.Figure,)
+
     def __init__(
         self,
         df: pd.DataFrame,
@@ -489,6 +501,9 @@ class PlotlyTool(BaseExecTool):
         tool_cache_size: int = 48,
         db_runtime_config: RuntimeDBConnectionConfig | None = None,
         sandbox: Any | None = None,
+        session_id: str = "",
+        session_store: Any | None = None,
+        execution_store: Any | None = None,
     ) -> None:
         _ = (px, go)  # imports остаются для явной зависимости инструмента
         super().__init__(
@@ -498,6 +513,9 @@ class PlotlyTool(BaseExecTool):
             tool_cache_size=tool_cache_size,
             db_runtime_config=db_runtime_config,
             sandbox=sandbox,
+            session_id=session_id,
+            session_store=session_store,
+            execution_store=execution_store,
         )
 
     def get_execution_scope(self) -> dict[str, Any]:
@@ -505,3 +523,23 @@ class PlotlyTool(BaseExecTool):
             "chart": ChartArtifactHelper(tool_name=self.name),
         }
         return scope
+
+    def validate_tool_result(self, tool_result: dict[str, object]) -> tuple[bool, str]:
+        valid, message = super().validate_tool_result(tool_result)
+        if not valid:
+            return valid, message
+
+        invalid_empty = [
+            name
+            for name, fig in tool_result.items()
+            if isinstance(fig, go.Figure) and not _figure_has_data_points(fig)
+        ]
+        if invalid_empty:
+            return (
+                False,
+                "plotly_tool получил пустой график без точек данных для артефакта(ов): "
+                f"{', '.join(invalid_empty)}. Не публикуй пустой chart: "
+                "сначала проверь DataFrame/фильтры или верни только таблицу и текстовый вывод.",
+            )
+
+        return True, ""

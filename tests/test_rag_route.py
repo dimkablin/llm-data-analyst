@@ -9,6 +9,7 @@ These tests verify:
   - RagTool is registered and available when rag_service is enabled
   - RagTool.is_available respects per-user tool permissions
 """
+
 from __future__ import annotations
 
 import unittest
@@ -36,6 +37,7 @@ class _FakeRAGService:
 
     def search(self, *, query: str, include_references: bool = False):
         from backend.integrations.rag import RAGQueryResult
+
         return RAGQueryResult(
             query=query,
             answer="Use access token from login endpoint.",
@@ -102,6 +104,64 @@ class RagToolTests(unittest.TestCase):
         result = tool._run("auth flow?")
         self.assertIn("Sources:", result)
         self.assertIn("docs.example/auth", result)
+        self.assertIn("knowledge-base answer below is synthesized evidence", result)
+        self.assertIn("not verbatim source passages", result)
+        self.assertTrue(result.startswith("Grounding constraint:"))
+        self.assertIn("run a complementary query", result)
+        self.assertIn("grounded partial list", result)
+
+    def test_rag_tool_propagates_backend_errors_to_the_tool_loop(self) -> None:
+        """Infrastructure failures must be observable as tool errors."""
+
+        class _UnavailableService(_FakeRAGService):
+            def search(self, *, query: str, include_references: bool = False):
+                raise RuntimeError("network unavailable")
+
+        tool = RagTool(rag_service=_UnavailableService())
+        with self.assertRaisesRegex(RuntimeError, "network unavailable"):
+            tool._run("auth flow?")
+
+    def test_rag_tool_run_without_context_refuses_to_invent_definition(self) -> None:
+        """RagTool should return an explicit non-answer when no KB context exists."""
+
+        class _NoContextService(_FakeRAGService):
+            def search(self, *, query: str, include_references: bool = False):
+                from backend.integrations.rag import RAGQueryResult
+
+                return RAGQueryResult(
+                    query=query,
+                    answer="",
+                    references=[],
+                    warnings=[],
+                    request_params={},
+                    raw_payload={},
+                )
+
+        tool = RagTool(rag_service=_NoContextService())
+        result = tool._run("unknown term abc")
+        self.assertIn("Do not invent a definition", result)
+        self.assertIn("Ask for clarification", result)
+
+    def test_rag_tool_run_with_no_context_warning_refuses_to_invent_definition(self) -> None:
+        """Warnings from retrieval should also trigger no-context clarification."""
+
+        class _NoContextWithWarningService(_FakeRAGService):
+            def search(self, *, query: str, include_references: bool = False):
+                from backend.integrations.rag import RAGQueryResult
+
+                return RAGQueryResult(
+                    query=query,
+                    answer="",
+                    references=[],
+                    warnings=["RAG backend returned no context chunks."],
+                    request_params={},
+                    raw_payload={},
+                )
+
+        tool = RagTool(rag_service=_NoContextWithWarningService())
+        result = tool._run("undefined metric")
+        self.assertIn("No relevant knowledge-base context", result)
+        self.assertIn("Ask for clarification", result)
 
     def test_rag_tool_description_scopes_retrieval_to_indexed_knowledge_base(self) -> None:
         """Tool descriptions must make the RAG source boundary explicit."""
@@ -109,8 +169,8 @@ class RagToolTests(unittest.TestCase):
         description = tool.description.lower()
 
         self.assertIn("configured indexed knowledge base", description)
-        self.assertIn("semantic retrieval", description)
-        self.assertIn("limited to content available in that index", description)
+        self.assertIn("synthesized grounded answer", description)
+        self.assertIn("explicitly named in that answer", description)
 
         rag_spec = next(spec for spec in ALL_TOOL_SPECS if spec.tool_key == "rag_tool")
         self.assertIn("indexed knowledge base", rag_spec.description.lower())
@@ -120,4 +180,5 @@ class RagToolTests(unittest.TestCase):
 def _make_ctx(*, allowed: set[str] | None):
     from backend.core import Settings
     from backend.tools.context import ToolBuildContext
+
     return ToolBuildContext(settings=Settings(), allowed_tool_keys=allowed)

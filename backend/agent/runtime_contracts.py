@@ -23,6 +23,7 @@ class AgentRunRequest(BaseModel):
     trace_context: dict[str, Any] = Field(default_factory=dict)
     session_source: dict[str, Any] = Field(default_factory=dict)
     selected_skill_ids: list[str] = Field(default_factory=list)
+    requested_tool_key: str | None = None
     cancel_event: threading.Event | None = None
 
 

@@ -5,6 +5,8 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.core.config import Settings
+from backend.data_access.crypto_service import SecretCryptoService
 from backend.mcp.models import (
     MCPServerCatalogItem,
     MCPServerConfig,
@@ -30,6 +32,7 @@ class MCPServerService(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     auth_db: Any | None = None
+    crypto: Any | None = None
     provider: Any
     static_configs: list[MCPServerConfig] = Field(default_factory=list)
 
@@ -39,18 +42,20 @@ class MCPServerService(BaseModel):
         auth_db: Any | None = None,
         provider: MCPToolProvider | None = None,
         configs: Iterable[MCPServerConfig] | None = None,
+        settings: Settings | None = None,
     ) -> None:
         from backend.mcp.transport import SDKMCPToolProvider
 
         super().__init__(
             auth_db=auth_db,
+            crypto=SecretCryptoService(settings or Settings()) if auth_db is not None else None,
             provider=provider or SDKMCPToolProvider(),
             static_configs=list(configs or []),
         )
 
     def list_configs(self) -> list[MCPServerConfig]:
         if self.auth_db is not None:
-            return self.auth_db.list_mcp_server_configs()
+            return [self._with_secret(config) for config in self.auth_db.list_mcp_server_configs()]
         return list(self.static_configs)
 
     def get_config(self, server_id: str) -> MCPServerConfig | None:
@@ -58,7 +63,8 @@ class MCPServerService(BaseModel):
         if not clean_server_id:
             return None
         if self.auth_db is not None:
-            return self.auth_db.get_mcp_server_config(clean_server_id)
+            config = self.auth_db.get_mcp_server_config(clean_server_id)
+            return self._with_secret(config) if config is not None else None
         for config in self.static_configs:
             if config.server_id == clean_server_id:
                 return config
@@ -70,9 +76,17 @@ class MCPServerService(BaseModel):
         *,
         updated_by: int,
     ) -> MCPServerConfig:
+        token = str(payload.bearer_token or "").strip() or None
         if self.auth_db is not None:
-            return self.auth_db.upsert_mcp_server_config(payload, updated_by=updated_by)
+            encrypted = self.crypto.encrypt_payload({"bearer_token": token}) if token else None
+            saved = self.auth_db.upsert_mcp_server_config(payload, updated_by=updated_by)
+            if token is None:
+                self.auth_db.clear_mcp_server_secret(saved.server_id)
+            else:
+                self.auth_db.set_mcp_server_secret(saved.server_id, encrypted)
+            return saved.model_copy(update={"bearer_token": token})
         data = payload.model_dump()
+        data["bearer_token"] = token
         data["updated_by"] = updated_by
         config = MCPServerConfig(**data)
         self.static_configs = [
@@ -92,10 +106,28 @@ class MCPServerService(BaseModel):
         if current is None:
             return None
         data = current.model_dump()
+        data["bearer_token"] = current.bearer_token
         for field, value in payload.model_dump(exclude_unset=True).items():
             data[field] = value
         updated_config = MCPServerConfig(**data)
         return self.upsert_config(updated_config, updated_by=updated_by)
+
+    def test_connection(
+        self,
+        server_id: str,
+        payload: MCPServerUpdateRequest,
+    ) -> int | None:
+        current = self.get_config(server_id)
+        if current is None:
+            return None
+        data = current.model_dump() | payload.model_dump(exclude_unset=True)
+        data["bearer_token"] = (
+            payload.bearer_token
+            if "bearer_token" in payload.model_fields_set
+            else current.bearer_token
+        )
+        config = MCPServerConfig(**data)
+        return len(self.provider.list_tools(config))
 
     def delete_config(self, server_id: str) -> bool:
         clean_server_id = str(server_id or "").strip()
@@ -108,6 +140,14 @@ class MCPServerService(BaseModel):
             existing for existing in self.static_configs if existing.server_id != clean_server_id
         ]
         return len(self.static_configs) != before
+
+    def _with_secret(self, config: MCPServerConfig) -> MCPServerConfig:
+        encrypted = self.auth_db.get_mcp_server_secret_blob(config.server_id)
+        if not encrypted:
+            return config
+        payload = self.crypto.decrypt_payload(encrypted)
+        token = str(payload.get("bearer_token") or "").strip() or None
+        return config.model_copy(update={"bearer_token": token})
 
     def list_catalog(
         self,
@@ -192,7 +232,10 @@ class MCPServerService(BaseModel):
                 tool_count=0,
             )
         try:
-            tools = self.provider.list_tools(config)
+            tools = [
+                self._apply_binding(config, descriptor)
+                for descriptor in self.provider.list_tools(config)
+            ]
         except Exception as exc:
             return MCPServerCatalogItem(
                 server_id=config.server_id,
@@ -222,4 +265,21 @@ class MCPServerService(BaseModel):
             effective_enabled=enabled_for_user,
             tools=tools,
             tool_count=len(tools),
+        )
+
+    @staticmethod
+    def _apply_binding(
+        config: MCPServerConfig,
+        descriptor: MCPToolDescriptor,
+    ) -> MCPToolDescriptor:
+        binding = config.tool_bindings.get(descriptor.tool_name)
+        if binding is None:
+            return descriptor
+        return descriptor.model_copy(
+            update={
+                "capability_key": binding.capability_key,
+                "provider_identity": binding.provider_identity or config.server_id,
+                "binding_priority": binding.priority,
+                "binding_preferred": binding.preferred,
+            }
         )

@@ -8,6 +8,7 @@ Each factory encapsulates three concerns:
 ``ToolFactory`` is a structural ``Protocol``, so factories do not need to inherit from
 a common base class — duck typing is enough.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -19,7 +20,6 @@ from pydantic import BaseModel
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
-from backend.integrations.search import SearchIntegrationService
 from backend.tools.context import ToolBuildContext
 from backend.tools.impl.anomaly_planfact_tool import AnomalyPlanfactTool
 from backend.tools.impl.data_catalog_tool import DataCatalogTool
@@ -33,11 +33,15 @@ from backend.tools.impl.generation_tools import (
 from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
 from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
 from backend.tools.impl.pandas_tool import PandasTool
-from backend.tools.impl.planner_tool import PlannerTool
 from backend.tools.impl.plotly_tool import PlotlyTool
 from backend.tools.impl.rag_tool import RagTool
-from backend.tools.impl.search_tool import SearchTool
+from backend.tools.impl.semantic_catalog_tool import (
+    SemanticCatalogEditTool,
+    SemanticCatalogGenerateTool,
+    SemanticCatalogReadTool,
+)
 from backend.tools.impl.sql_tool import SQLTool
+from backend.tools.impl.update_plan_tool import UpdatePlanTool
 from backend.tools.policy import is_tool_allowed
 
 
@@ -52,20 +56,19 @@ class ToolFactory(Protocol):
     def build(self, ctx: ToolBuildContext) -> BaseTool: ...
 
 
-# ── Integration-backed factories ──────────────────────────────────────────────
-
-
-class SearchToolFactory:
-    key = "search_tool"
-
-    def __init__(self, service: SearchIntegrationService) -> None:
-        self._service = service
+class UpdatePlanToolFactory:
+    key = "update_plan"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return self._service.is_enabled and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        return ctx.working_memory is not None and is_tool_allowed(self.key, ctx.allowed_tool_keys)
 
-    def build(self, ctx: ToolBuildContext) -> SearchTool:
-        return SearchTool(search_service=self._service)
+    def build(self, ctx: ToolBuildContext) -> UpdatePlanTool:
+        if ctx.working_memory is None:
+            raise RuntimeError("update_plan requires per-request working memory")
+        return UpdatePlanTool(ctx.working_memory)
+
+
+# ── Integration-backed factories ──────────────────────────────────────────────
 
 
 class ForecastToolFactory:
@@ -75,21 +78,13 @@ class ForecastToolFactory:
         self._service = service
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return (
-            self._service.is_enabled
-            and ctx.has_data
-            and is_tool_allowed(self.key, ctx.allowed_tool_keys)
-        )
+        return self._service.is_enabled and ctx.has_data and is_tool_allowed(self.key, ctx.allowed_tool_keys)
 
     def build(self, ctx: ToolBuildContext) -> ForecastTool:
         return ForecastTool(
-            ctx.tool_df,
             forecast_service=self._service,
-            execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
-            tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
             csv_session_id=ctx.csv_session_id if ctx.csv_loaded else None,
-            sandbox=ctx.sandbox,
         )
 
 
@@ -100,17 +95,13 @@ class AnomalyPlanfactToolFactory:
         self._service = service
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return (
-            self._service.is_enabled
-            and ctx.has_data
-            and is_tool_allowed(self.key, ctx.allowed_tool_keys)
-        )
+        return self._service.is_enabled and ctx.has_data and is_tool_allowed(self.key, ctx.allowed_tool_keys)
 
     def build(self, ctx: ToolBuildContext) -> AnomalyPlanfactTool:
         return AnomalyPlanfactTool(
             ctx.tool_df,
             anomaly_planfact_service=self._service,
-            execution_timeout_sec=max(ctx.settings.tool_exec_timeout_sec, 90.0),
+            execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=max(4, ctx.settings.tool_cache_size // 3),
             db_runtime_config=ctx.tool_db_runtime,
             csv_session_id=ctx.csv_session_id if ctx.csv_loaded else None,
@@ -157,8 +148,9 @@ class GenerateReportToolFactory(BaseModel):
     def build(self, ctx: ToolBuildContext) -> GenerateReportTool:
         return GenerateReportTool(
             session_id=str(ctx.trace_context.get("session_id") or ""),
-            storage_dir=ctx.settings.storage_dir,
-            session_ttl_days=ctx.settings.session_ttl_days,
+            user_id=int(ctx.trace_context.get("user_id") or 0),
+            session_store=ctx.session_store,
+            blob_store=ctx.blob_store,
         )
 
 
@@ -174,20 +166,14 @@ class SQLToolFactory:
 
     def build(self, ctx: ToolBuildContext) -> SQLTool:
         return SQLTool(
-            llm_base_url=ctx.settings.llm_base_url,
-            llm_model=ctx.settings.llm_model,
-            llm_api_key=ctx.settings.llm_api_key,
-            llm_enable_thinking=ctx.settings.llm_enable_thinking,
-            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
-            llm_provider=ctx.settings.llm_provider,
             db_runtime_config=ctx.tool_db_runtime,
             csv_loaded=ctx.csv_loaded,
             csv_session_id=ctx.csv_session_id,
-            max_rows=200,
+            query_timeout_sec=30.0,
             sandbox=ctx.sandbox,
             candidates_cache_key=ctx.candidates_cache_key,
             storage_dir=ctx.settings.storage_dir,
-            semantic_context_prompt=ctx.semantic_context_prompt,
+            manifest_store=ctx.manifest_store,
             semantic_hints=ctx.semantic_hints,
         )
 
@@ -236,13 +222,15 @@ class PlotlyToolFactory:
         return bool(ctx.csv_loaded and (ctx.csv_session_id or "").strip())
 
     def build(self, ctx: ToolBuildContext) -> PlotlyTool:
-        plotly_timeout = max(ctx.settings.tool_exec_timeout_sec * 2, 60.0)
         return PlotlyTool(
             ctx.tool_df,
-            execution_timeout_sec=plotly_timeout,
+            execution_timeout_sec=ctx.settings.tool_exec_timeout_sec,
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
+            session_id=str(ctx.trace_context.get("session_id") or ""),
+            session_store=ctx.session_store,
+            execution_store=ctx.execution_store,
         )
 
 
@@ -265,24 +253,68 @@ class PandasToolFactory:
             tool_cache_size=ctx.settings.tool_cache_size,
             db_runtime_config=ctx.tool_db_runtime,
             sandbox=ctx.sandbox,
+            session_id=str(ctx.trace_context.get("session_id") or ""),
+            session_store=ctx.session_store,
+            execution_store=ctx.execution_store,
         )
 
 
-class PlannerToolFactory:
-    """Always available; generates analysis plans via internal LLM call."""
-
-    key = "planner_tool"
+class SemanticCatalogReadToolFactory:
+    key = "semantic_catalog_read_tool"
 
     def is_available(self, ctx: ToolBuildContext) -> bool:
-        return is_tool_allowed("planner_tool", ctx.allowed_tool_keys)
+        return (
+            getattr(ctx.settings, "semantic_layer_enabled", True)
+            and ctx.semantic_catalog_service is not None
+            and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        )
 
-    def build(self, ctx: ToolBuildContext) -> PlannerTool:
-        return PlannerTool(
-            llm_model=ctx.settings.llm_model,
-            llm_base_url=ctx.settings.llm_base_url,
-            llm_api_key=ctx.settings.llm_api_key,
-            llm_provider=ctx.settings.llm_provider,
-            llm_chat_template_kwargs_enabled=ctx.settings.llm_chat_template_kwargs_enabled,
+    def build(self, ctx: ToolBuildContext) -> SemanticCatalogReadTool:
+        source = ctx.trace_context or {}
+        connection_id = str(getattr(ctx.tool_db_runtime, "connection_id", "") or "")
+        return SemanticCatalogReadTool(
+            catalog_service=ctx.semantic_catalog_service,
+            session_id=str(source.get("session_id") or "default"),
+            user_id=int(source.get("user_id") or 0),
+            connection_id=connection_id,
+        )
+
+
+class SemanticCatalogEditToolFactory:
+    key = "semantic_catalog_edit_tool"
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        return (
+            getattr(ctx.settings, "semantic_layer_enabled", True)
+            and ctx.semantic_catalog_service is not None
+            and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        )
+
+    def build(self, ctx: ToolBuildContext) -> SemanticCatalogEditTool:
+        source = ctx.trace_context or {}
+        return SemanticCatalogEditTool(
+            catalog_service=ctx.semantic_catalog_service,
+            session_id=str(source.get("session_id") or "default"),
+            user_id=int(source.get("user_id") or 0),
+        )
+
+
+class SemanticCatalogGenerateToolFactory:
+    key = "semantic_catalog_generate_tool"
+
+    def is_available(self, ctx: ToolBuildContext) -> bool:
+        return (
+            getattr(ctx.settings, "semantic_layer_enabled", True)
+            and ctx.semantic_generation_service is not None
+            and is_tool_allowed(self.key, ctx.allowed_tool_keys)
+        )
+
+    def build(self, ctx: ToolBuildContext) -> SemanticCatalogGenerateTool:
+        source = ctx.trace_context or {}
+        return SemanticCatalogGenerateTool(
+            generation_service=ctx.semantic_generation_service,
+            session_id=str(source.get("session_id") or "default"),
+            user_id=int(source.get("user_id") or 0),
         )
 
 

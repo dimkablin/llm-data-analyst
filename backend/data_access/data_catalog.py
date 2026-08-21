@@ -12,8 +12,6 @@ from typing import Any
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
-from backend.agent.dataset_profiles import infer_column_roles
-
 _CATALOG_VERSION = "1.0"
 _MAX_TABLES_IN_PROMPT = 24
 _MAX_COLUMNS_PER_TABLE = 48
@@ -116,6 +114,8 @@ class DataCatalogSnapshot:
     version: str = _CATALOG_VERSION
     built_at: str = ""
     source_fingerprint: str = ""
+    profile_sample_strategy: str = ""
+    profile_sample_limit: int | None = None
     tables: list[CatalogTable] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -124,6 +124,8 @@ class DataCatalogSnapshot:
             "version": self.version,
             "built_at": self.built_at,
             "source_fingerprint": self.source_fingerprint,
+            "profile_sample_strategy": self.profile_sample_strategy,
+            "profile_sample_limit": self.profile_sample_limit,
             "tables": [t.to_dict() for t in self.tables],
             "errors": list(self.errors),
         }
@@ -139,6 +141,10 @@ class DataCatalogSnapshot:
             version=str(raw.get("version") or _CATALOG_VERSION),
             built_at=str(raw.get("built_at") or ""),
             source_fingerprint=str(raw.get("source_fingerprint") or ""),
+            profile_sample_strategy=str(raw.get("profile_sample_strategy") or ""),
+            profile_sample_limit=(
+                int(raw["profile_sample_limit"]) if raw.get("profile_sample_limit") is not None else None
+            ),
             tables=[t for t in tables if t.qualified_name],
             errors=[str(item) for item in raw.get("errors") or [] if str(item).strip()],
         )
@@ -173,6 +179,15 @@ def _safe_profile_value(column: str, value: Any) -> str:
     return text if len(text) <= 80 else text[:77] + "..."
 
 
+def _hashable_profile_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except TypeError:
+            return str(value)
+    return value
+
+
 def _profile_column(
     name: str,
     series: pd.Series,
@@ -182,13 +197,14 @@ def _profile_column(
     top_values: int,
 ) -> CatalogColumn:
     non_null = series.dropna()
+    profile_values = non_null.map(_hashable_profile_value)
     examples = [
         _safe_profile_value(name, value)
-        for value in non_null.drop_duplicates().head(5).tolist()
+        for value in profile_values.drop_duplicates().head(5).tolist()
     ]
     popular = [
         _safe_profile_value(name, value)
-        for value in non_null.value_counts(dropna=True).head(top_values).index.tolist()
+        for value in profile_values.value_counts(dropna=True).head(top_values).index.tolist()
     ]
     min_value: str | None = None
     max_value: str | None = None
@@ -200,7 +216,7 @@ def _profile_column(
         dtype=dtype or _dtype_label(series),
         nullable=nullable if nullable is not None else bool(series.isna().any()),
         null_ratio=round(float(series.isna().mean()), 6) if len(series) else 0.0,
-        distinct_count=int(non_null.nunique(dropna=True)),
+        distinct_count=int(profile_values.nunique(dropna=True)),
         examples=examples,
         min_value=min_value,
         max_value=max_value,
@@ -243,10 +259,13 @@ def build_snapshot_from_dataframe(
     fingerprint: str = "",
     options: CatalogProfileOptions | None = None,
 ) -> DataCatalogSnapshot:
+    profile = options or CatalogProfileOptions()
     return DataCatalogSnapshot(
         built_at=datetime.now(UTC).isoformat(),
         source_fingerprint=fingerprint,
-        tables=[build_table_from_dataframe(df, qualified_name=qualified_name, options=options)],
+        profile_sample_strategy="first_rows",
+        profile_sample_limit=profile.sample_rows,
+        tables=[build_table_from_dataframe(df, qualified_name=qualified_name, options=profile)],
     )
 
 
@@ -327,6 +346,8 @@ def build_snapshot_from_csv_runtime(
     return DataCatalogSnapshot(
         built_at=datetime.now(UTC).isoformat(),
         source_fingerprint=fingerprint,
+        profile_sample_strategy="first_rows",
+        profile_sample_limit=profile.sample_rows,
         tables=tables,
         errors=errors,
     )
@@ -354,6 +375,11 @@ def build_snapshot_from_db_helper(
             for c in row.get("columns", [])[: profile.max_columns_per_table]
             if str(c).strip()
         ]
+        raw_column_types = row.get("column_types")
+        column_types = raw_column_types if isinstance(raw_column_types, dict) else {}
+        declared_types = {
+            name: str(column_types.get(name) or "").strip() for name in col_names
+        }
         sample = pd.DataFrame()
         preview = getattr(helper, "preview_table", None)
         if callable(preview) and profile.sample_rows > 0:
@@ -365,12 +391,17 @@ def build_snapshot_from_db_helper(
                 )
             except Exception as exc:
                 errors.append(f"DB profile failed for {row.get('qualified_name') or table_name}: {exc}")
-        columns = [
-            _profile_column(name, sample[name], top_values=profile.top_values)
-            if name in sample.columns
-            else CatalogColumn(name=name)
-            for name in col_names
-        ]
+        columns: list[CatalogColumn] = []
+        for name in col_names:
+            dtype = declared_types[name]
+            if name in sample.columns:
+                columns.append(
+                    _profile_column(
+                        name, sample[name], dtype=dtype, top_values=profile.top_values
+                    )
+                )
+            else:
+                columns.append(CatalogColumn(name=name, dtype=dtype))
         tables.append(
             CatalogTable(
                 qualified_name=str(row.get("qualified_name") or table_name),
@@ -384,6 +415,8 @@ def build_snapshot_from_db_helper(
     return DataCatalogSnapshot(
         built_at=datetime.now(UTC).isoformat(),
         source_fingerprint=fingerprint,
+        profile_sample_strategy="first_rows",
+        profile_sample_limit=profile.sample_rows,
         tables=tables,
         errors=errors,
     )
@@ -395,8 +428,11 @@ def merge_snapshots(*parts: DataCatalogSnapshot) -> DataCatalogSnapshot:
     fingerprint_parts: list[str] = []
     built_at = datetime.now(UTC).isoformat()
     errors: list[str] = []
+    sample_limits: list[int] = []
     for part in parts:
         errors.extend(part.errors)
+        if part.profile_sample_limit is not None:
+            sample_limits.append(part.profile_sample_limit)
         if part.source_fingerprint:
             fingerprint_parts.append(part.source_fingerprint)
         for table in part.tables:
@@ -408,6 +444,8 @@ def merge_snapshots(*parts: DataCatalogSnapshot) -> DataCatalogSnapshot:
     return DataCatalogSnapshot(
         built_at=built_at,
         source_fingerprint="|".join(fingerprint_parts),
+        profile_sample_strategy="first_rows" if sample_limits else "",
+        profile_sample_limit=max(sample_limits) if sample_limits else None,
         tables=merged,
         errors=list(dict.fromkeys(errors)),
     )
@@ -427,14 +465,18 @@ def format_catalog_prompt_block(
         "Используй ТОЧНЫЕ имена таблиц и колонок из каталога. "
         "Для SQL — `sql_tool`; для расчётов/графиков — переменные sandbox после sql_tool.",
     ]
+    if snapshot.profile_sample_strategy == "first_rows" and snapshot.profile_sample_limit:
+        lines.append(
+            "Важно: статистика профиля (null_ratio, distinct_count, min/max и top_values) "
+            f"рассчитана только по первым {snapshot.profile_sample_limit} строкам каждой таблицы, "
+            "а не по всему источнику."
+        )
 
     for table in snapshot.tables[:max_tables]:
-        col_parts: list[str] = []
-        for col in table.columns[:max_columns_per_table]:
-            label = f"`{col.name}`"
-            if col.dtype:
-                label += f" ({col.dtype})"
-            col_parts.append(label)
+        col_parts = [
+            _format_catalog_column_prompt_label(col)
+            for col in table.columns[:max_columns_per_table]
+        ]
         extra = len(table.columns) - max_columns_per_table
         if extra > 0:
             col_parts.append(f"... +{extra} колонок")
@@ -447,31 +489,15 @@ def format_catalog_prompt_block(
     if len(snapshot.tables) > max_tables:
         lines.append(f"- ... ещё {len(snapshot.tables) - max_tables} таблиц")
 
-    # Role hints for the primary dataframe-like table (first table or named df).
-    primary = snapshot.tables[0]
-    if primary.columns:
-        try:
-            col_names = [c.name for c in primary.columns]
-            stub = pd.DataFrame({name: [] for name in col_names})
-            for c in primary.columns:
-                if c.dtype == "datetime":
-                    stub[c.name] = pd.to_datetime([])
-                elif c.dtype in ("int64", "float64", "int32", "float32"):
-                    stub[c.name] = pd.Series(dtype=c.dtype)
-            roles = infer_column_roles(stub, max_columns=max_columns_per_table)
-            role_lines: list[str] = []
-            if roles.time:
-                role_lines.append(f"время: {list(roles.time)}")
-            if roles.metrics:
-                role_lines.append(f"метрики: {list(roles.metrics)}")
-            if roles.dimensions:
-                role_lines.append(f"измерения: {list(roles.dimensions)}")
-            if role_lines:
-                lines.append("Эвристика ролей (проверь по данным): " + "; ".join(role_lines))
-        except Exception:
-            pass
-
     return "\n".join(lines)
+
+
+def _format_catalog_column_prompt_label(col: CatalogColumn) -> str:
+    """Schema-only column label for LLM prompts."""
+    label = f"`{col.name}`"
+    if col.dtype:
+        label += f" ({col.dtype})"
+    return label
 
 
 def snapshot_to_json(snapshot: DataCatalogSnapshot) -> str:

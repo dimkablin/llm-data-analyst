@@ -2,8 +2,28 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
+
+
+class PlanItem(BaseModel):
+    """One user-visible step in the main agent's current working plan."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step: str = Field(min_length=1, max_length=240)
+    status: Literal["pending", "in_progress", "completed"]
+
+    @field_validator("step")
+    @classmethod
+    def _normalize_step(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("plan step must not be empty")
+        return normalized
 
 
 @dataclass
@@ -13,14 +33,15 @@ class ArtifactHandle:
     Canonical source: ArtifactStore (lookup by id to get actual data).
     Created once at artifact creation time. Immutable after creation.
     """
-    id: str                           # matches ArtifactStore.artifact.id
-    name: str                         # artifact_name from tool_result
-    type: str                         # "table" | "plot" | "value" | "error"
-    tool_name: str                    # "sql_tool" | "pandas_tool" | "plotly_tool" | ...
-    step_index: int                   # step counter when created
-    schema: dict[str, str] | None     # col → dtype, tables only
-    row_count: int | None             # tables only
-    summary: str | None               # deterministic one-liner
+
+    id: str  # matches ArtifactStore.artifact.id
+    name: str  # artifact_name from tool_result
+    type: str  # "table" | "plot" | "value" | "error"
+    tool_name: str  # "sql_tool" | "pandas_tool" | "plotly_tool" | ...
+    step_index: int  # step counter when created
+    schema: dict[str, str] | None  # col → dtype, tables only
+    row_count: int | None  # tables only
+    summary: str | None  # deterministic one-liner
 
     @property
     def masked_ref(self) -> str:
@@ -51,15 +72,14 @@ class AnalysisWorkingMemory:
     Per-query ephemeral state. Initialized during context preparation, flushed to SessionStore at finalize.
     All fields have explicit defaults — safe to construct with goal= only.
     """
-    goal: str                               # current user request (set during context preparation)
-    step_index: int = 0                     # incremented after each tool call
+
+    goal: str  # current user request (set during context preparation)
+    step_index: int = 0  # incremented after each tool call
     artifact_handles: list[ArtifactHandle] = field(default_factory=list)
     sandbox_var_names: list[str] = field(default_factory=list)
     tool_call_count: int = 0
 
-    # current_plan: set ONLY by planner_tool. Default [] means planner was not called.
-    # Fully replaced (not merged) when planner_tool runs again.
-    current_plan: list[str] = field(default_factory=list)
+    current_plan: list[PlanItem] = field(default_factory=list)
 
     # completed_actions: full audit trail. One entry per tool call, always, deterministic.
     # Format: "{tool_name} → {artifact_name_or_summary}"

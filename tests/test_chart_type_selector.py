@@ -37,7 +37,6 @@ def test_pick_chart_kind_uses_cardinality_not_column_names() -> None:
             segment_index=0,
             df=df,
             segment_col="entity_label",
-            prompt="distribution",
         )
         == "bar_h"
     )

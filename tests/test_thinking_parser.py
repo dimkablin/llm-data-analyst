@@ -488,6 +488,24 @@ class TestReasoningSteps:
 
         assert h.collected_visible() == "hello world"
 
+    def test_visible_text_is_attached_to_the_next_tool_activity(self):
+        from backend.agent.callbacks import ToolCollector
+
+        h = self._make_handler()
+        h.on_llm_new_token("Проверю данные.")
+        h.on_llm_end(SimpleNamespace(generations=[]))
+
+        collector = ToolCollector()
+        collector.token_callback = h
+        collector.on_tool_start(
+            {"name": "sql_tool"},
+            '{"query":"SELECT 1","tool_call_id":"call-1"}',
+        )
+
+        activity = collector.to_persisted_activities()[0]
+        assert activity["pre_text"] == "Проверю данные."
+        assert h.take_pending_visible() == ""
+
     def test_tool_activity_persistence_keeps_output_and_marks_interrupted(self):
         from backend.agent.callbacks import ToolCollector
 

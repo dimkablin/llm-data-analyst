@@ -48,7 +48,7 @@ ruff = "^0.15.7"
 
 [tool.ruff]
 line-length = 110
-exclude = [".backend_old", ".search_service", ".venv"]
+exclude = [".backend_old", ".venv"]
 
 [tool.ruff.lint]
 select = [

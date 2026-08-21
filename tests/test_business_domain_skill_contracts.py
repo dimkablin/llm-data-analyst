@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from backend.skills import SkillRegistry
-from backend.tools.catalog import KNOWN_TOOL_KEYS
 
 GENERAL_SKILL_ID = "business_domain_analysis"
 
@@ -19,9 +18,9 @@ GENERIC_ANALYSIS_TERMS = (
     "time role",
     "entity role",
     "evidence table",
-    "forecast_tool",
-    "anomaly_planfact_tool",
-    "generate_report_tool",
+    "active capability catalog",
+    "provider provenance",
+    "report export",
 )
 
 FORBIDDEN_PROMPT_HARDCODE_TERMS = (
@@ -72,18 +71,18 @@ def test_prompt_specific_demo_skills_are_not_registered() -> None:
     assert set(REMOVED_PROMPT_SPECIFIC_SKILL_IDS).isdisjoint(loaded_ids)
 
 
-def test_general_business_domain_skill_has_generic_tool_contract() -> None:
-    contract = _registry().get(GENERAL_SKILL_ID).execution_contract
+def test_general_business_domain_skill_keeps_requirements_as_prompt_text() -> None:
+    skill = _registry().get(GENERAL_SKILL_ID)
+    text = skill.instructions_markdown
 
-    assert contract.required_tools == (
-        "data_catalog_tool",
-        "sql_tool",
-        "pandas_tool",
-        "plotly_tool",
-    )
-    assert contract.required_artifacts
-    assert contract.evidence_rules
-    assert set(contract.required_tools).issubset(KNOWN_TOOL_KEYS)
+    assert "### Required capabilities" in text
+    assert "`source_catalog`" in text
+    assert "`read_only_sql`" in text
+    assert "`dataframe_transform`" in text
+    assert "`chart`" in text
+    assert "### Required artifacts" in text
+    assert "### Evidence rules" in text
+    assert not hasattr(skill, "execution_contract")
 
 
 def test_general_business_domain_skill_covers_methods_not_demo_prompts() -> None:

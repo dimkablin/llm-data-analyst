@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from backend.api.models import (
 )
 from backend.auth.auth_db import AuthDB, AuthUser
 from backend.core.config import settings
+from backend.data_access.semantic_catalog_service import SemanticCatalogService
 from backend.notebook.manifest_store import ManifestStore
 from backend.sessions.session_store import SessionState, SessionStore
 
@@ -31,6 +33,7 @@ _title_service: ChatTitleService = None  # type: ignore
 _build_trace_context_fn = None  # type: ignore
 _query_trace_context_fn = None  # type: ignore
 _manifest_store: ManifestStore = None  # type: ignore
+_semantic_catalog_service: SemanticCatalogService | None = None
 
 
 def setup(
@@ -40,14 +43,43 @@ def setup(
     build_trace_context_fn,
     query_trace_context_fn,
     manifest_store: ManifestStore | None = None,
+    semantic_catalog_service: SemanticCatalogService | None = None,
 ) -> None:
-    global _auth_db, _store, _title_service, _build_trace_context_fn, _query_trace_context_fn, _manifest_store
+    global _auth_db, _store, _title_service, _build_trace_context_fn, _query_trace_context_fn
+    global _manifest_store, _semantic_catalog_service
     _auth_db = auth_db
     _store = store
     _title_service = title_service
     _manifest_store = manifest_store
+    _semantic_catalog_service = semantic_catalog_service
     _build_trace_context_fn = build_trace_context_fn
     _query_trace_context_fn = query_trace_context_fn
+
+
+def _clear_session_semantic_catalog(
+    session_id: str,
+    user_id: int,
+    *,
+    preserve_shared_csv: bool,
+) -> None:
+    if _semantic_catalog_service is None:
+        return
+    state = _store.load_session(session_id)
+    if state is None or _session_source_type(state) not in {"csv", "planfact"}:
+        return
+    if preserve_shared_csv and _session_source_type(state) == "csv":
+        for row in _auth_db.list_sessions(user_id):
+            other_id = str(row.get("session_id") or "")
+            if not other_id or other_id == session_id:
+                continue
+            other = _store.load_session(other_id)
+            if (
+                other is not None
+                and _session_source_type(other) == "csv"
+                and other.source_ref_id == state.source_ref_id
+            ):
+                return
+    _semantic_catalog_service.clear_for_session(session_id=session_id, user_id=user_id)
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -133,12 +165,17 @@ def create_session(
     current_user: Annotated[AuthUser, Depends(get_current_user)],
     enable_auto_title: bool = False,
 ) -> CreateSessionResponse:
-    state = _store.create_session()
+    session_id = secrets.token_hex(16)
     _auth_db.register_session(
-        state.session_id,
+        session_id,
         current_user.id,
         allow_auto_title=enable_auto_title,
     )
+    try:
+        state = _store.create_session(session_id=session_id)
+    except Exception:
+        _auth_db.delete_session(session_id, current_user.id)
+        raise
     return CreateSessionResponse(session_id=state.session_id)
 
 
@@ -147,6 +184,9 @@ def delete_all_sessions(
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
     """Delete every session that belongs to the current user."""
+    session_ids = [str(row["session_id"]) for row in _auth_db.list_sessions(current_user.id)]
+    for sid in session_ids:
+        _clear_session_semantic_catalog(sid, current_user.id, preserve_shared_csv=False)
     session_ids = _auth_db.delete_all_sessions(current_user.id)
     for sid in session_ids:
         _store.delete_session(sid)
@@ -158,6 +198,9 @@ def delete_session(
     session_id: str,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
+    if not _auth_db.is_session_owner(session_id, current_user.id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    _clear_session_semantic_catalog(session_id, current_user.id, preserve_shared_csv=True)
     if not _auth_db.delete_session(session_id, current_user.id):
         raise HTTPException(status_code=404, detail="Session not found")
     _store.delete_session(session_id)

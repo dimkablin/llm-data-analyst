@@ -66,14 +66,12 @@ def test_context_manager_exposes_pydantic_contracts() -> None:
         assert issubclass(contract, BaseModel)
 
 
-def test_runner_dependencies_expose_context_services() -> None:
+def test_runner_dependencies_expose_context_builder() -> None:
     from backend.agent.context_manager import AgentContextBuilder
-    from backend.agent.services.agent_prompt_context import AgentPromptContextBuilder
 
     runner = AgentRunner()
 
     assert isinstance(runner.dependencies.context_builder, AgentContextBuilder)
-    assert isinstance(runner.dependencies.prompt_context_builder, AgentPromptContextBuilder)
 
 
 def test_runner_exposes_pydantic_dependency_container() -> None:
@@ -126,6 +124,7 @@ def test_agent_run_cache_hit_preserves_result_contract() -> None:
         artifacts=[],
         route="analysis",
     )
+    prepared = runner._prepare_request(request)
     cache_key = runner._query_cache_key(
         df=request.df,
         prompt=request.prompt,
@@ -133,6 +132,11 @@ def test_agent_run_cache_hit_preserves_result_contract() -> None:
         use_history=request.use_history,
         include_reasoning=request.include_reasoning,
         selected_skill_ids=request.selected_skill_ids,
+        trace_context=request.trace_context,
+        session_source=request.session_source,
+        registry_snapshot_fingerprint=prepared.state_update[
+            "registry_snapshot"
+        ].fingerprint,
     )
     runner._cache_set(cache_key, cached)
 
@@ -140,6 +144,35 @@ def test_agent_run_cache_hit_preserves_result_contract() -> None:
 
     assert isinstance(result, AgentRunResult)
     assert result.response.final_text == "cached response"
+
+
+def test_agent_cache_key_isolated_by_user_session_and_source() -> None:
+    runner = AgentRunner()
+    common = {
+        "df": None,
+        "prompt": "same prompt",
+        "history": [],
+        "use_history": False,
+        "include_reasoning": False,
+    }
+
+    first = runner._query_cache_key(
+        **common,
+        trace_context={"user_id": 1, "session_id": "session-a"},
+        session_source={"db_connection_id": "db-a"},
+    )
+    other_user = runner._query_cache_key(
+        **common,
+        trace_context={"user_id": 2, "session_id": "session-a"},
+        session_source={"db_connection_id": "db-a"},
+    )
+    other_source = runner._query_cache_key(
+        **common,
+        trace_context={"user_id": 1, "session_id": "session-a"},
+        session_source={"db_connection_id": "db-b"},
+    )
+
+    assert len({first, other_user, other_source}) == 3
 
 
 def test_dependency_container_accepts_runtime_service_adapters() -> None:

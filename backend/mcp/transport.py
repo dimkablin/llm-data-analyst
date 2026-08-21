@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import threading
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
 import anyio
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
 from backend.mcp.models import (
     MCPServerConfig,
@@ -12,6 +15,7 @@ from backend.mcp.models import (
     MCPToolCallResult,
     MCPToolDescriptor,
 )
+from mcp import ClientSession
 
 
 class SDKMCPToolProvider:
@@ -96,15 +100,15 @@ class SDKMCPToolProvider:
 
     @staticmethod
     def _http_session(config: MCPServerConfig):
-        from contextlib import asynccontextmanager
-
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
-
         @asynccontextmanager
         async def _connect():
             async with streamablehttp_client(
                 str(config.url),
+                headers=(
+                    {"Authorization": f"Bearer {config.bearer_token}"}
+                    if config.bearer_token
+                    else None
+                ),
                 timeout=config.timeout_sec,
                 sse_read_timeout=max(config.timeout_sec, 300.0),
             ) as (read_stream, write_stream, _get_session_id):
@@ -116,11 +120,6 @@ class SDKMCPToolProvider:
 
     @staticmethod
     def _stdio_session(config: MCPServerConfig):
-        from contextlib import asynccontextmanager
-
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-
         @asynccontextmanager
         async def _connect():
             params = StdioServerParameters(

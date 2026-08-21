@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
-import { AlertCircle, Download, FilePenLine, Plus, PlugZap, Server, Sparkles, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, FilePenLine, Plus, PlugZap, Server, Sparkles, Trash2 } from "lucide-react";
 import {
   deleteAdminMcpServer,
   exportSkillsArchive,
@@ -8,6 +8,7 @@ import {
   listAdminMcpServers,
   listMcpServers,
   listSkills,
+  testAdminMcpServer,
   updateAdminMcpServer,
   updateAdminSkill,
   updateMcpServerEnabled,
@@ -560,9 +561,13 @@ function McpServerEditModal({
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
   const [envText, setEnvText] = useState("{}");
+  const [bearerToken, setBearerToken] = useState("");
+  const [removeBearerToken, setRemoveBearerToken] = useState(false);
   const [timeoutSec, setTimeoutSec] = useState("30");
   const [enabled, setEnabled] = useState(true);
   const [enabledByDefault, setEnabledByDefault] = useState(true);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -574,9 +579,12 @@ function McpServerEditModal({
     setCommand(server?.command ?? "");
     setArgsText((server?.args ?? []).join("\n"));
     setEnvText(JSON.stringify(server?.env ?? {}, null, 2));
+    setBearerToken("");
+    setRemoveBearerToken(false);
     setTimeoutSec(String(server?.timeout_sec ?? 30));
     setEnabled(server?.enabled ?? true);
     setEnabledByDefault(server?.enabled_by_default ?? true);
+    setTestResult(null);
   }, [isOpen, server]);
 
   if (!isOpen) return null;
@@ -587,6 +595,27 @@ function McpServerEditModal({
       name.trim() &&
       (transport === "stdio" ? command.trim() : url.trim()),
   );
+  const getPayload = (): AdminMCPServerPayload => {
+    const token = bearerToken.trim();
+    return {
+      server_id: serverId.trim(),
+      name: name.trim(),
+      description: description.trim() || null,
+      transport,
+      url: transport === "streamable_http" ? url.trim() : null,
+      command: transport === "stdio" ? command.trim() : null,
+      args: argsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+      env: parseEnvJson(envText),
+      ...(transport === "streamable_http" && token
+        ? { bearer_token: token }
+        : removeBearerToken
+          ? { bearer_token: null }
+          : {}),
+      timeout_sec: Number(timeoutSec) || 30,
+      enabled,
+      enabled_by_default: enabledByDefault,
+    };
+  };
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -659,15 +688,39 @@ function McpServerEditModal({
           </div>
 
           {transport === "streamable_http" ? (
-            <div className="grid gap-2">
-              <Label htmlFor="mcp-url">URL</Label>
-              <Input
-                id="mcp-url"
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="http://127.0.0.1:8765/mcp"
-              />
-            </div>
+            <>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-url">URL</Label>
+                <Input
+                  id="mcp-url"
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                  placeholder="http://127.0.0.1:8765/mcp"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-bearer-token">Секретный ключ (Bearer)</Label>
+                <Input
+                  id="mcp-bearer-token"
+                  type="password"
+                  autoComplete="new-password"
+                  value={bearerToken}
+                  disabled={removeBearerToken}
+                  onChange={(event) => setBearerToken(event.target.value)}
+                  placeholder={server?.secret_configured ? "Оставьте пустым, чтобы сохранить текущий" : ""}
+                />
+                {server?.secret_configured ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-fit"
+                    onClick={() => setRemoveBearerToken((value) => !value)}
+                  >
+                    {removeBearerToken ? "Не удалять сохранённый ключ" : "Удалить сохранённый ключ"}
+                  </Button>
+                ) : null}
+              </div>
+            </>
           ) : (
             <>
               <div className="grid gap-2">
@@ -715,25 +768,50 @@ function McpServerEditModal({
         </div>
 
         <DialogFooter className="gap-2">
+          {server ? (
+            <>
+              {testResult ? (
+                <span
+                  className={`mr-auto flex items-center gap-1 text-xs ${
+                    testResult.startsWith("Ошибка:") ? "text-destructive" : "text-emerald-400"
+                  }`}
+                >
+                  {testResult.startsWith("Ошибка:") ? (
+                    <AlertCircle className="h-4 w-4" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  {testResult}
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                disabled={!canSave || isSaving || isTesting}
+                aria-label="Проверить подключение"
+                title="Проверить подключение"
+                onClick={() => {
+                  setIsTesting(true);
+                  setTestResult(null);
+                  void Promise.resolve()
+                    .then(() => testAdminMcpServer(server.server_id, getPayload()))
+                    .then(() => setTestResult("Подключение установлено"))
+                    .catch((cause) => setTestResult(`Ошибка: ${summarizeError(cause)}`))
+                    .finally(() => setIsTesting(false));
+                }}
+              >
+                <PlugZap className={`h-4 w-4 ${isTesting ? "animate-pulse" : ""}`} />
+              </Button>
+            </>
+          ) : null}
           <DialogClose asChild>
             <Button variant="outline">Отмена</Button>
           </DialogClose>
           <Button
             disabled={!canSave || isSaving}
             onClick={() => {
-              void onSave({
-                server_id: serverId.trim(),
-                name: name.trim(),
-                description: description.trim() || null,
-                transport,
-                url: transport === "streamable_http" ? url.trim() : null,
-                command: transport === "stdio" ? command.trim() : null,
-                args: argsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
-                env: parseEnvJson(envText),
-                timeout_sec: Number(timeoutSec) || 30,
-                enabled,
-                enabled_by_default: enabledByDefault,
-              });
+              void onSave(getPayload());
             }}
           >
             {isSaving ? "Сохранение..." : "Сохранить"}

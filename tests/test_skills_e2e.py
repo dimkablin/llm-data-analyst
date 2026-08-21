@@ -7,6 +7,7 @@
 - Python-примеры компилируются без синтаксических ошибок
 - Инструкции содержат ожидаемые разделы
 """
+
 from __future__ import annotations
 
 import ast
@@ -32,12 +33,15 @@ NEW_SKILLS = [
     "statistical_analysis",
     "time_series_analysis",
     "duckdb_analysis",
+    "planfact_variance_analysis",
     "insight_synthesis",
     "cohort_analysis_advanced",
+    "internet_research",
 ]
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
 
 def _load_registry() -> SkillRegistry:
     registry = SkillRegistry.from_path(SKILLS_DIR)
@@ -56,12 +60,14 @@ def _skill_ids(registry: SkillRegistry) -> set[str]:
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="module")
 def registry() -> SkillRegistry:
     return _load_registry()
 
 
 # ─── Registry-level tests ────────────────────────────────────────────────────
+
 
 class TestRegistryLoadsNewSkills:
     """Проверяет что все новые скилы загружаются без ошибок."""
@@ -83,8 +89,7 @@ class TestRegistryLoadsNewSkills:
         loaded_ids = _skill_ids(registry)
         for skill_folder in NEW_SKILLS:
             assert skill_folder in loaded_ids, (
-                f"Скил '{skill_folder}' не загрузился. "
-                f"Загруженные: {sorted(loaded_ids)}"
+                f"Скил '{skill_folder}' не загрузился. Загруженные: {sorted(loaded_ids)}"
             )
 
     def test_total_new_skills_count(self, registry: SkillRegistry) -> None:
@@ -95,6 +100,7 @@ class TestRegistryLoadsNewSkills:
 
 # ─── Per-skill validation ────────────────────────────────────────────────────
 
+
 class TestSkillFrontmatterFields:
     """Проверяет обязательные поля frontmatter для каждого нового скила."""
 
@@ -102,9 +108,7 @@ class TestSkillFrontmatterFields:
     def test_name_is_non_empty(self, registry: SkillRegistry, skill_id: str) -> None:
         skill = registry.get(skill_id)
         assert skill is not None, f"Скил '{skill_id}' не найден"
-        assert isinstance(skill.name, str) and skill.name.strip(), (
-            f"Скил '{skill_id}': name пустое"
-        )
+        assert isinstance(skill.name, str) and skill.name.strip(), f"Скил '{skill_id}': name пустое"
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
     def test_description_is_meaningful(self, registry: SkillRegistry, skill_id: str) -> None:
@@ -141,6 +145,7 @@ class TestSkillFrontmatterFields:
 
 # ─── Python examples validation ──────────────────────────────────────────────
 
+
 class TestSkillPythonExamples:
     """Validate Python examples when a skill chooses to provide them."""
 
@@ -148,9 +153,7 @@ class TestSkillPythonExamples:
     def test_python_examples_are_optional(self, registry: SkillRegistry, skill_id: str) -> None:
         skill = registry.get(skill_id)
         assert skill is not None
-        assert skill.instructions_markdown.strip(), (
-            f"Скил '{skill_id}': instructions_markdown пустой"
-        )
+        assert skill.instructions_markdown.strip(), f"Скил '{skill_id}': instructions_markdown пустой"
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
     def test_python_examples_have_valid_syntax(self, registry: SkillRegistry, skill_id: str) -> None:
@@ -161,7 +164,7 @@ class TestSkillPythonExamples:
                 ast.parse(example.code)
             except SyntaxError as exc:
                 pytest.fail(
-                    f"Скил '{skill_id}', пример #{i+1}: синтаксическая ошибка Python:\n"
+                    f"Скил '{skill_id}', пример #{i + 1}: синтаксическая ошибка Python:\n"
                     f"{exc}\n\nКод:\n{example.code[:300]}"
                 )
 
@@ -172,12 +175,13 @@ class TestSkillPythonExamples:
         for i, example in enumerate(skill.python_examples):
             last_line = example.code.strip().splitlines()[-1].strip()
             assert last_line == "tool_result", (
-                f"Скил '{skill_id}', пример #{i+1}: последняя строка должна быть 'tool_result', "
+                f"Скил '{skill_id}', пример #{i + 1}: последняя строка должна быть 'tool_result', "
                 f"получено: '{last_line}'"
             )
 
 
 # ─── Instructions structure ───────────────────────────────────────────────────
+
 
 class TestSkillInstructionsStructure:
     """Проверяет что инструкции содержат обязательные разделы."""
@@ -191,8 +195,10 @@ class TestSkillInstructionsStructure:
         "statistical_analysis": ["algorithm", "rules", "regression"],
         "time_series_analysis": ["algorithm", "rules", "trend"],
         "duckdb_analysis": ["algorithm", "read-only", "sql_tool"],
+        "planfact_variance_analysis": ["algorithm", "sql_tool", "planfact"],
         "insight_synthesis": ["algorithm", "rules", "insight"],
         "cohort_analysis_advanced": ["retention", "ltv", "plotly_tool"],
+        "internet_research": ["algorithm", "rules", "research plan", "active catalog"],
     }
 
     @pytest.mark.parametrize("skill_id", NEW_SKILLS)
@@ -207,8 +213,18 @@ class TestSkillInstructionsStructure:
                 f"не найдено в instructions_markdown"
             )
 
+    def test_internet_research_selects_search_capability_from_context(self, registry: SkillRegistry) -> None:
+        skill = registry.get("internet_research")
+        text = skill.instructions_markdown.lower()
+
+        assert "main agent reasoning" in text
+        assert "active catalog" in text
+        assert "do not select by provider or tool name" in text
+        assert "mcp__" not in text
+
 
 # ─── Regression: existing skills still load ──────────────────────────────────
+
 
 class TestExistingSkillsNotBroken:
     """Убеждаемся что новые скилы не сломали загрузку существующих."""

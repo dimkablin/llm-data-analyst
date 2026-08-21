@@ -5,6 +5,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 from backend.data_access.semantic_models import (
@@ -41,8 +42,17 @@ class LocalHashEmbeddings:
         return self._embed(text)
 
     def _embed(self, text: str) -> list[float]:
-        tokens = re.findall(r"[^\W_]+", str(text).lower(), flags=re.UNICODE)
-        features = [*tokens, *(f"{left}_{right}" for left, right in zip(tokens, tokens[1:]))]
+        normalized = " ".join(re.findall(r"[^\W_]+", str(text).casefold(), flags=re.UNICODE))
+        tokens = normalized.split()
+        features = [
+            *tokens,
+            *(f"{left}_{right}" for left, right in pairwise(tokens)),
+            *(
+                f"char:{normalized[start : start + size]}"
+                for size in (3, 4, 5)
+                for start in range(max(0, len(normalized) - size + 1))
+            ),
+        ]
         vector = [0.0] * max(1, int(self.dimension))
         for feature in features:
             digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
@@ -82,9 +92,9 @@ class SemanticVectorStore:
             vector_enabled=bool(getattr(settings, "semantic_vector_enabled", False)),
             timeout_sec=float(getattr(settings, "semantic_qdrant_timeout_sec", 10) or 10),
             embedding_model=str(getattr(settings, "semantic_embedding_model", "") or "").strip(),
-            embedding_provider=str(
-                getattr(settings, "semantic_embedding_provider", "local") or "local"
-            ).strip().lower(),
+            embedding_provider=str(getattr(settings, "semantic_embedding_provider", "local") or "local")
+            .strip()
+            .lower(),
             embedding_base_url=str(getattr(settings, "semantic_embedding_base_url", "") or "").strip(),
             embedding_api_key=str(getattr(settings, "semantic_embedding_api_key", "") or "").strip(),
             embedding_dim=int(getattr(settings, "semantic_embedding_dim", 1536) or 1536),
@@ -116,9 +126,10 @@ class SemanticVectorStore:
         }
         if self.embedding_base_url:
             kwargs["base_url"] = self.embedding_base_url
+            kwargs["check_embedding_ctx_length"] = False
         if self.embedding_api_key:
             kwargs["api_key"] = self.embedding_api_key
-        if self.embedding_dim > 0:
+        if self.embedding_dim > 0 and self.embedding_model.startswith("text-embedding-3"):
             kwargs["dimensions"] = self.embedding_dim
         self._embeddings_client = OpenAIEmbeddings(**kwargs)
         return self._embeddings_client
@@ -144,6 +155,14 @@ class SemanticVectorStore:
         client = self._get_client()
         _QdrantClient, models = self._qdrant()
         if client.collection_exists(self.collection):
+            config = client.get_collection(self.collection)
+            vectors = config.config.params.vectors
+            size = getattr(vectors, "size", None)
+            if size is not None and int(size) != int(self.embedding_dim):
+                raise RuntimeError(
+                    f"Qdrant collection {self.collection} has vector size {size}; "
+                    f"expected {self.embedding_dim}"
+                )
             return
         client.create_collection(
             collection_name=self.collection,
@@ -158,10 +177,8 @@ class SemanticVectorStore:
             return
         chunks = catalog_chunks(catalog)
         self._ensure_collection()
-        self.delete_catalog(catalog)
         if not chunks:
             return
-        _QdrantClient, models = self._qdrant()
         vectors: list[list[float]] = []
         texts = [chunk.text for chunk in chunks]
         embeddings = self._embeddings()
@@ -172,6 +189,7 @@ class SemanticVectorStore:
                     chunk_size=self.embedding_batch_size,
                 )
             )
+        _QdrantClient, models = self._qdrant()
         points = [
             models.PointStruct(
                 id=chunk.point_id,
@@ -183,7 +201,12 @@ class SemanticVectorStore:
         if points:
             self._get_client().upsert(collection_name=self.collection, points=points)
 
-    def delete_catalog(self, catalog: SemanticCatalog) -> None:
+    def delete_catalog(
+        self,
+        catalog: SemanticCatalog,
+        *,
+        published_version: int | None = None,
+    ) -> None:
         if not self.enabled:
             return
         _QdrantClient, models = self._qdrant()
@@ -194,6 +217,7 @@ class SemanticVectorStore:
                     source_key=catalog.source_key,
                     catalog_id=catalog.catalog_id,
                     source_fingerprint=catalog.source_fingerprint,
+                    published_version=published_version,
                 )
             ),
         )
@@ -209,6 +233,9 @@ class SemanticVectorStore:
         if not self.enabled:
             return []
         vector = self._embeddings().embed_query(query)
+        limit = max(1, int(top_k))
+        ranked_hits: list[Any] = []
+        seen: set[tuple[str, str]] = set()
         hits = self._get_client().search(
             collection_name=self.collection,
             query_vector=vector,
@@ -216,11 +243,27 @@ class SemanticVectorStore:
                 source_key=catalog.source_key,
                 catalog_id=catalog.catalog_id,
                 source_fingerprint=catalog.source_fingerprint,
+                published_version=catalog.published_version,
                 entity_type=entity_type,
             ),
-            limit=max(1, int(top_k)),
+            limit=limit,
             with_payload=True,
         )
+        for hit in sorted(
+            hits,
+            key=lambda item: float(getattr(item, "score", 0.0)),
+            reverse=True,
+        ):
+            if not getattr(hit, "payload", None):
+                continue
+            identity = (
+                str(hit.payload.get("entity_type")),
+                str(hit.payload.get("entity_id")),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            ranked_hits.append(hit)
         return [
             SemanticSearchResultItem(
                 entity_type=str(hit.payload.get("entity_type")),
@@ -228,7 +271,7 @@ class SemanticVectorStore:
                 score=float(getattr(hit, "score", 0.0) or 0.0),
                 payload=dict(hit.payload or {}),
             )
-            for hit in hits
+            for hit in ranked_hits[:limit]
             if getattr(hit, "payload", None)
         ]
 
@@ -238,6 +281,7 @@ class SemanticVectorStore:
         source_key: str,
         catalog_id: str,
         source_fingerprint: str,
+        published_version: int | None = None,
         entity_type: str | None = None,
     ) -> Any:
         _QdrantClient, models = self._qdrant()
@@ -249,6 +293,13 @@ class SemanticVectorStore:
                 match=models.MatchValue(value=source_fingerprint),
             ),
         ]
+        if published_version is not None:
+            conditions.append(
+                models.FieldCondition(
+                    key="published_version",
+                    match=models.MatchValue(value=published_version),
+                )
+            )
         if entity_type:
             conditions.append(
                 models.FieldCondition(key="entity_type", match=models.MatchValue(value=entity_type))
@@ -276,16 +327,26 @@ def catalog_chunks(catalog: SemanticCatalog) -> list[SemanticChunk]:
             continue
         add("column", column.column_id, _column_text(column))
     for entity in catalog.entities:
+        if not entity.is_active:
+            continue
         add("entity", entity.entity_id, _entity_text(entity))
     for dimension in catalog.dimensions:
+        if not dimension.is_active:
+            continue
         add("dimension", dimension.dimension_id, _dimension_text(dimension))
     for fact in catalog.facts:
         add("fact", fact.fact_id, _fact_text(fact))
     for metric in catalog.metrics:
+        if not metric.is_active:
+            continue
         add("metric", metric.metric_id, _metric_text(metric))
     for relationship in catalog.relationships:
+        if not relationship.is_active:
+            continue
         add("relationship", relationship.relationship_id, _relationship_text(relationship))
     for term in catalog.terms:
+        if not term.is_active:
+            continue
         add("term", term.term_id, _term_text(term))
     for query in catalog.saved_queries:
         add("saved_query", query.query_id, _saved_query_text(query))
@@ -377,7 +438,9 @@ def _dimension_text(dimension: SemanticDimension) -> str:
 
 
 def _fact_text(fact: SemanticFact) -> str:
-    return " ".join(["fact", fact.name, fact.type, fact.table, fact.expr, fact.description, " ".join(fact.synonyms)])
+    return " ".join(
+        ["fact", fact.name, fact.type, fact.table, fact.expr, fact.description, " ".join(fact.synonyms)]
+    )
 
 
 def _metric_text(metric: SemanticMetric) -> str:
@@ -396,6 +459,7 @@ def _metric_text(metric: SemanticMetric) -> str:
             metric.denominator or "",
             metric.default_time_dimension or "",
             " ".join(metric.allowed_dimensions),
+            " ".join(f"{item.field} {item.op} {item.value}" for item in metric.filters),
             " ".join(metric.synonyms),
         ]
     )
@@ -409,6 +473,7 @@ def _relationship_text(relationship: SemanticRelationship) -> str:
             relationship.from_column,
             relationship.to_table,
             relationship.to_column,
+            relationship.cardinality,
             relationship.description,
         ]
     )

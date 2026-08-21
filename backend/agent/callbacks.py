@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import threading
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,21 +21,28 @@ from backend.artifacts.execution import (
 )
 from backend.core.redaction import compact_error_text
 
+logger = logging.getLogger(__name__)
+
 THINKING_RE = re.compile(r"<think>[\s\S]*?<\/think>", re.IGNORECASE)
 
 # Infrastructure tools whose pre_reasoning is not stored — they produce generic
 # boilerplate thinking ("let me check what tool to use") that adds UI noise.
-_INFRA_TOOL_NAMES: frozenset[str] = frozenset({
-    "planner_tool",
-    "get_tool_instructions",
-    "memory_tool",
-    "session_note_tool",
-})
+_INFRA_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "planner_tool",
+        "update_plan",
+        "get_tool_instructions",
+        "memory_tool",
+        "session_note_tool",
+    }
+)
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _THINK_OPEN_LEN = len(_THINK_OPEN)
 _THINK_CLOSE_LEN = len(_THINK_CLOSE)
+_TOOL_OUTPUT_PREVIEW_CHARS = 4000
+
 
 class ThinkingOutputParser:
     """Stateful incremental parser that separates visible text from ``<think>`` blocks.
@@ -76,7 +85,7 @@ class ThinkingOutputParser:
                     break
                 if idx > 0:
                     rsn.append(self._buf[:idx])
-                self._buf = self._buf[idx + _THINK_CLOSE_LEN:]
+                self._buf = self._buf[idx + _THINK_CLOSE_LEN :]
                 self._inside = False
             else:
                 idx_open = lower.find(_THINK_OPEN)
@@ -95,14 +104,14 @@ class ThinkingOutputParser:
                 if idx_close != -1 and (idx_open == -1 or idx_close < idx_open):
                     if idx_close > 0:
                         rsn.append(self._buf[:idx_close])
-                    self._buf = self._buf[idx_close + _THINK_CLOSE_LEN:]
+                    self._buf = self._buf[idx_close + _THINK_CLOSE_LEN :]
                     # _inside stays False — continue processing what follows
                     continue
 
                 # Normal <think> found first.
                 if idx_open > 0:
                     vis.append(self._buf[:idx_open])
-                self._buf = self._buf[idx_open + _THINK_OPEN_LEN:]
+                self._buf = self._buf[idx_open + _THINK_OPEN_LEN :]
                 self._inside = True
 
         v, r = "".join(vis), "".join(rsn)
@@ -157,8 +166,27 @@ def extract_thinking(text: str) -> str:
 class LLMTextCollector(BaseCallbackHandler):
     def __init__(self) -> None:
         self.messages: list[dict[str, str]] = []
+        self.llm_duration_ms = 0
+        self.llm_calls = 0
+        self._llm_started_at: dict[str, float] = {}
+        self._llm_timing_lock = threading.Lock()
+
+    def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any) -> None:
+        self._start_llm(kwargs)
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
+        **kwargs: Any,
+    ) -> None:
+        self._start_llm(kwargs)
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        self._finish_llm(kwargs)
 
     def on_llm_end(self, response: object, **kwargs: Any) -> None:
+        self._finish_llm(kwargs)
         text = ""
         generations = getattr(response, "generations", None)
         if isinstance(generations, list):
@@ -185,6 +213,19 @@ class LLMTextCollector(BaseCallbackHandler):
         if filtered or reasoning:
             self.messages.append({"text": filtered, "reasoning": reasoning})
 
+    def _start_llm(self, kwargs: dict[str, Any]) -> None:
+        run_id = str(kwargs.get("run_id") or "")
+        with self._llm_timing_lock:
+            self._llm_started_at.setdefault(run_id, time.perf_counter())
+
+    def _finish_llm(self, kwargs: dict[str, Any]) -> None:
+        run_id = str(kwargs.get("run_id") or "")
+        with self._llm_timing_lock:
+            started_at = self._llm_started_at.pop(run_id, None)
+            if started_at is not None:
+                self.llm_duration_ms += int((time.perf_counter() - started_at) * 1000)
+                self.llm_calls += 1
+
 
 class ToolCollector(BaseCallbackHandler):
     def __init__(
@@ -193,6 +234,7 @@ class ToolCollector(BaseCallbackHandler):
         queue: asyncio.Queue | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         execution_store: ExecutionStore | None = None,
+        artifact_sink: Any | None = None,
     ) -> None:
         self.artifacts: list[ExecutionArtifact] = []
         self.tool_calls: int = 0
@@ -206,6 +248,8 @@ class ToolCollector(BaseCallbackHandler):
         self._queue = queue
         self._loop = loop
         self.execution_store: ExecutionStore = execution_store or ExecutionStore(session_id="")
+        self.artifact_sink = artifact_sink
+        self.persisted_artifact_ids: set[str] = set()
         self.graph_tracker: Any | None = None  # Set externally for graph visualization
         self._step_index: int = 0
         self._phase_collector_ref: Any | None = None  # For graph version bumps
@@ -214,9 +258,17 @@ class ToolCollector(BaseCallbackHandler):
     def _push_event(self, event_type: str, data: Any) -> None:
         """Push event directly to SSE queue if available."""
         if self._queue is not None and self._loop is not None:
-            self._loop.call_soon_threadsafe(
-                self._queue.put_nowait, (event_type, data)
-            )
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, (event_type, data))
+
+    def _persist_artifacts_since(self, start: int) -> None:
+        new_artifacts = self.artifacts[start:]
+        if not new_artifacts or not callable(self.artifact_sink):
+            return
+        try:
+            self.artifact_sink(list(new_artifacts))
+            self.persisted_artifact_ids.update(artifact.id for artifact in new_artifacts)
+        except Exception:
+            logger.exception("Completed tool artifacts could not be persisted")
 
     @staticmethod
     def _resolve_tool_name(
@@ -311,7 +363,8 @@ class ToolCollector(BaseCallbackHandler):
 
     @staticmethod
     def _build_result_summary(
-        payload: object, event_payload: dict[str, Any],
+        payload: object,
+        event_payload: dict[str, Any],
     ) -> str:
         """Build a short human-readable result summary for UI display."""
         if not isinstance(payload, dict):
@@ -331,6 +384,7 @@ class ToolCollector(BaseCallbackHandler):
                     continue
                 try:
                     import pandas as _pd
+
                     if isinstance(table_data, _pd.DataFrame):
                         parts.append(f"{name}: {len(table_data)} rows, {len(table_data.columns)} cols")
                     elif isinstance(table_data, dict):
@@ -344,9 +398,7 @@ class ToolCollector(BaseCallbackHandler):
             if plot_names:
                 parts.append(f"chart: {', '.join(plot_names[:3])}")
         if "value" in payload and isinstance(payload["value"], dict):
-            value_items = {
-                k: v for k, v in payload["value"].items() if v is not None
-            }
+            value_items = {k: v for k, v in payload["value"].items() if v is not None}
             if value_items:
                 formatted = []
                 for k, v in list(value_items.items())[:3]:
@@ -393,11 +445,10 @@ class ToolCollector(BaseCallbackHandler):
         # (planner, skill loader, memory) produce generic boilerplate thinking
         # that adds noise without analytical value.
         raw_pre_reasoning = (
-            self.token_callback.take_pending_thinking()
-            if self.token_callback is not None
-            else ""
+            self.token_callback.take_pending_thinking() if self.token_callback is not None else ""
         )
         pre_reasoning = raw_pre_reasoning if tool_name not in _INFRA_TOOL_NAMES else ""
+        pre_text = self.token_callback.take_pending_visible() if self.token_callback is not None else ""
         event: dict[str, Any] = {
             "phase": "start",
             "tool_name": tool_name or "unknown",
@@ -407,6 +458,8 @@ class ToolCollector(BaseCallbackHandler):
         }
         if pre_reasoning:
             event["pre_reasoning"] = pre_reasoning
+        if pre_text:
+            event["pre_text"] = pre_text
         if input_code:
             event["input_code"] = input_code[:4000]
         if tool_call_id:
@@ -421,6 +474,8 @@ class ToolCollector(BaseCallbackHandler):
             push_data["tool_call_id"] = tool_call_id
         if input_code:
             push_data["input_code"] = input_code[:4000]
+        if pre_text:
+            push_data["pre_text"] = pre_text
         self._push_event("tool_start", push_data)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_start(event["tool_name"], self._step_index)
@@ -473,6 +528,7 @@ class ToolCollector(BaseCallbackHandler):
             self._on_tool_end_locked(output, tool=tool, **kwargs)
 
     def _on_tool_end_locked(self, output: object, tool=None, **kwargs: Any) -> None:
+        artifact_count_before = len(self.artifacts)
         self.tool_calls += 1
         payload = self._normalize_output(output)
         run_id = self._run_id_from_kwargs(kwargs)
@@ -549,13 +605,15 @@ class ToolCollector(BaseCallbackHandler):
             for name, fig in payload["plot"].items():
                 if fig is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.PLOT,
-                    producer_tool=producer,
-                    data=fig,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.PLOT,
+                        producer_tool=producer,
+                        data=fig,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
             if len(self.artifacts) > plot_count_before:
                 event_payload["artifact_keys"].append("plot")
@@ -565,33 +623,33 @@ class ToolCollector(BaseCallbackHandler):
             for name, table in payload["table"].items():
                 if table is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.DATAFRAME,
-                    producer_tool=producer,
-                    data=table,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.DATAFRAME,
+                        producer_tool=producer,
+                        data=table,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
             if len(self.artifacts) > table_count_before:
                 event_payload["artifact_keys"].append("table")
 
         if "value" in payload and isinstance(payload["value"], dict):
-            clean_value_payload = {
-                key: value
-                for key, value in payload["value"].items()
-                if value is not None
-            }
+            clean_value_payload = {key: value for key, value in payload["value"].items() if value is not None}
             if not clean_value_payload:
                 self.events.append(event_payload)
                 return
-            ea = self.execution_store.put(ExecutionArtifact(
-                artifact_type=ExecArtifactType.SCALAR,
-                producer_tool=producer,
-                data=clean_value_payload,
-                name="values",
-                meta=dict(artifact_meta),
-            ))
+            ea = self.execution_store.put(
+                ExecutionArtifact(
+                    artifact_type=ExecArtifactType.SCALAR,
+                    producer_tool=producer,
+                    data=clean_value_payload,
+                    name="values",
+                    meta=dict(artifact_meta),
+                )
+            )
             self.artifacts.append(ea)
             event_payload["artifact_keys"].append("value")
 
@@ -600,16 +658,20 @@ class ToolCollector(BaseCallbackHandler):
             for name, json_data in payload["json"].items():
                 if json_data is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.JSON,
-                    producer_tool=producer,
-                    data=json_data,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.JSON,
+                        producer_tool=producer,
+                        data=json_data,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
             if len(self.artifacts) > json_count_before:
                 event_payload["artifact_keys"].append("json")
+
+        self._persist_artifacts_since(artifact_count_before)
 
         # Build a concise result summary for UI display
         result_summary = self._build_result_summary(payload, event_payload)
@@ -617,7 +679,7 @@ class ToolCollector(BaseCallbackHandler):
             event_payload["result_summary"] = result_summary
         raw_text = payload.get("text") if isinstance(payload, dict) else None
         if isinstance(raw_text, str) and raw_text.strip():
-            event_payload["output_preview"] = raw_text.strip()[:800]
+            event_payload["output_preview"] = raw_text.strip()[:_TOOL_OUTPUT_PREVIEW_CHARS]
         self.events.append(event_payload)
 
         push_payload: dict[str, Any] = {
@@ -669,6 +731,8 @@ class ToolCollector(BaseCallbackHandler):
                     activities_by_tool_call_id[tool_call_id] = activity
                 if event.get("pre_reasoning"):
                     activity["pre_reasoning"] = event["pre_reasoning"]
+                if event.get("pre_text"):
+                    activity["pre_text"] = event["pre_text"]
                 activities.append(activity)
             elif phase == "end":
                 tool_call_id = str(event.get("tool_call_id") or "").strip()
@@ -692,7 +756,7 @@ class ToolCollector(BaseCallbackHandler):
                 if event.get("result_summary"):
                     activity["result_summary"] = str(event["result_summary"])[:300]
                 if event.get("output_preview"):
-                    activity["output_preview"] = str(event["output_preview"])[:800]
+                    activity["output_preview"] = str(event["output_preview"])[:_TOOL_OUTPUT_PREVIEW_CHARS]
                 for key in ("executed_code", "contract_hint", "referenced_dataframe_schemas"):
                     if event.get(key) not in (None, "", [], {}):
                         activity[key] = event[key]
@@ -725,6 +789,7 @@ class ToolCollector(BaseCallbackHandler):
         NOTE: do NOT call this for tools already processed by on_tool_end — it
         would create duplicate ExecutionArtifact entries.
         """
+        artifact_count_before = len(self.artifacts)
         artifact = getattr(result, "artifact", None)
         if not isinstance(artifact, dict):
             return
@@ -753,52 +818,61 @@ class ToolCollector(BaseCallbackHandler):
             for name, fig in artifact["plot"].items():
                 if fig is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.PLOT,
-                    producer_tool=producer,
-                    data=fig,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.PLOT,
+                        producer_tool=producer,
+                        data=fig,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
         if "table" in artifact and isinstance(artifact["table"], dict):
             artifact_keys.append("table")
             for name, table in artifact["table"].items():
                 if table is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.DATAFRAME,
-                    producer_tool=producer,
-                    data=table,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.DATAFRAME,
+                        producer_tool=producer,
+                        data=table,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
         if "value" in artifact and isinstance(artifact["value"], dict):
             clean = {k: v for k, v in artifact["value"].items() if v is not None}
             if clean:
                 artifact_keys.append("value")
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.SCALAR,
-                    producer_tool=producer,
-                    data=clean,
-                    name="values",
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.SCALAR,
+                        producer_tool=producer,
+                        data=clean,
+                        name="values",
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
         if "json" in artifact and isinstance(artifact["json"], dict):
             artifact_keys.append("json")
             for name, json_data in artifact["json"].items():
                 if json_data is None:
                     continue
-                ea = self.execution_store.put(ExecutionArtifact(
-                    artifact_type=ExecArtifactType.JSON,
-                    producer_tool=producer,
-                    data=json_data,
-                    name=name,
-                    meta=dict(artifact_meta),
-                ))
+                ea = self.execution_store.put(
+                    ExecutionArtifact(
+                        artifact_type=ExecArtifactType.JSON,
+                        producer_tool=producer,
+                        data=json_data,
+                        name=name,
+                        meta=dict(artifact_meta),
+                    )
+                )
                 self.artifacts.append(ea)
+        self._persist_artifacts_since(artifact_count_before)
         if self.graph_tracker is not None:
             self.graph_tracker.tool_end(
                 tool_name,
@@ -811,6 +885,18 @@ class ToolCollector(BaseCallbackHandler):
 
     @staticmethod
     def _normalize_output(output: object) -> object:
+        def _content_text(content: object) -> str:
+            if isinstance(content, str):
+                return content.strip()
+            if not isinstance(content, list):
+                return ""
+            parts = [
+                item if isinstance(item, str) else str(item.get("text") or "")
+                for item in content
+                if isinstance(item, str) or isinstance(item, dict)
+            ]
+            return "\n".join(part.strip() for part in parts if part.strip())
+
         def _from_text(raw: str) -> object:
             value = raw.strip()
             if not value:
@@ -819,13 +905,26 @@ class ToolCollector(BaseCallbackHandler):
                 parsed = json.loads(value)
             except Exception:
                 return {"text": value}
-            return parsed
+            if not isinstance(parsed, dict):
+                return {"text": value}
+            payload = dict(parsed)
+            if not isinstance(payload.get("text"), str):
+                payload["text"] = value
+            return payload
 
         if isinstance(output, tuple) and len(output) >= 2:
+            content_text = _content_text(output[0])
             possible_artifact = output[1]
             if isinstance(possible_artifact, dict):
-                return possible_artifact
+                payload = dict(possible_artifact)
+                if content_text:
+                    payload.setdefault("text", content_text)
+                return payload
+            if content_text:
+                return _from_text(content_text)
         if isinstance(output, ToolMessage):
+            content = getattr(output, "content", "")
+            content_text = _content_text(content)
             artifact = getattr(output, "artifact", None)
             if isinstance(artifact, dict):
                 payload = dict(artifact)
@@ -834,10 +933,11 @@ class ToolCollector(BaseCallbackHandler):
                 items = payload.get("items")
                 if artifact_type and isinstance(items, dict):
                     payload[artifact_type] = items
+                if content_text:
+                    payload.setdefault("text", content_text)
                 return payload
-            content = getattr(output, "content", "")
-            if isinstance(content, str):
-                return _from_text(content)
+            if content_text:
+                return _from_text(content_text)
             return None
         if isinstance(output, str):
             return _from_text(output)
@@ -945,7 +1045,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
     """Streams LLM tokens to the SSE queue.
 
     Splits the raw token stream into two channels:
-    - ``token`` events  — visible text outside ``<think>`` tags (final answer)
+    - ``token`` events  — visible text outside ``<think>`` tags (narration or final answer)
     - ``reasoning_token`` events — text inside ``<think>`` tags (live thinking display)
 
     Additionally emits block-level signals:
@@ -970,12 +1070,15 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         self.reasoning_tokens_emitted = 0
         # Per-call reasoning chunks (reset after each on_llm_end → thinking_end emission)
         self.reasoning_chunks: list[str] = []
+        self.visible_chunks: list[str] = []
         # Cumulative across all LLM calls (for collected_reasoning())
         self._all_reasoning: list[str] = []
         self._all_visible: list[str] = []
         self._thinking_started_this_call: bool = False
         # Last completed thinking block — consumed by ToolCollector on tool_start
         self._pending_thinking: str = ""
+        # Visible narration from the last LLM call — consumed by ToolCollector on tool_start.
+        self._pending_visible: str = ""
         # Per-step reasoning: one entry per on_llm_end that had thinking
         self._per_step_reasoning: list[str] = []
 
@@ -990,9 +1093,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             return
         if not self._thinking_started_this_call:
             self._thinking_started_this_call = True
-            self.loop.call_soon_threadsafe(
-                self.queue.put_nowait, ("thinking_start", None)
-            )
+            self.loop.call_soon_threadsafe(self.queue.put_nowait, ("thinking_start", None))
         self.reasoning_tokens_emitted += 1
         self.loop.call_soon_threadsafe(self.queue.put_nowait, ("reasoning_token", text))
 
@@ -1011,6 +1112,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
             return
         visible, reasoning = self._stream_parser.feed(token)
         if visible:
+            self.visible_chunks.append(visible)
             self._all_visible.append(visible)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
         # Only emit reasoning from <think> tags when thinking is enabled.
@@ -1023,8 +1125,14 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         if reasoning and self._enable_thinking:
             self._emit_reasoning(reasoning)
         if visible:
+            self.visible_chunks.append(visible)
             self._all_visible.append(visible)
             self.loop.call_soon_threadsafe(self.queue.put_nowait, ("token", visible))
+
+        complete_visible = "".join(self.visible_chunks).strip()
+        if complete_visible:
+            self._pending_visible = complete_visible
+        self.visible_chunks = []
 
         # Reset per-call parser so the next LLM call starts clean.
         self._stream_parser = ThinkingOutputParser()
@@ -1048,9 +1156,7 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         if self.reasoning_chunks:
             complete_thinking = "".join(self.reasoning_chunks)
             if self._show_think:
-                self.loop.call_soon_threadsafe(
-                    self.queue.put_nowait, ("thinking_end", complete_thinking)
-                )
+                self.loop.call_soon_threadsafe(self.queue.put_nowait, ("thinking_end", complete_thinking))
             self._pending_thinking = complete_thinking
             self._per_step_reasoning.append(complete_thinking)
             self.reasoning_chunks = []
@@ -1078,3 +1184,8 @@ class TokenStreamCallbackHandler(BaseCallbackHandler):
         """
         thinking, self._pending_thinking = self._pending_thinking, ""
         return thinking
+
+    def take_pending_visible(self) -> str:
+        """Return visible narration emitted immediately before a tool call."""
+        visible, self._pending_visible = self._pending_visible, ""
+        return visible

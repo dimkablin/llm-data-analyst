@@ -7,6 +7,7 @@ import pandas as pd
 
 from backend.agent.dataset_profiles import build_dataset_profile_block
 from backend.notebook.manifest_store import ManifestStore
+from backend.notebook.session_source import is_duckdb_source_type
 from backend.tools.capabilities import (
     RuntimeTableDescriptorPromptOptions,
     coerce_runtime_table_descriptors,
@@ -26,13 +27,49 @@ def build_rag_session_prompt_block(session_source: dict[str, Any] | None) -> str
     if not is_rag_session_source(session_source):
         return ""
     source_label = str((session_source or {}).get("source_label") or "").strip()
-    label = source_label or "База знаний"
+    label = source_label or "Knowledge base"
     return (
-        "[КОНТЕКСТ БАЗЫ ЗНАНИЙ]\n"
-        f"Активный источник: {label}.\n"
-        "Для вопросов по загруженным документам, регламентам, фактам или внутренним знаниям "
-        "используй `rag_tool`. Не пытайся искать эти факты через CSV, SQL или pandas, "
-        "если пользователь явно спрашивает базу знаний."
+        "[KNOWLEDGE_BASE_CONTEXT]\n"
+        f"Knowledge source: {label}.\n"
+        "For interpretive requests, use `rag_tool`. Do not infer facts from CSV, SQL or pandas. "
+        "Use RAG only as the factual source.\n"
+        "If `rag_tool` returns no relevant context, do not invent a definition: "
+        "ask a clarifying question or request a more precise term/query."
+    )
+
+def is_planfact_session_source(session_source: dict[str, Any] | None) -> bool:
+    if not isinstance(session_source, dict):
+        return False
+    return str(session_source.get("source_type") or "").strip().lower() == "planfact"
+
+
+def build_planfact_session_prompt_block(session_source: dict[str, Any] | None) -> str:
+    if not is_planfact_session_source(session_source):
+        return ""
+    return (
+        "[PLANFACT_SOURCE]\n"
+        "Источник `planfact` активен.\n"
+        "Для обзора по ЦФО используй `planfact_by_cfo_period`.\n"
+        "Для детализации по статьям используй `planfact_by_cfo_article_period`.\n"
+        "Для детализации причин используй описательные поля `service_content`, `plan_counterparty`, "
+        "`fact_counterparty`, `fact_contract`; не используй их как ключи соединения.\n"
+        "Отклонение = `fact_amount - plan_amount`.\n"
+        "Положительное отклонение значит факт выше плана.\n"
+        "Топ отклонений сортируй по `ABS(variance_amount)`.\n"
+        "Факт без плана: `plan_amount = 0 AND fact_amount <> 0`.\n"
+        "План без факта: `fact_amount = 0 AND plan_amount <> 0`."
+    )
+
+
+def build_planfact_period_prompt_block() -> str:
+    return (
+        "[PLANFACT_PERIOD_RULE]\n"
+        "For every Plan-Fact comparison, by default include only periods that are actually present "
+        "in fact data: `period IN (SELECT DISTINCT period FROM planfact_fact_monthly)`. "
+        "Apply this same period filter to both plan and fact before aggregating; never include plan-only "
+        "months in a Plan-Fact total. If the user asks to analyze only the plan (without comparing it "
+        "to fact), all available plan periods may be used. If a requested Plan-Fact period has no fact "
+        "data, state that fact is unavailable instead of treating it as a valid comparison."
     )
 
 
@@ -102,6 +139,10 @@ def build_chat_data_context(df: pd.DataFrame | None, session_source: dict) -> st
     rag_block = build_rag_session_prompt_block(session_source)
     if rag_block:
         parts.append(rag_block)
+    planfact_block = build_planfact_session_prompt_block(session_source)
+    if planfact_block:
+        parts.append(planfact_block)
+        parts.append(build_planfact_period_prompt_block())
     if not parts:
         return ""
     return "[КОНТЕКСТ ДАННЫХ]\n" + "\n".join(parts)
@@ -213,7 +254,7 @@ def resolve_csv_runtime_state(
             return True, direct_sid.strip()
 
         source_type = str(session_source.get("source_type", "")).strip().lower()
-        if source_type == "csv" and isinstance(direct_sid, str) and direct_sid.strip():
+        if is_duckdb_source_type(source_type) and isinstance(direct_sid, str) and direct_sid.strip():
             return True, direct_sid.strip()
 
     if trace_context and bool(trace_context.get("csv_duckdb_loaded")):
@@ -230,6 +271,7 @@ def csv_table_descriptors_from_manifest(
     csv_session_id: str | None,
     session_id: str | None,
     session_source: dict[str, Any] | None,
+    manifest_store: ManifestStore | None = None,
 ) -> list[dict[str, Any]]:
     direct = (session_source or {}).get("csv_table_descriptors")
     if isinstance(direct, list):
@@ -240,7 +282,7 @@ def csv_table_descriptors_from_manifest(
         return []
 
     try:
-        manifest = ManifestStore(storage_dir).load(manifest_session_id)
+        manifest = (manifest_store or ManifestStore(storage_dir)).load(manifest_session_id)
     except Exception:
         return []
 
@@ -251,7 +293,7 @@ def csv_table_descriptors_from_manifest(
     }
     descriptors: list[dict[str, Any]] = []
     for source in manifest.sources:
-        if source.source_type != "csv":
+        if not is_duckdb_source_type(source.source_type):
             continue
         for table_name in source.csv_table_names:
             clean_table_name = str(table_name or "").strip()

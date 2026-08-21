@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from urllib.parse import urlparse, urlunparse
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from backend.api.deps import get_current_user
 from backend.api.models import (
@@ -19,6 +19,7 @@ from backend.api.models import (
     SourceDescriptorResponse,
 )
 from backend.auth.auth_db import AuthDB, AuthUser
+from backend.auth.blob_store import PostgresBlobStore
 from backend.core.config import settings
 from backend.core.json_utils import make_json_safe
 from backend.data_access.csv_runtime_state_service import (
@@ -55,6 +56,7 @@ _db_runtime_service = None  # type: ignore
 _openproject_sync_service = None  # type: ignore
 _storage_dir: Path | None = None
 _semantic_catalog_service = None  # type: ignore
+_blob_store: PostgresBlobStore | None = None
 
 
 def setup(
@@ -69,11 +71,12 @@ def setup(
     storage_dir: str | Path | None = None,
     openproject_sync_service=None,
     semantic_catalog_service=None,
+    blob_store: PostgresBlobStore | None = None,
 ) -> None:
     global _auth_db, _store, _db_connections_service
     global _integration_source_descriptors_fn, _csv_runtime
     global _manifest_store, _orchestrator, _db_runtime_service, _storage_dir
-    global _openproject_sync_service, _semantic_catalog_service
+    global _openproject_sync_service, _semantic_catalog_service, _blob_store
     _auth_db = auth_db
     _store = store
     _db_connections_service = db_connections_service
@@ -85,6 +88,7 @@ def setup(
     _storage_dir = Path(storage_dir) if storage_dir is not None else Path(settings.storage_dir)
     _openproject_sync_service = openproject_sync_service
     _semantic_catalog_service = semantic_catalog_service
+    _blob_store = blob_store
 
 
 def _load_owned_session(session_id: str, current_user: AuthUser) -> SessionState:
@@ -109,6 +113,7 @@ def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionSt
             csv_runtime=_csv_runtime,
             manifest_store=_manifest_store,
             storage_dir=_storage_dir or Path(settings.storage_dir),
+            blob_store=_blob_store,
         ).ensure_csv_runtime(
             session_id=session_id,
             ttl_seconds=settings.csv_session_ttl_sec,
@@ -120,35 +125,43 @@ def _ensure_csv_runtime_state(session_id: str, state: SessionState) -> SessionSt
             status_code=500,
             detail=f"Failed to initialize CSV runtime: {exc}",
         ) from exc
+    return refreshed
+
+
+def _build_session_semantic_catalog(
+    session_id: str,
+    user_id: int,
+    source_key: str,
+    operation_id: int,
+    connection_id: str | None = None,
+) -> None:
     try:
         from backend.data_access.catalog_refresh import refresh_session_catalog
 
+        runtime = (
+            _db_runtime_service.get_runtime_config(
+                user_id=user_id,
+                connection_id=connection_id,
+            )
+            if connection_id and _db_runtime_service is not None
+            else None
+        )
         refresh_session_catalog(
             _store,
             session_id,
             csv_runtime=_csv_runtime,
+            db_runtime=runtime,
+        )
+        _semantic_catalog_service.refresh(
+            session_id=session_id,
+            user_id=user_id,
+            operation_id=operation_id,
         )
     except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Failed to refresh data catalog after CSV runtime init: %s", exc
-        )
-    return refreshed
-
-
-def _refresh_semantic_catalog(session_id: str, user_id: int, *, reason: str) -> None:
-    if _semantic_catalog_service is None or not settings.semantic_layer_enabled:
-        return
-    try:
-        _semantic_catalog_service.refresh(session_id=session_id, user_id=user_id)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Failed to refresh semantic catalog after %s: %s",
-            reason,
-            exc,
+        _semantic_catalog_service.mark_build_failed(
+            source_key=source_key,
+            error=str(exc),
+            operation_id=operation_id,
         )
 
 
@@ -178,6 +191,7 @@ def list_available_sources(
 )
 def bind_session_db_connection_source(
     session_id: str,
+    background_tasks: BackgroundTasks,
     payload: SessionBindDBConnectionSourceRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSourceStateResponse:
@@ -202,30 +216,58 @@ def bind_session_db_connection_source(
         connection_name=connection.name,
     )
 
-    if _db_runtime_service is not None:
+    if (
+        _db_runtime_service is not None
+        and _semantic_catalog_service is not None
+        and settings.semantic_layer_enabled
+        and connection.user_id == current_user.id
+    ):
         try:
-            from backend.data_access.catalog_refresh import refresh_session_catalog
-
-            runtime = _db_runtime_service.get_runtime_config(
-                user_id=current_user.id,
+            _pending, operation = _semantic_catalog_service.claim_connection_build(
                 connection_id=connection.id,
+                user_id=current_user.id,
+                source_label=connection.name,
             )
-            refresh_session_catalog(
-                _store,
-                session_id,
-                csv_runtime=_csv_runtime,
-                db_runtime=runtime,
-            )
+            if operation is not None:
+                background_tasks.add_task(
+                    _build_connection_semantic_catalog,
+                    current_user.id,
+                    connection.id,
+                    connection.name,
+                    operation.operation_id,
+                )
         except Exception as exc:
             import logging
 
-            logging.getLogger(__name__).warning(
-                "Failed to refresh data catalog after DB bind: %s", exc
-            )
-    _refresh_semantic_catalog(session_id, current_user.id, reason="DB bind")
-
+            logging.getLogger(__name__).warning("Failed to ensure semantic catalog after DB bind: %s", exc)
     refreshed = _load_owned_session(session_id, current_user)
     return _to_session_source_response(refreshed)
+
+
+def _build_connection_semantic_catalog(
+    user_id: int,
+    connection_id: str,
+    source_label: str,
+    operation_id: int,
+) -> None:
+    source_key = f"db_connection:{connection_id}"
+    try:
+        runtime = _db_runtime_service.get_runtime_config(
+            user_id=user_id,
+            connection_id=connection_id,
+        )
+        _semantic_catalog_service.build_for_connection(
+            user_id=user_id,
+            runtime=runtime,
+            source_label=source_label,
+            operation_id=operation_id,
+        )
+    except Exception as exc:
+        _semantic_catalog_service.mark_build_failed(
+            source_key=source_key,
+            error=str(exc),
+            operation_id=operation_id,
+        )
 
 
 @router.post(
@@ -244,7 +286,6 @@ def clear_session_source(
         source_label=None,
         source_mode=None,
     )
-    _store.clear_semantic_catalog(session_id)
     refreshed = _load_owned_session(session_id, current_user)
     return _to_session_source_response(refreshed)
 
@@ -255,6 +296,7 @@ def clear_session_source(
 )
 def bind_session_csv_source(
     session_id: str,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> SessionSourceStateResponse:
     state = _load_owned_session(session_id, current_user)
@@ -263,10 +305,26 @@ def bind_session_csv_source(
             status_code=400,
             detail="No CSV dataset is attached to this session",
         )
-    _store.bind_csv_source(session_id, filename=state.dataset_name)
+    _store.bind_csv_source(
+        session_id,
+        filename=state.dataset_name,
+        source_ref_id=state.source_ref_id,
+    )
     refreshed = _load_owned_session(session_id, current_user)
     refreshed = _ensure_csv_runtime_state(session_id, refreshed)
-    _refresh_semantic_catalog(session_id, current_user.id, reason="CSV bind")
+    if _semantic_catalog_service is not None and settings.semantic_layer_enabled:
+        pending, operation = _semantic_catalog_service.claim_session_build(
+            session_id=session_id,
+            user_id=current_user.id,
+        )
+        if operation is not None:
+            background_tasks.add_task(
+                _build_session_semantic_catalog,
+                session_id,
+                current_user.id,
+                pending.source_key,
+                operation.operation_id,
+            )
     return _to_session_source_response(refreshed)
 
 
@@ -675,6 +733,7 @@ def list_openproject_projects(
 )
 def bind_session_openproject_source(
     session_id: str,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
     payload: OpenProjectSyncRequest | None = None,
 ) -> OpenProjectSyncResponse:
@@ -711,27 +770,20 @@ def bind_session_openproject_source(
         schema_hint={table: sync_result.schema for table in sync_result.rows_by_table},
     )
 
-    if _db_runtime_service is not None:
-        try:
-            from backend.data_access.catalog_refresh import refresh_session_catalog
-
-            runtime = _db_runtime_service.get_runtime_config(
-                user_id=current_user.id,
-                connection_id=connection.id,
-            )
-            refresh_session_catalog(
-                _store,
+    if _semantic_catalog_service is not None and settings.semantic_layer_enabled:
+        pending, operation = _semantic_catalog_service.claim_session_build(
+            session_id=session_id,
+            user_id=current_user.id,
+        )
+        if operation is not None:
+            background_tasks.add_task(
+                _build_session_semantic_catalog,
                 session_id,
-                csv_runtime=_csv_runtime,
-                db_runtime=runtime,
+                current_user.id,
+                pending.source_key,
+                operation.operation_id,
+                connection.id,
             )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "Failed to refresh data catalog after OpenProject sync: %s", exc
-            )
-    _refresh_semantic_catalog(session_id, current_user.id, reason="OpenProject sync")
 
     table_artifacts, chart_artifacts = _openproject_report_artifacts(
         session_id,
@@ -798,23 +850,43 @@ def list_session_sources(
 def remove_session_source(
     session_id: str,
     alias: str,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> list[SessionSourceResponse]:
     """Remove a specific source from a session by alias."""
-    state = _load_owned_session(session_id, current_user)
-    db_runtime = None
+    state_before = _load_owned_session(session_id, current_user)
+    if _manifest_store.load(session_id).source_by_alias(str(alias or "").strip()) is None:
+        raise HTTPException(status_code=404, detail=f"Source '{alias}' not found")
+
+    semantic_source_key: str | None = None
     if (
-        _db_runtime_service is not None
-        and _session_source_type(state) == "db_connection"
-        and state.source_ref_id
+        _semantic_catalog_service is not None
+        and _session_source_type(state_before) in {"csv", "planfact"}
     ):
-        try:
-            db_runtime = _db_runtime_service.get_runtime_config(
+        shared_csv = False
+        if _session_source_type(state_before) == "csv":
+            for row in _auth_db.list_sessions(current_user.id):
+                other_id = str(row.get("session_id") or "")
+                if not other_id or other_id == session_id:
+                    continue
+                other = _store.load_session(other_id)
+                if (
+                    other is not None
+                    and _session_source_type(other) == "csv"
+                    and other.source_ref_id == state_before.source_ref_id
+                ):
+                    shared_csv = True
+                    break
+        if not shared_csv:
+            catalog = _semantic_catalog_service.load_for_session(
+                session_id=session_id,
                 user_id=current_user.id,
-                connection_id=state.source_ref_id,
             )
-        except Exception:
-            db_runtime = None
+            if catalog is not None and catalog.source_type in {"csv", "planfact"}:
+                semantic_source_key = catalog.source_key
+
+    if semantic_source_key:
+        _semantic_catalog_service.clear_source(semantic_source_key)
 
     service = SessionSourceService(
         store=_store,
@@ -822,14 +894,47 @@ def remove_session_source(
         manifest_store=_manifest_store,
         notebook_orchestrator=_orchestrator,
         storage_dir=_storage_dir or Path(settings.storage_dir),
-        db_runtime=db_runtime,
+        db_runtime=None,
+        blob_store=_blob_store,
+        user_id=current_user.id,
     )
     try:
-        service.remove_source(session_id=session_id, alias=alias)
+        service.remove_source(session_id=session_id, alias=alias, refresh_catalog=False)
     except SessionSourceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    _store.clear_semantic_catalog(session_id)
-
+    refreshed = _load_owned_session(session_id, current_user)
+    if (
+        _db_runtime_service is not None
+        and _session_source_type(refreshed) == "db_connection"
+        and refreshed.source_ref_id
+    ):
+        try:
+            service.db_runtime = _db_runtime_service.get_runtime_config(
+                user_id=current_user.id,
+                connection_id=refreshed.source_ref_id,
+            )
+        except Exception:
+            service.db_runtime = None
+    if (
+        _semantic_catalog_service is not None
+        and settings.semantic_layer_enabled
+        and _session_source_type(refreshed) in {"csv", "planfact", "openproject"}
+    ):
+        pending, operation = _semantic_catalog_service.claim_session_build(
+            session_id=session_id,
+            user_id=current_user.id,
+            force=True,
+        )
+        if operation is not None:
+            background_tasks.add_task(
+                _build_session_semantic_catalog,
+                session_id,
+                current_user.id,
+                pending.source_key,
+                operation.operation_id,
+            )
+    else:
+        background_tasks.add_task(service.refresh_catalog, session_id)
     return list_session_sources(session_id, current_user)
 
 

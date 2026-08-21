@@ -1,8 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from backend.core.llm_provider import get_provider_policy
@@ -153,7 +155,7 @@ class Settings:
     llm_top_p: float = float(os.getenv("LLM_TOP_P", "0.95"))
     llm_top_k: int = int(os.getenv("LLM_TOP_K", "20"))
     llm_presence_penalty: float = float(os.getenv("LLM_PRESENCE_PENALTY", "1.5"))
-    llm_max_tokens_default: int = int(os.getenv("LLM_MAX_TOKENS_DEFAULT", "2048"))
+    llm_max_tokens_default: int = int(os.getenv("LLM_MAX_TOKENS_DEFAULT", "4096"))
     llm_max_tokens_reasoning: int = int(os.getenv("LLM_MAX_TOKENS_REASONING", "4096"))
     llm_enable_thinking: bool = _get_bool("LLM_ENABLE_THINKING", False)
     llm_show_think: bool = _get_bool("LLM_SHOW_THINK", True)
@@ -162,7 +164,7 @@ class Settings:
     llm_streaming: bool = _get_bool("LLM_STREAMING", True)
     llm_warmup_enabled: bool = _get_bool("LLM_WARMUP_ENABLED", True)
     llm_warmup_timeout_sec: int = int(os.getenv("LLM_WARMUP_TIMEOUT_SEC", "12"))
-    tool_exec_timeout_sec: int = int(os.getenv("TOOL_EXEC_TIMEOUT_SEC", "25"))
+    tool_exec_timeout_sec: int = int(os.getenv("TOOL_EXEC_TIMEOUT_SEC", "20"))
     tool_cache_size: int = int(os.getenv("TOOL_CACHE_SIZE", "48"))
     backend_query_timeout_sec: int = int(os.getenv("BACKEND_QUERY_TIMEOUT_SEC", "180"))
     agent_max_steps: int = int(os.getenv("AGENT_MAX_STEPS", "32"))
@@ -178,6 +180,8 @@ class Settings:
     agent_prompt_max_columns: int = int(os.getenv("AGENT_PROMPT_MAX_COLUMNS", "16"))
     agent_prompt_head_rows: int = int(os.getenv("AGENT_PROMPT_HEAD_ROWS", "3"))
     agent_cache_enabled: bool = _get_bool("AGENT_CACHE_ENABLED", True)
+    anomaly_check_enabled: bool = _get_bool("ANOMALY_CHECK_ENABLED", False)
+    always_use_analysis_plan: bool = False
     observation_mask_enabled: bool = _get_bool("OBSERVATION_MASK_ENABLED", True)
     agent_cache_size: int = int(os.getenv("AGENT_CACHE_SIZE", "128"))
     agent_cache_ttl_sec: int = int(os.getenv("AGENT_CACHE_TTL_SEC", "900"))
@@ -188,8 +192,18 @@ class Settings:
 
     session_ttl_days: int = int(os.getenv("BACKEND_SESSION_TTL_DAYS", "7"))
     max_dataset_mb: int = int(os.getenv("BACKEND_MAX_DATASET_MB", "100"))
-    storage_dir: str = os.getenv("BACKEND_STORAGE_DIR", "./backend_storage")
-    auth_db_path: str = os.getenv("AUTH_DB_PATH", "./backend_storage/app.db")
+    storage_dir: str = os.getenv(
+        "BACKEND_STORAGE_DIR",
+        str(Path(tempfile.gettempdir()) / "llm-data-analyst"),
+    )
+    app_data_postgres_dsn: str = os.getenv(
+        "APP_DATABASE_URL",
+        "postgresql://app:app@app_data:5432/app_data",
+    ).strip()
+    app_data_postgres_schema: str = os.getenv(
+        "APP_DATABASE_SCHEMA",
+        "public",
+    ).strip()
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
     auth_default_admin_username: str = os.getenv(
         "AUTH_DEFAULT_ADMIN_USERNAME", "admin"
@@ -229,29 +243,40 @@ class Settings:
     semantic_profile_sample_rows: int = int(os.getenv("SEMANTIC_PROFILE_SAMPLE_ROWS", "1000"))
     semantic_profile_top_values: int = int(os.getenv("SEMANTIC_PROFILE_TOP_VALUES", "20"))
     semantic_profile_timeout_sec: int = int(os.getenv("SEMANTIC_PROFILE_TIMEOUT_SEC", "60"))
-    semantic_catalog_store: str = os.getenv("SEMANTIC_CATALOG_STORE", "file").strip().lower()
-    semantic_catalog_postgres_dsn: str = os.getenv("SEMANTIC_CATALOG_POSTGRES_DSN", "").strip()
+    semantic_catalog_postgres_dsn: str = os.getenv(
+        "SEMANTIC_METADATA_DATABASE_URL",
+        "postgresql://semantic:semantic@semantic_metadata:5432/semantic_metadata",
+    ).strip()
+    semantic_catalog_postgres_schema: str = os.getenv(
+        "SEMANTIC_METADATA_SCHEMA",
+        "public",
+    ).strip()
     semantic_qdrant_url: str = os.getenv("SEMANTIC_QDRANT_URL", "http://qdrant:6333").strip()
     semantic_qdrant_api_key: str = os.getenv("SEMANTIC_QDRANT_API_KEY", "").strip()
     semantic_qdrant_collection: str = os.getenv(
         "SEMANTIC_QDRANT_COLLECTION",
-        "semantic_catalog_chunks",
+        "semantic_catalog_chunks_bge_m3_1024_v1",
     ).strip()
-    semantic_vector_enabled: bool = _get_bool("SEMANTIC_VECTOR_ENABLED", False)
+    semantic_vector_enabled: bool = _get_bool("SEMANTIC_VECTOR_ENABLED", True)
     semantic_embedding_provider: str = os.getenv(
-        "SEMANTIC_EMBEDDING_PROVIDER", "local"
+        "SEMANTIC_EMBEDDING_PROVIDER", "openai"
     ).strip().lower()
     semantic_qdrant_timeout_sec: int = int(os.getenv("SEMANTIC_QDRANT_TIMEOUT_SEC", "10"))
     semantic_top_k: int = int(os.getenv("SEMANTIC_TOP_K", "8"))
-    semantic_embedding_base_url: str = os.getenv("SEMANTIC_EMBEDDING_BASE_URL", "").strip()
-    semantic_embedding_api_key: str = os.getenv("SEMANTIC_EMBEDDING_API_KEY", "").strip()
+    semantic_embedding_base_url: str = os.getenv(
+        "SEMANTIC_EMBEDDING_BASE_URL", "http://localhost:8004/v1"
+    ).strip()
+    semantic_embedding_api_key: str = os.getenv("SEMANTIC_EMBEDDING_API_KEY", "EMPTY").strip()
     semantic_embedding_model: str = os.getenv(
         "SEMANTIC_EMBEDDING_MODEL",
-        "text-embedding-3-small",
+        "bge-m3",
     ).strip()
-    semantic_embedding_dim: int = int(os.getenv("SEMANTIC_EMBEDDING_DIM", "1536"))
+    semantic_embedding_dim: int = int(os.getenv("SEMANTIC_EMBEDDING_DIM", "1024"))
     semantic_embedding_timeout_sec: int = int(os.getenv("SEMANTIC_EMBEDDING_TIMEOUT_SEC", "30"))
     semantic_embedding_batch_size: int = int(os.getenv("SEMANTIC_EMBEDDING_BATCH_SIZE", "64"))
+    semantic_generation_batch_tables: int = int(
+        os.getenv("SEMANTIC_GENERATION_BATCH_TABLES", "2")
+    )
 
     openproject_base_url: str = os.getenv("OPENPROJECT_BASE_URL", "").strip()
     openproject_host_header: str = os.getenv("OPENPROJECT_HOST_HEADER", "").strip()

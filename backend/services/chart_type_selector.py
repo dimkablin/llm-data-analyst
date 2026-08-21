@@ -113,72 +113,20 @@ def infer_tabular_plot_profile(df: pd.DataFrame) -> TabularPlotProfile:
     )
 
 
-def classify_plot_intent(prompt: str) -> PlotIntent:
-    normalized = prompt.strip().lower()
-    if any(
-        token in normalized
-        for token in ("concentration", "overload", "dominance", "dominant")
-    ):
-        return "concentration"
-    if any(
-        token in normalized
-        for token in (
-            "trend",
-            "dynamics",
-            "over time",
-            "time series",
-            "by month",
-            "by week",
-            "by year",
-        )
-    ):
-        return "dynamics"
-    if any(
-        token in normalized
-        for token in ("top", "largest", "smallest", "leader", "ranking", "rank")
-    ):
-        return "top_n"
-    if any(
-        token in normalized
-        for token in ("structure", "distribution", "breakdown", "composition", "share")
-    ):
-        return "structure"
-    if any(
-        token in normalized
-        for token in ("compare", "comparison", "versus", " vs ", "correlation")
-    ):
-        return "comparison"
-    return "generic"
-
-
-def prompt_prefers_pie_chart(prompt: str) -> bool:
-    normalized = prompt.strip().lower()
-    return any(token in normalized for token in ("pie", "donut", "share", "percent"))
-
-
-def prompt_prefers_scatter_chart(prompt: str) -> bool:
-    normalized = prompt.strip().lower()
-    return any(token in normalized for token in ("scatter", "correlation", "relationship"))
-
-
 def pick_chart_kind(
     *,
     intent: PlotIntent,
     df: pd.DataFrame,
     segment_col: str,
     segment_index: int = 0,
-    prompt: str = "",
 ) -> ChartKind:
     """Choose chart type from data shape and analytical intent."""
     category_count = segment_category_count(df, segment_col)
 
-    if prompt_prefers_pie_chart(prompt) and _PIE_MIN_CATEGORIES <= category_count <= _PIE_MAX_CATEGORIES:
-        return "pie"
-
     if intent == "dynamics":
         return "line"
 
-    if intent == "comparison" and prompt_prefers_scatter_chart(prompt) and segment_index == 0:
+    if intent == "comparison" and segment_index == 0:
         profile = infer_tabular_plot_profile(df)
         if len(profile.metric_columns) >= 2:
             return "scatter"

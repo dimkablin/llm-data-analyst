@@ -1,13 +1,18 @@
 """Tests for Task 4: flush working_memory → StructuredSessionMemory."""
+
 from __future__ import annotations
 
-from backend.agent.runner import _extract_findings_from_actions
+import pandas as pd
+
+from backend.agent.runner import _durable_artifact_refs, _extract_findings_from_actions
 from backend.agent.working_memory import AnalysisWorkingMemory, ArtifactHandle
+from backend.artifacts.execution import ExecutionArtifact
 from backend.sessions.session_memory import SessionArtifactRef, StructuredSessionMemory
 
 # ---------------------------------------------------------------------------
 # _extract_findings_from_actions
 # ---------------------------------------------------------------------------
+
 
 def test_extract_findings_preserves_completed_actions():
     actions = [
@@ -25,6 +30,7 @@ def test_extract_findings_preserves_completed_actions():
     for r in result:
         assert r.startswith("[turn 2]")
 
+
 def test_extract_findings_empty_input():
     result = _extract_findings_from_actions([], turn_index=0)
     assert result == []
@@ -40,9 +46,38 @@ def test_extract_findings_skips_only_empty_actions():
     assert result == ["[turn 1] get_tool_instructions ? ..."]
 
 
+def test_durable_artifact_refs_use_execution_identity_and_skip_incomplete_data() -> None:
+    complete = ExecutionArtifact(
+        id="durable-id",
+        name="result",
+        producer_tool="sql_tool",
+        data=pd.DataFrame({"value": [1]}),
+        parent_ids=["source-id"],
+    )
+    incomplete = ExecutionArtifact(
+        id="preview-id",
+        name="preview",
+        producer_tool="sql_tool",
+        data=pd.DataFrame({"value": [2]}),
+        meta={"query": {"truncated": True}},
+    )
+
+    refs = _durable_artifact_refs(
+        [complete, incomplete],
+        [_make_handle("result")],
+        turn_index=3,
+    )
+
+    assert len(refs) == 1
+    assert refs[0].id == "durable-id"
+    assert refs[0].producer_tool == "sql_tool"
+    assert refs[0].parent_ids == ["source-id"]
+
+
 # ---------------------------------------------------------------------------
 # flush logic (inline simulation — same logic as run_query)
 # ---------------------------------------------------------------------------
+
 
 def _do_flush(
     working_memory: AnalysisWorkingMemory,
@@ -151,6 +186,7 @@ def test_flush_empty_working_memory():
 # Issue 2 – deduplication and cap
 # ---------------------------------------------------------------------------
 
+
 def test_flush_deduplicates_artifact_refs():
     """Two handles with the same id should produce only one artifact_index entry."""
     wm = AnalysisWorkingMemory(goal="dedup test")
@@ -210,6 +246,7 @@ def test_flush_caps_artifact_index_at_100():
 # ---------------------------------------------------------------------------
 # Issue 1 – flush only on valid response (conceptual / unit coverage)
 # ---------------------------------------------------------------------------
+
 
 def test_flush_only_on_valid_response():
     """_extract_findings_from_actions is NOT called when working_memory is None.

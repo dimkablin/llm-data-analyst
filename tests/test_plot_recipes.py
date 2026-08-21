@@ -1,18 +1,13 @@
 """Unit tests for the generic autogen plot recipe registry."""
 
+import inspect
+
 import pandas as pd
 
 from backend.services import plot_recipes
-from backend.services.chart_type_selector import classify_plot_intent
 
 
-def test_classify_plot_intent_matches_chart_selector() -> None:
-    assert classify_plot_intent("show concentration by channel") == "concentration"
-    assert classify_plot_intent("show revenue trend by month") == "dynamics"
-    assert classify_plot_intent("describe structure by category") == "structure"
-
-
-def test_build_autogen_structure_specs() -> None:
+def test_autogen_specs_use_table_shape_without_prompt_input() -> None:
     df = pd.DataFrame(
         {
             "category": ["A", "B"],
@@ -21,16 +16,13 @@ def test_build_autogen_structure_specs() -> None:
         }
     )
     specs = plot_recipes.build_autogen_plot_specs(
-        "describe structure by category and account",
         df,
         value_col="value",
         segment_cols=["category", "account_type"],
         source_table="customer_segments",
     )
-
+    assert "prompt" not in inspect.signature(plot_recipes.build_autogen_plot_specs).parameters
     assert specs
-    names = {name for name, _, _ in specs}
-    assert any(name.startswith("structure_by_") for name in names)
 
 
 def test_quantity_column_is_not_time_axis() -> None:

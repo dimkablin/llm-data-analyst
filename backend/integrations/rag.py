@@ -82,26 +82,18 @@ class RAGConfig:
     ) -> RAGConfig:
         source_env = env or os.environ
         base_url = (
-            _clean_str(source_env.get("RAG_URL"))
-            or _clean_str(source_env.get("RAG_BACKEND_URL"))
-            or ""
+            _clean_str(source_env.get("RAG_URL")) or _clean_str(source_env.get("RAG_BACKEND_URL")) or ""
         )
         enabled_default = bool(base_url)
         enabled = _get_bool(source_env, "RAG_ENABLED", enabled_default)
         query_endpoint = _clean_str(source_env.get("RAG_QUERY_ENDPOINT")) or "/query"
-        stream_endpoint = (
-            _clean_str(source_env.get("RAG_STREAM_ENDPOINT")) or "/query/stream"
-        )
+        stream_endpoint = _clean_str(source_env.get("RAG_STREAM_ENDPOINT")) or "/query/stream"
         documents_upload_endpoint = (
-            _clean_str(source_env.get("RAG_DOCUMENTS_UPLOAD_ENDPOINT"))
-            or "/documents/upload"
+            _clean_str(source_env.get("RAG_DOCUMENTS_UPLOAD_ENDPOINT")) or "/documents/upload"
         )
-        documents_endpoint = (
-            _clean_str(source_env.get("RAG_DOCUMENTS_ENDPOINT")) or "/documents"
-        )
+        documents_endpoint = _clean_str(source_env.get("RAG_DOCUMENTS_ENDPOINT")) or "/documents"
         documents_delete_endpoint = (
-            _clean_str(source_env.get("RAG_DOCUMENTS_DELETE_ENDPOINT"))
-            or "/documents/delete_document"
+            _clean_str(source_env.get("RAG_DOCUMENTS_DELETE_ENDPOINT")) or "/documents/delete_document"
         )
         documents_track_status_endpoint = (
             _clean_str(source_env.get("RAG_DOCUMENTS_TRACK_STATUS_ENDPOINT"))
@@ -192,13 +184,9 @@ def _default_transport(
             raw_body = response.read()
     except HTTPError as exc:
         body_preview = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned HTTP {exc.code}: {body_preview}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}: {body_preview}") from exc
     except URLError as exc:
-        raise RAGIntegrationError(
-            f"RAG backend is unavailable: {exc.reason}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -208,9 +196,7 @@ def _default_transport(
         decoded = json.loads(raw_body.decode("utf-8"))
     except json.JSONDecodeError as exc:
         preview = raw_body.decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned invalid JSON: {preview!r}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned invalid JSON: {preview!r}") from exc
     if not isinstance(decoded, dict):
         raise RAGIntegrationError("RAG backend returned a non-object JSON payload.")
     return decoded
@@ -223,13 +209,9 @@ def _decode_json_response(raw_body: bytes, *, context: str) -> dict[str, Any]:
         decoded = json.loads(raw_body.decode("utf-8"))
     except json.JSONDecodeError as exc:
         preview = raw_body.decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned invalid JSON for {context}: {preview!r}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned invalid JSON for {context}: {preview!r}") from exc
     if not isinstance(decoded, dict):
-        raise RAGIntegrationError(
-            f"RAG backend returned a non-object JSON payload for {context}."
-        )
+        raise RAGIntegrationError(f"RAG backend returned a non-object JSON payload for {context}.")
     return decoded
 
 
@@ -252,13 +234,9 @@ def _default_get_transport(
             return _decode_json_response(response.read(), context="GET request")
     except HTTPError as exc:
         body_preview = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned HTTP {exc.code}: {body_preview}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}: {body_preview}") from exc
     except URLError as exc:
-        raise RAGIntegrationError(
-            f"RAG backend is unavailable: {exc.reason}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -276,10 +254,7 @@ def _default_upload_transport(
     body = b"".join(
         [
             f"--{boundary}\r\n".encode(),
-            (
-                'Content-Disposition: form-data; name="file"; '
-                f'filename="{safe_file_name}"\r\n'
-            ).encode(),
+            (f'Content-Disposition: form-data; name="file"; filename="{safe_file_name}"\r\n').encode(),
             f"Content-Type: {content_type}\r\n\r\n".encode(),
             content,
             b"\r\n",
@@ -304,13 +279,9 @@ def _default_upload_transport(
             return _decode_json_response(response.read(), context="document upload")
     except HTTPError as exc:
         body_preview = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned HTTP {exc.code}: {body_preview}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}: {body_preview}") from exc
     except URLError as exc:
-        raise RAGIntegrationError(
-            f"RAG backend is unavailable: {exc.reason}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -340,13 +311,9 @@ def _default_delete_transport(
             return _decode_json_response(response.read(), context="document deletion")
     except HTTPError as exc:
         body_preview = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned HTTP {exc.code}: {body_preview}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}: {body_preview}") from exc
     except URLError as exc:
-        raise RAGIntegrationError(
-            f"RAG backend is unavailable: {exc.reason}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -379,13 +346,9 @@ def _default_stream_transport(
                     yield decoded
     except HTTPError as exc:
         body_preview = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RAGIntegrationError(
-            f"RAG backend returned HTTP {exc.code}: {body_preview}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}: {body_preview}") from exc
     except URLError as exc:
-        raise RAGIntegrationError(
-            f"RAG backend is unavailable: {exc.reason}"
-        ) from exc
+        raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
     except TimeoutError as exc:
         raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -446,9 +409,7 @@ class RAGService:
 
     def _endpoint_url(self, endpoint: str) -> str:
         if not self.config.base_url:
-            raise RAGIntegrationError(
-                "RAG integration is not configured. Set RAG_URL first."
-            )
+            raise RAGIntegrationError("RAG integration is not configured. Set RAG_URL first.")
         return urljoin(f"{self.config.base_url}/", endpoint.lstrip("/"))
 
     def _get_request(self, endpoint: str) -> dict[str, Any]:
@@ -467,13 +428,9 @@ class RAGService:
             except Exception:
                 body_preview = ""
             suffix = f": {body_preview}" if body_preview else ""
-            raise RAGIntegrationError(
-                f"RAG backend returned HTTP {exc.code}{suffix}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}{suffix}") from exc
         except URLError as exc:
-            raise RAGIntegrationError(
-                f"RAG backend is unavailable: {exc.reason}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
         except TimeoutError as exc:
             raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -494,13 +451,9 @@ class RAGService:
             except Exception:
                 body_preview = ""
             suffix = f": {body_preview}" if body_preview else ""
-            raise RAGIntegrationError(
-                f"RAG backend returned HTTP {exc.code}{suffix}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}{suffix}") from exc
         except URLError as exc:
-            raise RAGIntegrationError(
-                f"RAG backend is unavailable: {exc.reason}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
         except TimeoutError as exc:
             raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -521,13 +474,9 @@ class RAGService:
             except Exception:
                 body_preview = ""
             suffix = f": {body_preview}" if body_preview else ""
-            raise RAGIntegrationError(
-                f"RAG backend returned HTTP {exc.code}{suffix}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}{suffix}") from exc
         except URLError as exc:
-            raise RAGIntegrationError(
-                f"RAG backend is unavailable: {exc.reason}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
         except TimeoutError as exc:
             raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -548,13 +497,9 @@ class RAGService:
             except Exception:
                 body_preview = ""
             suffix = f": {body_preview}" if body_preview else ""
-            raise RAGIntegrationError(
-                f"RAG backend returned HTTP {exc.code}{suffix}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend returned HTTP {exc.code}{suffix}") from exc
         except URLError as exc:
-            raise RAGIntegrationError(
-                f"RAG backend is unavailable: {exc.reason}"
-            ) from exc
+            raise RAGIntegrationError(f"RAG backend is unavailable: {exc.reason}") from exc
         except TimeoutError as exc:
             raise RAGIntegrationError("RAG backend request timed out.") from exc
 
@@ -568,9 +513,7 @@ class RAGService:
             if isinstance(item, str):
                 clean = _clean_str(item)
             elif isinstance(item, dict):
-                clean = _clean_str(
-                    item.get("url") or item.get("link") or item.get("source")
-                )
+                clean = _clean_str(item.get("url") or item.get("link") or item.get("source"))
             else:
                 clean = None
             if not clean or clean in seen:
@@ -586,12 +529,8 @@ class RAGService:
         request_params: dict[str, Any],
         payload: dict[str, Any],
     ) -> RAGQueryResult:
-        answer = _clean_str(
-            payload.get("response") or payload.get("answer") or payload.get("content")
-        )
-        references = self._normalize_references(
-            payload.get("references") or payload.get("sources")
-        )
+        answer = _clean_str(payload.get("response") or payload.get("answer") or payload.get("content"))
+        references = self._normalize_references(payload.get("references") or payload.get("sources"))
         warnings: list[str] = []
         if not answer:
             warnings.append("RAG backend returned no normalized answer text.")
@@ -639,7 +578,7 @@ class RAGService:
         self,
         *,
         query: str,
-        mode: str =  "naive",
+        mode: str = "naive",
         top_k: int | None = None,
     ) -> RAGQueryResult:
         """Retrieve raw context chunks from LightRAG without LLM generation.
@@ -723,9 +662,7 @@ class RAGService:
         status = RAGService._normalize_status(raw.get("status") or status_hint)
         return {
             "id": _clean_str(raw.get("id")),
-            "file_path": _clean_str(
-                raw.get("file_path") or raw.get("file_name") or raw.get("filename")
-            ),
+            "file_path": _clean_str(raw.get("file_path") or raw.get("file_name") or raw.get("filename")),
             "status": status,
             "track_id": _clean_str(raw.get("track_id")),
             "chunks_count": RAGService._optional_int(raw.get("chunks_count")),
@@ -739,11 +676,7 @@ class RAGService:
     def _normalize_documents_payload(cls, payload: dict[str, Any]) -> list[dict[str, Any]]:
         raw_documents = payload.get("documents")
         if isinstance(raw_documents, list):
-            return [
-                doc
-                for item in raw_documents
-                if (doc := cls._normalize_document(item)) is not None
-            ]
+            return [doc for item in raw_documents if (doc := cls._normalize_document(item)) is not None]
 
         raw_statuses = payload.get("statuses") or payload.get("status")
         if isinstance(raw_statuses, dict):
@@ -764,11 +697,7 @@ class RAGService:
         if isinstance(raw_data, dict):
             return cls._normalize_documents_payload(raw_data)
         if isinstance(raw_data, list):
-            return [
-                doc
-                for item in raw_data
-                if (doc := cls._normalize_document(item)) is not None
-            ]
+            return [doc for item in raw_data if (doc := cls._normalize_document(item)) is not None]
         return []
 
     def upload_document(
@@ -819,9 +748,7 @@ class RAGService:
         return {
             "track_id": _clean_str(payload.get("track_id")) or clean_track_id,
             "documents": self._normalize_documents_payload(payload),
-            "status_summary": self._normalize_status_summary(
-                payload.get("status_summary")
-            ),
+            "status_summary": self._normalize_status_summary(payload.get("status_summary")),
         }
 
     def list_documents(self) -> dict[str, Any]:

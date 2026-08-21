@@ -97,7 +97,6 @@ const TOOL_STAGE_MAP: Record<string, AgentStageId> = {
   plotly_tool: 3,
   anomaly_tool: 4,
   forecast_tool: 4,
-  search_tool: 4,
   rag_tool: 4,
   planfact_tool: 4,
 };

@@ -1,0 +1,98 @@
+services:
+  chronos-mcp:
+    build:
+      context: ./chronos_mcp
+      args:
+        PYTORCH_IMAGE: ${CHRONOS_PYTORCH_IMAGE:-pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime}
+    environment:
+      CHRONOS_MCP_HOST: 0.0.0.0
+      CHRONOS_MCP_PORT: 8810
+      CHRONOS_MCP_TRANSPORT: streamable-http
+      CHRONOS_MCP_PUBLIC_URL: ${CHRONOS_MCP_PUBLIC_URL:-http://127.0.0.1:8810/mcp}
+      CHRONOS_MCP_API_KEY_FILE: /run/secrets/chronos_mcp_api_key
+      CHRONOS_MODEL_ALIAS: ${CHRONOS_MODEL_ALIAS:-chronos2-default}
+      CHRONOS_MODEL_ID: ${CHRONOS_MODEL_ID:-amazon/chronos-2}
+      CHRONOS_MODEL_REVISION: ${CHRONOS_MODEL_REVISION:-main}
+      CHRONOS_DEVICE: ${CHRONOS_DEVICE:-auto}
+      CHRONOS_DTYPE: ${CHRONOS_DTYPE:-auto}
+      HF_HOME: /var/cache/huggingface
+      HF_HUB_DISABLE_XET: "1"
+      CHRONOS_DATA_GATEWAY_URL: ${CHRONOS_DATA_GATEWAY_URL:-}
+      CHRONOS_DATA_GATEWAY_TOKEN: ${CHRONOS_DATA_GATEWAY_TOKEN:-}
+    ports:
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${CHRONOS_MCP_HOST_PORT:-8810}:8810"
+    secrets:
+      - chronos_mcp_api_key
+    volumes:
+      - ./model_cache:/var/cache/huggingface
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    gpus: all
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./searxng_mcp/configs/searxng_settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  searxng-mcp:
+    build:
+      context: ./searxng_mcp
+    environment:
+      SEARXNG_INSTANCE_URL: http://searxng:8080
+      SEARCH_SERVICE_URL: http://search-service:8000
+      HOST: 0.0.0.0
+      PORT: 8811
+      TRANSPORT: http
+      CORS_ORIGIN: ${SEARXNG_MCP_CORS_ORIGIN:-*}
+      MCP_ALLOWED_HOSTS: ${SEARXNG_MCP_ALLOWED_HOSTS:-host.docker.internal:8811}
+    command:
+      - /bin/sh
+      - -c
+      - export MCP_HTTP_BEARER="$$(cat /run/secrets/searxng_mcp_api_key)" && exec mcp-searxng-bridge
+    ports:
+      - "${MCP_BIND_ADDRESS:-127.0.0.1}:${SEARXNG_MCP_HOST_PORT:-8811}:8811"
+    secrets:
+      - searxng_mcp_api_key
+    depends_on:
+      searxng:
+        condition: service_healthy
+      search-service:
+        condition: service_healthy
+    restart: unless-stopped
+
+  search-service:
+    build:
+      context: ./searxng_mcp
+      dockerfile: search_service.Dockerfile
+    environment:
+      SEARXNG_API_URL: http://searxng:8080
+      SEARXNG_MIN_SCORE: ${SEARXNG_MIN_SCORE:-0.0}
+      SEARCH_TIMEOUT_SEC: ${SEARCH_TIMEOUT_SEC:-20.0}
+      FETCH_TIMEOUT_SEC: ${FETCH_TIMEOUT_SEC:-15.0}
+      SEARCH_FETCH_MAX_CHARS: ${SEARCH_FETCH_MAX_CHARS:-10000}
+    depends_on:
+      searxng:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+secrets:
+  chronos_mcp_api_key:
+    environment: CHRONOS_MCP_API_KEY
+  searxng_mcp_api_key:
+    environment: SEARXNG_MCP_API_KEY

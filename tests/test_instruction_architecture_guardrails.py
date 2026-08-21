@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from backend.instructions import InstructionKind, read_instruction_document
@@ -74,3 +75,36 @@ def test_value_tool_is_not_exposed_as_callable_runtime_tool() -> None:
     assert "value_tool" not in registered_docs
     assert "value_tool" not in factory_keys
     assert "value_tool" not in execution_agent_prompt
+
+
+def test_legacy_search_tool_is_not_exposed_as_callable_runtime_tool() -> None:
+    from backend.tools.catalog import KNOWN_TOOL_KEYS
+    from backend.tools.registry import ToolRegistry
+
+    registry = get_default_tool_instruction_registry()
+    registered_docs = {document.metadata.tool_key for document in registry.list_tools()}
+    factory_keys = set(ToolRegistry.from_services()._factories)
+
+    assert "search_tool" not in KNOWN_TOOL_KEYS
+    assert "search_tool" not in registered_docs
+    assert "search_tool" not in factory_keys
+
+
+def test_tool_implementations_do_not_invoke_other_runtime_tools() -> None:
+    violations: list[str] = []
+    for path in sorted((PROJECT_ROOT / "backend" / "tools" / "impl").glob("*.py")):
+        if path.name in {"__init__.py", "factory.py"}:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"invoke", "ainvoke", "run", "arun", "_run", "_arun"}:
+                continue
+            receiver = ast.unparse(node.func.value)
+            if receiver == "self" or "llm" in receiver.casefold():
+                continue
+            if "tool" in receiver.casefold():
+                violations.append(f"{path.name}:{node.lineno}: {ast.unparse(node.func)}")
+
+    assert violations == []

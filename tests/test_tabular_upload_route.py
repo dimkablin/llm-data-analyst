@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
-from fastapi import FastAPI
+import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend.api import deps
@@ -15,7 +17,15 @@ from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
 from backend.notebook.store import NotebookStore
-from backend.sessions.session_store import SessionStore
+from tests.in_memory_semantic_store import SemanticSessionStore as SessionStore
+
+
+def test_readonly_sql_allows_keywords_in_literals_but_rejects_multiple_statements() -> None:
+    sql = "SELECT * FROM dataset WHERE contact_center = 'Call Center'"
+
+    assert data._ensure_safe_readonly_sql(sql) == sql
+    with pytest.raises(HTTPException, match="Only read-only queries are allowed"):
+        data._ensure_safe_readonly_sql("SELECT 1; DROP TABLE dataset")
 
 
 class _FakeAuthDB:
@@ -42,10 +52,21 @@ class _FakeSemanticCatalogService:
         self.store = store
         self.auth_db = auth_db
 
-    def refresh(self, *, session_id: str, user_id: int) -> None:
+    def refresh(self, *, session_id: str, user_id: int, operation_id: int) -> None:
+        assert operation_id == 23
         snapshot = self.store.load_data_catalog(session_id)
         assert snapshot is not None and snapshot.tables
         self.auth_db.semantic_refreshes.append((session_id, user_id))
+
+    def claim_session_build(self, *, session_id: str, user_id: int):
+        return (
+            SimpleNamespace(source_key=f"csv:{user_id}:{session_id}"),
+            SimpleNamespace(operation_id=23),
+        )
+
+    def mark_build_failed(self, *, source_key: str, error: str, operation_id: int) -> None:
+        assert operation_id == 23
+        raise AssertionError(f"Unexpected semantic build failure for {source_key}: {error}")
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, SessionStore, CSVSessionRuntime, _FakeAuthDB, str]:

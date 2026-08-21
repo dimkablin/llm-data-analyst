@@ -11,7 +11,6 @@ from backend.tools.impl.factory import (
     GenerateSummaryToolFactory,
     PandasToolFactory,
     PlotlyToolFactory,
-    SearchToolFactory,
     SQLToolFactory,
     ToolFactory,
 )
@@ -20,7 +19,6 @@ from backend.tools.impl.generation_tools import GenerateReportTool, GenerateSumm
 from backend.tools.impl.memory_tool import MemoryTool
 from backend.tools.impl.pandas_tool import PandasTool
 from backend.tools.impl.plotly_tool import PlotlyTool
-from backend.tools.impl.search_tool import SearchTool
 from backend.tools.impl.sql_tool import SQLTool
 
 __all__ = [
@@ -45,8 +43,6 @@ __all__ = [
     "PlotlyToolFactory",
     "SQLTool",
     "SQLToolFactory",
-    "SearchTool",
-    "SearchToolFactory",
     # Factories
     "ToolFactory",
 ]

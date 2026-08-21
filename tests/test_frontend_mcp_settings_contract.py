@@ -15,7 +15,9 @@ def test_frontend_exposes_mcp_settings_contract() -> None:
     assert "listAdminMcpServers" in api
     assert "upsertAdminMcpServer" in api
     assert "deleteAdminMcpServer" in api
+    assert "testAdminMcpServer" in api
     assert "McpServersCard" in settings
     assert "MCP" in settings
     assert "updateMcpServerEnabled" in settings
     assert "upsertAdminMcpServer" in settings
+    assert 'aria-label="Проверить подключение"' in settings

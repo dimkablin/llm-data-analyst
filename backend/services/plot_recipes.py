@@ -26,12 +26,10 @@ from backend.services.chart_type_selector import (
     ChartKind,
     PlotIntent,
     TabularPlotProfile,
-    classify_plot_intent,
     infer_tabular_plot_profile,
     is_plausible_time_column,
     pick_chart_kind,
     pick_metric_pair,
-    prompt_prefers_scatter_chart,
     score_dataframe_for_plot,
 )
 
@@ -70,104 +68,6 @@ _CHANNEL_COLUMN_RE = re.compile(
     r"(channel|канал|segment|сегмент|region|регион|brand|бренд|category|категор)",
     re.IGNORECASE,
 )
-
-
-def prompt_wants_visual_analysis(prompt: str) -> bool:
-    normalized = prompt.strip().lower()
-    if any(token in normalized for token in ("без граф", "не строй граф", "без визуал")):
-        return False
-    explicit_visual = any(
-        token in normalized
-        for token in (
-            "граф",
-            "диаграм",
-            "визуал",
-            "plot",
-            "chart",
-            "bar",
-            "line",
-        )
-    )
-    if explicit_visual:
-        return True
-    if any(token in normalized for token in ("прогноз", "forecast", "план-факт", "аномал")):
-        return False
-    return any(
-        token in normalized
-        for token in (
-            "динамик",
-            "тренд",
-            "сравни",
-            "сравнен",
-            "разрез",
-            "топ",
-            "рейтинг",
-            "лидер",
-            "вклад",
-            "доля",
-            "концентрац",
-            "перегруз",
-            "структур",
-            "опиши",
-            "распредел",
-            "почему",
-            "причин",
-            "просад",
-            "упал",
-            "упали",
-            "рост",
-            "выруч",
-            "продаж",
-            "проанализ",
-            "анализ",
-            "анализируй",
-            "оцен",
-            "сильнее",
-            "слабее",
-            "выглядят",
-            "компан",
-        )
-    )
-
-
-def prompt_asks_entity_structure(prompt: str) -> bool:
-    """Dataset-agnostic structure / composition questions."""
-    normalized = prompt.strip().lower()
-    if "структур" in normalized or "состав" in normalized:
-        return True
-    structure_verbs = ("опиши", "описание", "покажи состав", "разбивк", "распредел")
-    structure_dims = (
-        "по тип",
-        "по счет",
-        "по счёт",
-        "по сегмент",
-        "по канал",
-        "по категор",
-        "по регион",
-        "по бренд",
-        "разрез",
-        "измерен",
-    )
-    return any(v in normalized for v in structure_verbs) and any(
-        d in normalized for d in structure_dims
-    )
-
-
-def requested_dimension_specs(prompt: str) -> list[tuple[str, tuple[str, ...]]]:
-    normalized = prompt.strip().lower()
-    specs: list[tuple[str, tuple[str, ...]]] = []
-    candidates: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-        ("счёт", ("account_type", "account", "счет", "счёт"), ("счет", "счёт", "счета")),
-        ("канал", ("channel", "канал"), ("канал",)),
-        ("категория", ("category", "категор"), ("категор",)),
-        ("регион", ("region", "регион", "city", "город"), ("регион", "город")),
-        ("сегмент", ("segment", "сегмент"), ("сегмент",)),
-        ("бренд", ("brand", "бренд"), ("бренд",)),
-    )
-    for label, column_patterns, prompt_tokens in candidates:
-        if any(token in normalized for token in prompt_tokens):
-            specs.append((label, column_patterns))
-    return specs
 
 
 def pick_column(columns: list[str], patterns: tuple[str, ...]) -> str | None:
@@ -223,13 +123,9 @@ def pick_segment_column(df: pd.DataFrame, *, exclude: set[str]) -> str | None:
     return None
 
 
-def pick_plot_segment_columns(df: pd.DataFrame, prompt: str) -> list[str]:
+def pick_plot_segment_columns(df: pd.DataFrame) -> list[str]:
     columns = [str(c) for c in df.columns]
     picked: list[str] = []
-    for _, column_patterns in requested_dimension_specs(prompt):
-        col = pick_column(columns, column_patterns)
-        if col and col not in picked and column_nunique(df, col) <= 24:
-            picked.append(col)
     if len(picked) < 2:
         profile = infer_tabular_plot_profile(df)
         for col in profile.dimension_columns:
@@ -256,8 +152,8 @@ def pick_plot_segment_columns(df: pd.DataFrame, prompt: str) -> list[str]:
     return picked[:4]
 
 
-def infer_chart_segment_columns(df: pd.DataFrame, prompt: str) -> list[str]:
-    picked = pick_plot_segment_columns(prepare_plot_dataframe(df), prompt)
+def infer_chart_segment_columns(df: pd.DataFrame) -> list[str]:
+    picked = pick_plot_segment_columns(prepare_plot_dataframe(df))
     if picked:
         return picked[:4]
     profile = infer_tabular_plot_profile(df)
@@ -666,58 +562,9 @@ def build_dynamics_line_figure(
     return apply_default_chart_style(fig)
 
 
-def _append_segment_chart_specs(
-    specs: list[PlotSpec],
-    *,
-    prompt: str,
-    df: pd.DataFrame,
-    value_col: str,
-    segment_cols: list[str],
-    base_meta: dict[str, object],
-    intent: PlotIntent,
-    name_prefix: str,
-    title_prefix: str,
-    max_segments: int,
-) -> None:
-    for index, seg in enumerate(segment_cols[:max_segments]):
-        if seg not in df.columns:
-            continue
-        breakdown = segment_value_breakdown(df, segment_col=seg, value_col=value_col)
-        chart_kind = pick_chart_kind(
-            intent=intent,
-            segment_index=index,
-            df=df,
-            segment_col=seg,
-            prompt=prompt,
-        )
-        fig = build_segment_autogen_figure(
-            df,
-            value_col=value_col,
-            segment_col=seg,
-            chart_kind=chart_kind,
-            title=f"{title_prefix}: {seg}",
-        )
-        if fig is None:
-            continue
-        safe = sandbox_var_name(seg)
-        specs.append(
-            (
-                f"{name_prefix}_by_{safe}_chart",
-                fig,
-                {
-                    **base_meta,
-                    "segment": seg,
-                    "chart_kind": chart_kind,
-                    "breakdown": breakdown,
-                },
-            )
-        )
-
-
 def append_row_composition_chart_specs(
     specs: list[PlotSpec],
     *,
-    prompt: str,
     df: pd.DataFrame,
     value_col: str,
     base_meta: dict[str, object],
@@ -739,7 +586,6 @@ def append_row_composition_chart_specs(
         segment_index=0,
         df=df,
         segment_col=label_col,
-        prompt=prompt,
     )
     fig = build_segment_autogen_figure(
         df,
@@ -765,16 +611,15 @@ def append_row_composition_chart_specs(
 
 
 def build_autogen_plot_specs(
-    prompt: str,
     df: pd.DataFrame,
     *,
     value_col: str,
     segment_cols: list[str],
     source_table: str,
 ) -> list[PlotSpec]:
-    """Intent-driven recipe registry → (artifact_name, figure, meta) tuples."""
+    """Build plot specs from dataframe shape and types."""
     df = prepare_plot_dataframe(df)
-    intent: PlotIntent = classify_plot_intent(prompt)
+    intent: PlotIntent = "generic"
     specs: list[PlotSpec] = []
     base_meta: dict[str, object] = {
         "autogen": True,
@@ -782,143 +627,7 @@ def build_autogen_plot_specs(
         "intent": intent,
     }
     if not segment_cols:
-        segment_cols = infer_chart_segment_columns(df, prompt)
-
-    if intent == 'structure' and segment_cols:
-        _append_segment_chart_specs(
-            specs,
-            prompt=prompt,
-            df=df,
-            value_col=value_col,
-            segment_cols=segment_cols,
-            base_meta=base_meta,
-            intent=intent,
-            name_prefix="structure",
-            title_prefix="Структура",
-            max_segments=4,
-        )
-        if not specs:
-            append_row_composition_chart_specs(
-                specs,
-                prompt=prompt,
-                df=df,
-                value_col=value_col,
-                base_meta=base_meta,
-                intent=intent,
-            )
-        return specs
-
-    if intent == "concentration":
-        profile = infer_tabular_plot_profile(df)
-        focus_dims = [col for col in segment_cols if col in df.columns]
-        if len(focus_dims) < 2:
-            focus_dims = list(profile.dimension_columns[:2])
-        _append_segment_chart_specs(
-            specs,
-            prompt=prompt,
-            df=df,
-            value_col=value_col,
-            segment_cols=focus_dims,
-            base_meta=base_meta,
-            intent=intent,
-            name_prefix="concentration",
-            title_prefix="Концентрация",
-            max_segments=2,
-        )
-        return specs
-
-    if intent == "dynamics":
-        profile = infer_tabular_plot_profile(df)
-        time_col = profile.time_columns[0] if profile.time_columns else pick_time_column(df)
-        if time_col and len(df) >= 2 and not _is_snapshot_frame(source_table, df):
-            segment_col = next(
-                (col for col in profile.dimension_columns if col != time_col),
-                pick_segment_column(df, exclude={time_col}),
-            )
-            fig = build_dynamics_line_figure(
-                df,
-                time_col=time_col,
-                value_col=value_col,
-                segment_col=segment_col,
-            )
-            if fig is not None:
-                specs.append(
-                    (
-                        "dynamics_chart",
-                        fig,
-                        {**base_meta, "time_col": time_col, "segment": segment_col},
-                    )
-                )
-        return specs
-
-    if intent in {"top_n", "comparison"}:
-        if intent == "comparison" and prompt_prefers_scatter_chart(prompt):
-            axes = pick_metric_pair(df)
-            if axes is not None:
-                x_col, y_col = axes
-                color_col = segment_cols[0] if segment_cols else None
-                fig = build_metric_scatter_figure(
-                    df,
-                    x_col=x_col,
-                    y_col=y_col,
-                    color_col=color_col,
-                    title="Сравнение метрик",
-                )
-                if fig is not None:
-                    specs.append(
-                        (
-                            "comparison_scatter_chart",
-                            fig,
-                            {
-                                **base_meta,
-                                "chart_kind": "scatter",
-                                "x_col": x_col,
-                                "y_col": y_col,
-                            },
-                        )
-                    )
-                    return specs
-
-        profile = infer_tabular_plot_profile(df)
-        label_col = segment_cols[0] if segment_cols else (
-            profile.dimension_columns[0] if profile.dimension_columns else None
-        )
-        if label_col:
-            breakdown = segment_value_breakdown(
-                df,
-                segment_col=label_col,
-                value_col=value_col,
-                limit=10,
-            )
-            chart_kind = pick_chart_kind(
-                intent=intent,
-                segment_index=0,
-                df=df,
-                segment_col=label_col,
-                prompt=prompt,
-            )
-            title = "Топ вклад" if intent == "top_n" else "Сравнение по сегментам"
-            fig = build_segment_autogen_figure(
-                df,
-                value_col=value_col,
-                segment_col=label_col,
-                chart_kind=chart_kind,
-                title=title,
-            )
-            if fig is not None:
-                specs.append(
-                    (
-                        "top_contribution_chart" if intent == "top_n" else "comparison_chart",
-                        fig,
-                        {
-                            **base_meta,
-                            "segment": label_col,
-                            "chart_kind": chart_kind,
-                            "breakdown": breakdown,
-                        },
-                    )
-                )
-        return specs
+        segment_cols = infer_chart_segment_columns(df)
 
     if segment_cols:
         primary_seg = segment_cols[0]
@@ -927,7 +636,6 @@ def build_autogen_plot_specs(
             segment_index=0,
             df=df,
             segment_col=primary_seg,
-            prompt=prompt,
         )
         breakdown = segment_value_breakdown(
             df,
@@ -961,7 +669,6 @@ def build_autogen_plot_specs(
                     segment_index=1,
                     df=df,
                     segment_col=secondary,
-                    prompt=prompt,
                 )
                 secondary_fig = build_segment_autogen_figure(
                     df,
@@ -992,7 +699,6 @@ def build_autogen_plot_specs(
     if not specs:
         append_row_composition_chart_specs(
             specs,
-            prompt=prompt,
             df=df,
             value_col=value_col,
             base_meta=base_meta,
@@ -1096,17 +802,14 @@ def _metric_allows_signed_values(value_col: str) -> bool:
     return any(token in lowered for token in ("return", "change", "delta", "pnl", "score"))
 
 
-def _cross_section_chart_title(value_col: str, prompt: str) -> str:
-    _ = prompt
+def _cross_section_chart_title(value_col: str) -> str:
     return f"Comparison by {value_col}"
 
 
-def _pick_cross_section_value_column(df: pd.DataFrame, prompt: str) -> str | None:
-    _ = prompt
+def _pick_cross_section_value_column(df: pd.DataFrame) -> str | None:
     return pick_value_column(df)
 
 def _build_timeseries_line_specs(
-    prompt: str,
     usable: list[tuple[str, pd.DataFrame]],
     *,
     intent: PlotIntent,
@@ -1156,7 +859,6 @@ def _build_timeseries_line_specs(
 
 
 def _build_cross_section_comparison_specs(
-    prompt: str,
     usable: list[tuple[str, pd.DataFrame]],
     *,
     intent: PlotIntent,
@@ -1173,7 +875,7 @@ def _build_cross_section_comparison_specs(
         label_col = _entity_label_column(frame_df)
         if not label_col:
             continue
-        value_col = _pick_cross_section_value_column(frame_df, prompt)
+        value_col = _pick_cross_section_value_column(frame_df)
         if not value_col:
             continue
         numeric = pd.to_numeric(frame_df[value_col], errors="coerce")
@@ -1200,9 +902,8 @@ def _build_cross_section_comparison_specs(
         segment_index=0,
         df=plot_df,
         segment_col=label_col,
-        prompt=prompt,
     )
-    title = _cross_section_chart_title(value_col, prompt)
+    title = _cross_section_chart_title(value_col)
     fig = build_segment_autogen_figure(
         plot_df,
         value_col=value_col,
@@ -1229,13 +930,12 @@ def _build_cross_section_comparison_specs(
 
 
 def build_autogen_plot_specs_for_frames(
-    prompt: str,
     frames: list[tuple[str, pd.DataFrame]],
 ) -> list[PlotSpec]:
     """Pick the best generic table(s) and run the recipe registry."""
     if not frames:
         return []
-    intent = classify_plot_intent(prompt)
+    intent: PlotIntent = "generic"
     usable = [
         (name, prepare_plot_dataframe(df))
         for name, df in frames
@@ -1247,24 +947,13 @@ def build_autogen_plot_specs_for_frames(
     specs: list[PlotSpec] = []
     base_meta: dict[str, object] = {"autogen": True, "intent": intent}
 
-    if intent not in {"structure"} and intent in {"comparison", "top_n"}:
-        specs.extend(
-            _build_cross_section_comparison_specs(
-                prompt,
-                usable,
-                intent=intent,
-                base_meta=base_meta,
-            )
-        )
-
-    wants_timeseries = intent == "dynamics" or any(
-        token in prompt.strip().lower()
-        for token in ("trend", "over time", "time series", "by month", "by date")
+    wants_timeseries = any(
+        _frame_suitable_for_timeseries_line(name, frame)
+        for name, frame in usable
     )
-    if wants_timeseries and intent not in {"top_n", "concentration", "structure"}:
+    if wants_timeseries:
         specs.extend(
             _build_timeseries_line_specs(
-                prompt,
                 usable,
                 intent=intent,
                 base_meta=base_meta,
@@ -1285,10 +974,9 @@ def build_autogen_plot_specs_for_frames(
         logger.info("autogen plots skipped: no numeric value column in %s", best_name)
         return []
 
-    segment_cols = infer_chart_segment_columns(best_df, prompt)
+    segment_cols = infer_chart_segment_columns(best_df)
     try:
         return build_autogen_plot_specs(
-            prompt,
             best_df,
             value_col=value_col,
             segment_cols=segment_cols,

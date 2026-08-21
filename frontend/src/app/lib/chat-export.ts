@@ -1,6 +1,10 @@
 import type { ArtifactPayload, ChatMessage } from "./backend-types";
 import { formatDurationMs } from "./format";
 
+type ChatExportMessage = Pick<ChatMessage, "content" | "reasoning" | "artifacts" | "metrics"> & {
+  role: string;
+};
+
 function saveFile(filename: string, payload: string, mimeType: string): void {
   const blob = new Blob([payload], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -222,7 +226,7 @@ function buildChatHistoryHtml(
   sessionId: string,
   sessionTitle: string,
   datasetName: string,
-  messages: ChatMessage[],
+  messages: ChatExportMessage[],
 ): string {
   const plotScripts: string[] = [];
   const renderedMessages = messages
@@ -394,7 +398,7 @@ export function exportChatHistory(
   sessionId: string,
   sessionTitle: string,
   datasetName: string,
-  messages: ChatMessage[],
+  messages: ChatExportMessage[],
 ): void {
   if (!sessionId) {
     return;

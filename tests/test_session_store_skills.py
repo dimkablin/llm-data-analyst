@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
+from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact
 from backend.sessions.session_store import SessionStore
 
 
@@ -39,3 +42,25 @@ def test_session_store_persists_context_usage_snapshot(tmp_path: Path) -> None:
 
     assert reloaded is not None
     assert reloaded.context_usage["usage_percent"] == 60
+
+
+def test_session_store_upserts_and_loads_artifact_by_execution_id(tmp_path: Path) -> None:
+    store = SessionStore(str(tmp_path), ttl_days=7)
+    session = store.create_session()
+    artifact = ExecutionArtifact(
+        id="artifact-1",
+        artifact_type=ExecArtifactType.DATAFRAME,
+        name="monthly_values",
+        data=pd.DataFrame({"value": [1, 2]}),
+        producer_tool="sql_tool",
+    )
+
+    store.add_artifacts(session.session_id, [artifact])
+    store.add_artifacts(session.session_id, [artifact])
+
+    persisted = store.get_serialized_artifact(session.session_id, artifact.id)
+    reloaded = store.load_session(session.session_id)
+    assert persisted is not None
+    assert persisted["execution"]["data_complete"] is True
+    assert reloaded is not None
+    assert len(reloaded.artifacts) == 1

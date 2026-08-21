@@ -91,7 +91,8 @@ class MemoryToolRegistryTests(unittest.TestCase):
     def test_memory_tool_in_registry_no_services(self) -> None:
         registry = self._make_registry()
         ctx = self._make_ctx()
-        self.assertTrue(registry.is_available("memory_tool", ctx))
+        self.assertTrue(registry.is_available("memory", ctx))
+        self.assertFalse(registry.is_available("memory_tool", ctx))
 
     def test_memory_tool_built_in_build_tools(self) -> None:
         registry = self._make_registry()

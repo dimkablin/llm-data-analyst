@@ -1,10 +1,12 @@
-import React, { type ReactNode, useEffect, useRef, useState } from "react";
+import React, { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   BarChart3,
   BookOpen,
   Bot,
   Braces,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   File,
@@ -16,6 +18,8 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  ShieldAlert,
+  ShieldCheck,
   Square,
   User,
   X,
@@ -30,8 +34,14 @@ import type {
   ExecutionGraph,
   PhaseEvent,
   SessionSourceState,
+  SemanticCatalogStatus,
+  SemanticCatalogOperation,
   StreamToolCall,
   UserSettings,
+  QueryExecutionOptions,
+  Skill,
+  ToolAvailability,
+  MCPServerAvailability,
 } from "../../lib/backend-types";
 import { filterBlocks, filterReasoningSteps } from "../../lib/think-filter";
 import { AgentActivityFeed, ToolCallList } from "./AgentActivityFeed";
@@ -43,6 +53,15 @@ import { selectDefaultHighlightedBoardArtifactIds } from "../../lib/board-artifa
 import { formatDurationMs, formatTime } from "../../lib/format";
 import { MarkdownBlock } from "../MarkdownBlock";
 import { ArtifactSurface } from "./ArtifactSurface";
+import { PlanfactFirstLook } from "./PlanfactFirstLook";
+import { getUserTools, listMcpServers, listSkills } from "../../lib/backend-api";
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "../ui/command";
+import {
+  isToolSlashAvailable,
+  matchesSlashCommand,
+  parseSlashInput,
+  type SlashCommand,
+} from "../../lib/slash-command";
 function Tip({ label, children, side = "top" }: { label: string; children: React.ReactNode; side?: "top" | "bottom" }) {
   const isTop = side === "top";
   return (
@@ -112,7 +131,9 @@ type Props = {
   isUploading: boolean;
   hasDataset: boolean;
   activeSource?: SessionSourceState;
-  onSubmit: (value: string) => Promise<void>;
+  semanticStatus?: SemanticCatalogStatus;
+  semanticOperation?: SemanticCatalogOperation | null;
+  onSubmit: (value: string, options?: QueryExecutionOptions) => Promise<void>;
   onDraftChange?: (value: string) => void;
   onStop: () => void;
   onRetry: () => Promise<void>;
@@ -128,8 +149,13 @@ type Props = {
     | "show_think_tool"
     | "show_think_final"
     | "show_detailed_tool_steps"
+    | "show_rag_errors"
   >;
 };
+
+function isDisabledRagError(error: string): boolean {
+  return error.toLowerCase().includes("rag integration is disabled or not configured");
+}
 
 export function ChatPanel({
   title,
@@ -152,6 +178,8 @@ export function ChatPanel({
   isUploading,
   hasDataset,
   activeSource,
+  semanticStatus = "empty",
+  semanticOperation = null,
   onSubmit,
   onDraftChange,
   onStop,
@@ -164,8 +192,21 @@ export function ChatPanel({
   settings,
 }: Props) {
   const showDetailedTools = settings.show_detailed_tool_steps;
+  const visibleError = error && (settings.show_rag_errors || !isDisabledRagError(error));
   const [input, setInput] = useState("");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [selectedCommand, setSelectedCommand] = useState<SlashCommand | null>(null);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [tools, setTools] = useState<ToolAvailability[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServerAvailability[]>([]);
+  const [catalogFailed, setCatalogFailed] = useState(false);
+  const [paletteDismissed, setPaletteDismissed] = useState(false);
+  const [activeCommandIndex, setActiveCommandIndex] = useState(0);
+  const catalogPromiseRef = useRef<Promise<{
+    skills: Skill[];
+    tools: ToolAvailability[];
+    mcpServers: MCPServerAvailability[];
+  }> | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -208,7 +249,68 @@ export function ChatPanel({
 
   function updateInput(value: string): void {
     setInput(value);
+    setPaletteDismissed(false);
     onDraftChange?.(value);
+  }
+
+  const loadCommandCatalog = useCallback(async () => {
+    if (!catalogPromiseRef.current) {
+      catalogPromiseRef.current = Promise.all([listSkills(), getUserTools(), listMcpServers()])
+        .then(([nextSkills, nextTools, nextMcpServers]) => {
+          setSkills(nextSkills);
+          setTools(nextTools);
+          setMcpServers(nextMcpServers);
+          return { skills: nextSkills, tools: nextTools, mcpServers: nextMcpServers };
+        })
+        .catch(() => {
+          setCatalogFailed(true);
+          return { skills: [], tools: [], mcpServers: [] };
+        });
+    }
+    return catalogPromiseRef.current;
+  }, []);
+
+  const hasSessionData = Boolean(hasDataset || activeSource?.source_type);
+  const slashSearch = parseSlashInput(input).commandId ?? "";
+  const skillCommands: SlashCommand[] = skills
+    .filter((skill) => skill.enabled_for_user)
+    .map((skill) => ({
+      type: "skill" as const,
+      id: skill.skill_id,
+      label: skill.name,
+      description: skill.description,
+    }))
+    .filter((command) => matchesSlashCommand(command, slashSearch));
+  const toolCommands: SlashCommand[] = tools
+    .filter((tool) => isToolSlashAvailable(tool, hasSessionData))
+    .map((tool) => ({
+      type: "tool" as const,
+      id: tool.tool_key,
+      label: tool.display_name_ru || tool.tool_label || tool.tool_key,
+      description: tool.description_ru || tool.description || "",
+    }))
+    .filter((command) => matchesSlashCommand(command, slashSearch));
+  const mcpCommands: SlashCommand[] = mcpServers
+    .filter((server) => server.effective_enabled)
+    .flatMap((server) => server.tools.map((tool) => ({
+      type: "tool" as const,
+      id: tool.tool_key,
+      label: tool.tool_name,
+      description: tool.description || server.description || "",
+    })))
+    .filter((command) => matchesSlashCommand(command, slashSearch));
+  const visibleCommands = [...skillCommands, ...toolCommands, ...mcpCommands];
+  const isPaletteOpen = input.startsWith("/") && !selectedCommand && !paletteDismissed;
+
+  useEffect(() => {
+    if (isPaletteOpen) void loadCommandCatalog();
+  }, [isPaletteOpen, loadCommandCatalog]);
+
+  useEffect(() => setActiveCommandIndex(0), [slashSearch, skills, tools, mcpServers]);
+
+  function chooseCommand(command: SlashCommand): void {
+    setSelectedCommand(command);
+    updateInput(parseSlashInput(input).query);
   }
 
   function handleMenuAction(action: "upload" | "search" | "research"): void {
@@ -218,6 +320,12 @@ export function ChatPanel({
     } else if (action === "search") {
       updateInput(input || "Найди в интернете: ");
     } else {
+      setSelectedCommand({
+        type: "skill",
+        id: "internet_research",
+        label: "Глубокое исследование",
+        description: "Многоитерационный веб-поиск с проверкой источников",
+      });
       updateInput(input || "Глубоко исследуй в интернете: ");
     }
   }
@@ -226,9 +334,46 @@ export function ChatPanel({
     if (!input.trim() || isStreaming || isBackgroundStreaming || isUploading) {
       return;
     }
-    const value = input;
+    let command = selectedCommand;
+    let value = input.trim();
+    if (input.startsWith("/")) {
+      const parsed = parseSlashInput(input);
+      if (!command) {
+        const catalog = await loadCommandCatalog();
+        const available: SlashCommand[] = [
+          ...catalog.skills.filter((skill) => skill.enabled_for_user).map((skill) => ({
+            type: "skill" as const,
+            id: skill.skill_id,
+            label: skill.name,
+            description: skill.description,
+          })),
+          ...catalog.tools.filter((tool) => isToolSlashAvailable(tool, hasSessionData)).map((tool) => ({
+            type: "tool" as const,
+            id: tool.tool_key,
+            label: tool.display_name_ru || tool.tool_label || tool.tool_key,
+            description: tool.description_ru || tool.description || "",
+          })),
+          ...catalog.mcpServers.filter((server) => server.effective_enabled).flatMap((server) =>
+            server.tools.map((tool) => ({
+              type: "tool" as const,
+              id: tool.tool_key,
+              label: tool.tool_name,
+              description: tool.description || server.description || "",
+            })),
+          ),
+        ];
+        command = available.find((item) => item.id.toLowerCase() === parsed.commandId) ?? null;
+      }
+      value = parsed.query;
+    }
+    if (!value || (input.startsWith("/") && !command)) return;
+    const options: QueryExecutionOptions = command?.type === "skill"
+      ? { selectedSkillId: command.id }
+      : command?.type === "tool" ? { requestedToolKey: command.id } : {};
+    const submission = onSubmit(value, options);
     updateInput("");
-    await onSubmit(value);
+    setSelectedCommand(null);
+    await submission;
   }
 
   const assistantConnected = Boolean(modelLabel) || isReady;
@@ -241,10 +386,12 @@ export function ChatPanel({
   const dbLabel = String(activeSource?.source_label || "").trim();
   const dbSchema = String(activeSource?.source_mode || "").trim();
   const ragLabel = String(activeSource?.source_label || "").trim();
+  const planfactLabel = String(activeSource?.source_label || "").trim();
   const dataConnected =
     sourceType === "db_connection" ||
     sourceType === "openproject" ||
     sourceType === "csv" ||
+    sourceType === "planfact" ||
     sourceType === "rag" ||
     hasDataset;
   const dataStatusText =
@@ -256,6 +403,8 @@ export function ChatPanel({
         : `Данные: БД ${dbLabel || "подключена"}`
       : sourceType === "rag"
         ? `Данные: загружены (${ragLabel || "База знаний"})`
+      : sourceType === "planfact"
+        ? `Данные: ${planfactLabel || "План-факт"}`
       : sourceType === "csv" || hasDataset
         ? `Данные: загружены${csvLabel ? ` (${csvLabel})` : ""}`
         : "Данные: не выбраны";
@@ -271,6 +420,15 @@ export function ChatPanel({
     : isWaitingForFirstStreamEvent
       ? "Думаю"
       : "";
+  const semanticOperationLabel = semanticOperation?.status === "running"
+    ? {
+        queued: "Семантический слой поставлен в очередь",
+        profiling: "Профилируем источник",
+        publishing: "Публикуем семантический слой",
+        indexing: "Индексируем семантический слой",
+        generating: "AI готовит предложения",
+      }[semanticOperation.stage]
+    : null;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-card-sunken/30 dark:bg-card/15">
@@ -286,6 +444,17 @@ export function ChatPanel({
                 <span className={`h-1.5 w-1.5 rounded-full ${assistantConnected ? "bg-emerald-500" : "bg-rose-500"}`} />
                 <span className="truncate">{modelStatusText}</span>
               </span>
+              {semanticOperationLabel || semanticStatus === "pending" || semanticStatus === "indexing" ? (
+                <span className="inline-flex min-w-0 items-center gap-1.5 text-amber-400" aria-live="polite">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+                  <span className="truncate">{semanticOperationLabel || "Создаётся семантический слой"}</span>
+                </span>
+              ) : semanticOperation?.status === "failed" || semanticOperation?.status === "interrupted" || semanticStatus === "failed" ? (
+                <span className="inline-flex min-w-0 items-center gap-1.5 text-rose-400" aria-live="polite">
+                  <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                  <span className="truncate">Не удалось обновить семантический слой</span>
+                </span>
+              ) : null}
               <span className="inline-flex min-w-0 items-center gap-1.5">
                 <span className={`h-1.5 w-1.5 rounded-full ${dataConnected ? "bg-emerald-500" : "bg-rose-500"}`} />
                 <span className="truncate">{dataStatusText}</span>
@@ -341,6 +510,7 @@ export function ChatPanel({
               isStreaming={isStreaming}
               onPinArtifact={onPinArtifact}
               onPinMessage={onPinMessage}
+              onSubmit={onSubmit}
               onRegenerate={onRetry}
               settings={settings}
             />
@@ -417,8 +587,8 @@ export function ChatPanel({
             </button>
           </div>
         ) : null}
-        {error ? (
-          <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{error}</div>
+        {visibleError ? (
+          <div className="mb-4 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{visibleError}</div>
         ) : null}
         {messages.length === 0 && !isStreaming ? (
           <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -436,6 +606,77 @@ export function ChatPanel({
           </div>
         ) : null}
 
+        {selectedCommand ? (
+          <div className="mb-2 flex">
+            <span className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+              <span>{selectedCommand.type === "skill" ? "Skill" : "Tool"}</span>
+              <span>{selectedCommand.label}</span>
+              <button
+                type="button"
+                onClick={() => setSelectedCommand(null)}
+                aria-label={`Убрать выбранный ${selectedCommand.type === "skill" ? "навык" : "инструмент"}`}
+                className="rounded-full p-0.5 hover:bg-primary/15"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          </div>
+        ) : null}
+
+        {isPaletteOpen ? (
+          <Command
+            shouldFilter={false}
+            className="mb-2 max-h-72 rounded-2xl border border-border/60 shadow-xl"
+            aria-label="Slash-команды"
+          >
+            <CommandList>
+              {catalogFailed ? (
+                <CommandEmpty>Каталог команд недоступен. Введите ID команды вручную.</CommandEmpty>
+              ) : visibleCommands.length === 0 ? (
+                <CommandEmpty>Команды не найдены</CommandEmpty>
+              ) : null}
+              {skillCommands.length > 0 ? (
+                <CommandGroup heading="Навыки">
+                  {skillCommands.map((command, index) => (
+                    <CommandItem
+                      key={command.id}
+                      value={`${command.id} ${command.label} ${command.description}`}
+                      onSelect={() => chooseCommand(command)}
+                      onMouseMove={() => setActiveCommandIndex(index)}
+                      className={index === activeCommandIndex ? "bg-accent text-accent-foreground" : ""}
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium">{command.label}</div>
+                        <div className="truncate text-xs text-muted-foreground">{command.description}</div>
+                      </div>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              ) : null}
+              {toolCommands.length > 0 ? (
+                <CommandGroup heading="Инструменты">
+                  {toolCommands.map((command, index) => {
+                    const commandIndex = skillCommands.length + index;
+                    return (
+                      <CommandItem
+                        key={command.id}
+                        value={`${command.id} ${command.label} ${command.description}`}
+                        onSelect={() => chooseCommand(command)}
+                        onMouseMove={() => setActiveCommandIndex(commandIndex)}
+                        className={commandIndex === activeCommandIndex ? "bg-accent text-accent-foreground" : ""}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium">{command.label}</div>
+                          <div className="truncate text-xs text-muted-foreground">{command.description}</div>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ) : null}
+            </CommandList>
+          </Command>
+        ) : null}
 
         <div className="group relative rounded-3xl border border-border/50 bg-card/80 backdrop-blur-sm shadow-lg shadow-black/5 transition-all duration-200 focus-within:border-primary/40 focus-within:shadow-xl focus-within:shadow-primary/5 focus-within:ring-4 focus-within:ring-primary/8">
             <textarea
@@ -443,8 +684,26 @@ export function ChatPanel({
               onChange={(event) => updateInput(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
+                if (isPaletteOpen && visibleCommands.length > 0) {
+                  event.preventDefault();
+                  chooseCommand(visibleCommands[activeCommandIndex] ?? visibleCommands[0]);
+                  return;
+                }
                 event.preventDefault();
                 void handleSend();
+              }
+              if (isPaletteOpen && event.key === "Tab" && visibleCommands.length > 0) {
+                event.preventDefault();
+                chooseCommand(visibleCommands[activeCommandIndex] ?? visibleCommands[0]);
+              } else if (isPaletteOpen && event.key === "ArrowDown" && visibleCommands.length > 0) {
+                event.preventDefault();
+                setActiveCommandIndex((index) => (index + 1) % visibleCommands.length);
+              } else if (isPaletteOpen && event.key === "ArrowUp" && visibleCommands.length > 0) {
+                event.preventDefault();
+                setActiveCommandIndex((index) => (index - 1 + visibleCommands.length) % visibleCommands.length);
+              } else if (isPaletteOpen && event.key === "Escape") {
+                event.preventDefault();
+                setPaletteDismissed(true);
               }
             }}
             placeholder="Спросите что-нибудь о данных, отчете или метриках..."
@@ -570,6 +829,7 @@ function MessageBubble({
   isStreaming,
   onPinArtifact,
   onPinMessage,
+  onSubmit,
   onRegenerate,
   settings,
 }: {
@@ -578,6 +838,7 @@ function MessageBubble({
   isStreaming: boolean;
   onPinArtifact: (artifact: ArtifactPayload) => void;
   onPinMessage: (content: string, messageId: string, timestamp: string) => void;
+  onSubmit: (value: string) => Promise<void>;
   onRegenerate: () => Promise<void>;
   settings: Pick<
     UserSettings,
@@ -592,6 +853,12 @@ function MessageBubble({
   const [copied, setCopied] = useState(false);
   const highlightedArtifactIds = new Set(
     selectDefaultHighlightedBoardArtifactIds(message.artifacts ?? []),
+  );
+  const planfactDashboard = message.artifacts?.find(
+    (artifact) =>
+      artifact.meta?.source_type === "planfact" &&
+      artifact.meta?.producer_tool === "planfact_first_look" &&
+      artifact.meta?.report_kind === "dashboard",
   );
 
   function handleCopy(): void {
@@ -662,14 +929,31 @@ function MessageBubble({
         )}
 
         <div className={`min-w-0 overflow-x-auto rounded-2xl border px-3 py-2.5 text-[13px] leading-relaxed shadow-sm lg:px-4 lg:py-3 lg:text-[14px] xl:px-5 xl:py-4 xl:text-[15px] ${isUser ? "rounded-tr-none border-primary/40 bg-primary text-primary-foreground shadow-primary/10" : "rounded-tl-none border-border/50 bg-card"}`}>
-          <MarkdownBlock content={message.content} inverted={isUser} />
+          <MarkdownBlock
+            content={
+              planfactDashboard
+                ? "Первичный анализ завершен. Ниже доступен управленческий обзор план-факт."
+                : message.content
+            }
+            inverted={isUser}
+            anomalyCheck={!isUser ? message.anomalyCheck : null}
+            artifacts={message.artifacts}
+            onOpenArtifact={onPinArtifact}
+          />
+          {!isUser && message.anomalyCheck ? (
+            <AnomalyCheckPanel
+              check={message.anomalyCheck}
+              artifacts={message.artifacts ?? []}
+              onOpenArtifact={onPinArtifact}
+            />
+          ) : null}
           {message.metrics ? (
             <div className="mt-4 flex flex-wrap gap-2 border-t border-border/20 pt-4 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
               <span>{formatDurationMs(message.metrics.duration_ms)}</span>
               <span>{message.metrics.artifact_count} артефактов</span>
             </div>
           ) : null}
-          {message.artifacts?.length ? (
+          {message.artifacts?.length && !planfactDashboard ? (
             <div className="mt-4 grid gap-3 border-t border-border/20 pt-4">
               {message.artifacts
                 .filter((artifact) => artifact.type === "plot")
@@ -767,5 +1051,81 @@ function MessageBubble({
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function AnomalyCheckPanel({
+  check,
+  artifacts,
+  onOpenArtifact,
+}: {
+  check: NonNullable<ChatMessage["anomalyCheck"]>;
+  artifacts: ArtifactPayload[];
+  onOpenArtifact: (artifact: ArtifactPayload) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const passed = check.status === "passed";
+  const warning = check.status === "warning";
+  const label = passed
+    ? `Числа проверены: ${check.matched}/${check.checked}`
+    : warning
+      ? `Есть расхождения: ${check.warnings}`
+      : "Числа для проверки не найдены";
+  const tone = warning
+    ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300"
+    : passed
+      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+      : "border-border/50 bg-secondary/40 text-muted-foreground";
+
+  return (
+    <div className="mt-4 border-t border-border/20 pt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={`inline-flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${tone}`}
+      >
+        {warning ? <ShieldAlert className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+        {label}
+        {open ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+      </button>
+
+      {open ? (
+        <div className="mt-2 space-y-2 rounded-xl border border-border/40 bg-background/35 p-3 text-[12px]">
+          {check.items.length ? check.items.map((item) => (
+            <div key={item.id} className="flex flex-col gap-1 border-b border-border/20 pb-2 last:border-0 last:pb-0">
+              <div className="flex items-center gap-2">
+                <span className={item.status === "matched" ? "text-emerald-500" : "text-amber-500"}>
+                  {item.status === "matched" ? "✓" : "⚠"}
+                </span>
+                <span className="font-semibold text-foreground">{item.text}</span>
+                {item.status === "unmatched" ? (
+                  <span className="text-muted-foreground">источник не найден</span>
+                ) : null}
+              </div>
+              {item.sources.map((source, index) => {
+                const artifact = artifacts.find((candidate) => candidate.id === source.artifact_id);
+                const location = [
+                  source.row ? `строка: ${source.row}` : null,
+                  source.column ? `столбец: ${source.column}` : null,
+                ].filter(Boolean).join(" · ");
+                return (
+                  <button
+                    key={`${item.id}-${source.artifact_id}-${index}`}
+                    type="button"
+                    disabled={!artifact}
+                    onClick={() => artifact && onOpenArtifact(artifact)}
+                    className="ml-5 text-left text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary disabled:cursor-default disabled:no-underline disabled:opacity-70"
+                  >
+                    {source.artifact_title}{location ? ` · ${location}` : ""} · значение: {String(source.raw_value)}
+                  </button>
+                );
+              })}
+            </div>
+          )) : (
+            <div className="text-muted-foreground">В ответе нет аналитических числовых значений.</div>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -46,7 +46,7 @@ class GenerateSummaryToolTests(unittest.TestCase):
 
 class GenerateReportToolTests(unittest.TestCase):
     def test_report_tool_requires_session_id(self) -> None:
-        tool = GenerateReportTool(session_id="", storage_dir="storage", session_ttl_days=7)
+        tool = GenerateReportTool(session_id="", user_id=1, session_store=None, blob_store=None)
 
         result = GenerateReportToolResult.model_validate_json(tool._run(title=""))
 
@@ -55,7 +55,7 @@ class GenerateReportToolTests(unittest.TestCase):
         self.assertIn("session_id", result.message)
 
     def test_report_tool_returns_json_not_markdown(self) -> None:
-        tool = GenerateReportTool(session_id="", storage_dir="storage", session_ttl_days=7)
+        tool = GenerateReportTool(session_id="", user_id=1, session_store=None, blob_store=None)
 
         raw = tool._run(title="")
         payload = json.loads(raw)

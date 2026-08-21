@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.notebook.manifest_store import ManifestStore
-from backend.notebook.session_source import SessionSource
+from backend.notebook.session_source import SessionSource, SourceType, is_duckdb_source_type
 
 logger = logging.getLogger(__name__)
-
-SourceType = Literal["csv", "db_connection"]
-
 
 class SourceInventorySource(BaseModel):
     source_id: str
@@ -30,6 +27,7 @@ class SourceInventoryTable(BaseModel):
     source_label: str = ""
     source_alias: str | None = None
     columns: list[str] = Field(default_factory=list)
+    column_types: dict[str, str] = Field(default_factory=dict)
     row_count: int | None = None
     column_count: int | None = None
 
@@ -62,9 +60,16 @@ def build_source_inventory(
     seen_tables: set[tuple[str, str]] = set()
 
     manifest = manifest_store.load(session_id)
-    csv_sources = [source for source in manifest.sources if source.source_type == "csv"]
+    csv_sources = [source for source in manifest.sources if is_duckdb_source_type(source.source_type)]
     for source in csv_sources:
-        _append_source(sources, seen_sources, _csv_source_id(source), "csv", _source_label(source), source.alias)
+        _append_source(
+            sources,
+            seen_sources,
+            _csv_source_id(source),
+            source.source_type,
+            _source_label(source),
+            source.alias,
+        )
 
     _append_csv_runtime_tables(
         tables=tables,
@@ -211,6 +216,10 @@ def _append_db_tables(
                 schema_name=str(row.get("schema") or "").strip() or None,
                 source_label=str(db_runtime.name or "DB source"),
                 columns=[str(column) for column in row.get("columns", []) if str(column).strip()],
+                column_types={
+                    str(name): str(dtype)
+                    for name, dtype in (row.get("column_types") or {}).items()
+                },
             )
         )
 
@@ -237,7 +246,7 @@ def _csv_inventory_table(
 ) -> SourceInventoryTable:
     return SourceInventoryTable(
         source_id=_csv_source_id(source),
-        source_type="csv",
+        source_type=source.source_type if source is not None else "csv",
         table_name=table_name,
         qualified_name=qualified_name,
         schema_name=schema_name,
@@ -316,7 +325,9 @@ def format_source_inventory_prompt(
     ]
     for table in inventory.tables[:max_tables]:
         columns = ", ".join(
-            f"`{column}`" for column in table.columns[:max_columns]
+            f"`{column}` ({dtype})" if (dtype := table.column_types.get(column, "").strip())
+            else f"`{column}`"
+            for column in table.columns[:max_columns]
         ) or "unknown columns"
         if len(table.columns) > max_columns:
             columns = f"{columns}, ... +{len(table.columns) - max_columns} columns"

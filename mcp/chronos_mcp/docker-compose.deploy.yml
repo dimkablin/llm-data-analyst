@@ -1,0 +1,35 @@
+name: chronos-mcp-dev
+
+services:
+  chronos-mcp:
+    image: chronos-mcp:${IMAGE_TAG:?IMAGE_TAG is required}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CHRONOS_MCP_HOST: 0.0.0.0
+      CHRONOS_MCP_PORT: 8810
+      CHRONOS_MCP_TRANSPORT: streamable-http
+      CHRONOS_MCP_PUBLIC_URL: ${CHRONOS_MCP_PUBLIC_URL:-http://chronos-mcp:8810/mcp}
+      CHRONOS_MCP_API_KEY_FILE: /run/secrets/chronos_mcp_api_key
+      HF_HOME: /var/cache/huggingface
+      HF_HUB_DISABLE_XET: "1"
+    secrets:
+      - chronos_mcp_api_key
+    volumes:
+      - ./model_cache:/var/cache/huggingface
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    gpus: all
+    networks:
+      - analyst
+    restart: unless-stopped
+
+secrets:
+  chronos_mcp_api_key:
+    file: ./secrets/chronos_mcp_api_key
+
+networks:
+  analyst:
+    external: true
+    name: ${MCP_DOCKER_NETWORK:-llm-data-analyst-dev_default}

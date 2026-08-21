@@ -20,16 +20,30 @@ class ToolCatalogSpec:
     kind: str
     source_type: str | None = None
     enabled_by_default: bool = True
+    primary_capability: str | None = None
+    artifact_types: tuple[str, ...] = ()
+    trigger_conditions: tuple[str, ...] = ()
+    specialized: bool = False
+    failure_semantics: str = (
+        "Return a structured actionable error; retry only with changed inputs or strategy."
+    )
+
+    @property
+    def capability_key(self) -> str:
+        return self.primary_capability or self.capabilities[0]
 
 
 BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
     ToolCatalogSpec(
-        tool_key="planner_tool",
-        tool_label="Planner",
-        display_name_ru="Планировщик",
-        description="On-demand analysis plan generation for complex multi-step queries.",
-        description_ru="Составление плана анализа для сложных многошаговых запросов.",
-        capabilities=("planning",),
+        tool_key="update_plan",
+        tool_label="Update Plan",
+        display_name_ru="Чек-лист анализа",
+        description=(
+            "Create or replace the main agent's concise checklist before multi-step analytical "
+            "work, then update it as progress or evidence changes the remaining route."
+        ),
+        description_ru=("Создаёт и обновляет краткий чек-лист основного агента для многошагового анализа."),
+        capabilities=("analysis_planning", "progress_tracking"),
         requires_session_data=False,
         kind="builtin",
     ),
@@ -53,12 +67,8 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         tool_key="generate_report_tool",
         tool_label="Generate Report",
         display_name_ru="Generate report",
-        description=(
-            "DOCX report export from persisted session chat history and artifacts."
-        ),
-        description_ru=(
-            "DOCX report export from persisted session chat history and artifacts."
-        ),
+        description=("DOCX report export from persisted session chat history and artifacts."),
+        description_ru=("DOCX report export from persisted session chat history and artifacts."),
         capabilities=("report_export", "docx"),
         requires_session_data=False,
         kind="builtin",
@@ -108,6 +118,54 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         kind="builtin",
     ),
     ToolCatalogSpec(
+        tool_key="semantic_catalog_read_tool",
+        tool_label="Semantic Catalog Read",
+        display_name_ru="Semantic catalog read",
+        description=(
+            "Read the current semantic layer: status, catalog objects, search results, "
+            "and validation. Use before SQL/chart tools when the request is about "
+            "semantic metadata."
+        ),
+        description_ru=(
+            "Read the current semantic layer: status, catalog objects, search results, and validation."
+        ),
+        capabilities=("semantic_layer", "semantic_catalog_read", "semantic_search"),
+        requires_session_data=True,
+        kind="builtin",
+        primary_capability="semantic_catalog_read",
+    ),
+    ToolCatalogSpec(
+        tool_key="semantic_catalog_edit_tool",
+        tool_label="Semantic Catalog Edit",
+        display_name_ru="Semantic catalog edit",
+        description=(
+            "Edit the current semantic layer: descriptions, aliases, metrics, "
+            "relationships, and terms. Use for semantic metadata changes instead "
+            "of sql_tool, pandas_tool, or plotly_tool."
+        ),
+        description_ru=(
+            "Edit the current semantic layer: descriptions, aliases, metrics, relationships, and terms."
+        ),
+        capabilities=("semantic_layer", "semantic_catalog_edit"),
+        requires_session_data=True,
+        kind="builtin",
+        primary_capability="semantic_catalog_edit",
+    ),
+    ToolCatalogSpec(
+        tool_key="semantic_catalog_generate_tool",
+        tool_label="Semantic Catalog Generate",
+        display_name_ru="Semantic catalog generate",
+        description=(
+            "Generate a semantic layer draft for the current DB or CSV/XLSX source. "
+            "Use apply=false until the user confirms applying the draft."
+        ),
+        description_ru="Generate and apply a semantic layer draft for the current DB or CSV/XLSX source.",
+        capabilities=("semantic_layer", "semantic_generation"),
+        requires_session_data=True,
+        kind="builtin",
+        primary_capability="semantic_generation",
+    ),
+    ToolCatalogSpec(
         tool_key="pandas_tool",
         tool_label="Pandas Tool",
         display_name_ru="Табличная обработка",
@@ -123,6 +181,7 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         capabilities=("dataframe_transform", "aggregation", "table_artifact"),
         requires_session_data=True,
         kind="builtin",
+        artifact_types=("table",),
     ),
     ToolCatalogSpec(
         tool_key="plotly_tool",
@@ -139,29 +198,18 @@ BUILTIN_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         capabilities=("chart", "plotly", "chart_artifact"),
         requires_session_data=True,
         kind="builtin",
+        artifact_types=("plot",),
     ),
 )
 
 INTEGRATION_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
-    ToolCatalogSpec(
-        tool_key="search_tool",
-        tool_label="Search",
-        display_name_ru="Поиск",
-        description="External quick search integration.",
-        description_ru="Быстрый внешний поиск по теме пользователя.",
-        capabilities=("search", "web_results"),
-        requires_session_data=False,
-        kind="integration",
-        source_type="search",
-    ),
     ToolCatalogSpec(
         tool_key="rag_tool",
         tool_label="RAG",
         display_name_ru="База знаний",
         description="Semantic retrieval from the configured indexed knowledge base with source references.",
         description_ru=(
-            "Семантический поиск по настроенной индексированной базе знаний "
-            "с ссылками на источники."
+            "Семантический поиск по настроенной индексированной базе знаний с ссылками на источники."
         ),
         capabilities=("knowledge_base_search", "document_answer"),
         requires_session_data=False,
@@ -178,6 +226,22 @@ INTEGRATION_TOOL_SPECS: tuple[ToolCatalogSpec, ...] = (
         requires_session_data=True,
         kind="integration",
         source_type="forecast",
+        primary_capability="forecast",
+        artifact_types=("json",),
+        trigger_conditions=(
+            "forecast",
+            "prediction",
+            "future values",
+            "horizon",
+            "прогноз",
+            "спрогнозируй",
+            "прогнозируется",
+        ),
+        specialized=True,
+        failure_semantics=(
+            "A provider error permits bounded recovery only; finish with an unavailable "
+            "outcome instead of manual extrapolation."
+        ),
     ),
     ToolCatalogSpec(
         tool_key="anomaly_planfact_tool",
@@ -265,13 +329,9 @@ def build_tool_catalog(
                 "tool_key": spec.tool_key,
                 "kind": spec.kind,
                 "tool_label": str(source_descriptor.get("source_label") or spec.tool_label),
-                "display_name_ru": str(
-                    source_descriptor.get("display_name_ru") or spec.display_name_ru
-                ),
+                "display_name_ru": str(source_descriptor.get("display_name_ru") or spec.display_name_ru),
                 "description": str(source_descriptor.get("description") or description),
-                "description_ru": str(
-                    source_descriptor.get("description_ru") or spec.description_ru
-                ),
+                "description_ru": str(source_descriptor.get("description_ru") or spec.description_ru),
                 "capabilities": list(source_descriptor.get("capabilities") or spec.capabilities),
                 "requires_session_data": bool(
                     source_descriptor.get("requires_session_data", spec.requires_session_data)

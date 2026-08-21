@@ -32,6 +32,7 @@ def _make_ref(**kwargs) -> SessionArtifactRef:
 # 1. Old session (only session_memory string, no new fields) loads cleanly
 # ---------------------------------------------------------------------------
 
+
 def test_get_structured_memory_old_session(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     session = store.create_session()
@@ -59,6 +60,7 @@ def test_get_structured_memory_old_session(tmp_path: Path) -> None:
 # 2. Session not found → returns empty StructuredSessionMemory
 # ---------------------------------------------------------------------------
 
+
 def test_get_structured_memory_session_not_found(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     mem = store.get_structured_memory("nonexistent-session-id")
@@ -73,6 +75,7 @@ def test_get_structured_memory_session_not_found(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 3. Full round-trip: set then get — all fields preserved
 # ---------------------------------------------------------------------------
+
 
 def test_set_and_get_structured_memory_roundtrip(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
@@ -131,9 +134,88 @@ def test_delete_messages_resets_compacted_memory_when_deleted_prefix_is_touched(
     assert loaded.compacted_message_count == 0
 
 
+def test_delete_messages_prunes_removed_artifacts_and_sandbox(tmp_path: Path) -> None:
+    from backend.tools.sandbox_manager import SandboxManager
+
+    store = _make_store(tmp_path)
+    session = store.create_session()
+    sid = session.session_id
+    keep = {"id": "keep", "type": "table", "name": "keep"}
+    discard = {"id": "discard", "type": "table", "name": "discard"}
+    store.add_chat_message(sid, "ai", "kept", artifacts=[keep])
+    store.add_chat_message(sid, "user", "rewind here")
+    store.add_chat_message(sid, "ai", "removed", artifacts=[discard])
+    store.add_serialized_artifacts(sid, [keep, discard])
+    store.set_structured_memory(
+        sid,
+        StructuredSessionMemory(
+            artifact_index=[
+                _make_ref(id="keep", name="keep"),
+                _make_ref(id="discard", name="discard"),
+            ]
+        ),
+    )
+    sandbox = SandboxManager.get_instance().get_or_create(sid)
+    sandbox.put("derived", {"stale": True})
+
+    state = store.load_session(sid)
+    assert state is not None
+    removed = store.delete_messages_from_id(sid, state.chat_history[1]["id"])
+
+    assert removed == 2
+    assert store.get_serialized_artifact(sid, "keep") == keep
+    assert store.get_serialized_artifact(sid, "discard") is None
+    assert [ref.id for ref in store.get_structured_memory(sid).artifact_index] == ["keep"]
+    assert SandboxManager.get_instance().get(sid) is None
+
+
+def test_delete_session_discards_sandbox(tmp_path: Path) -> None:
+    from backend.tools.sandbox_manager import SandboxManager
+
+    store = _make_store(tmp_path)
+    session = store.create_session()
+    SandboxManager.get_instance().get_or_create(session.session_id)
+
+    store.delete_session(session.session_id)
+
+    assert SandboxManager.get_instance().get(session.session_id) is None
+
+
+def test_source_change_discards_sandbox_but_label_change_does_not(tmp_path: Path) -> None:
+    from backend.tools.sandbox_manager import SandboxManager
+
+    store = _make_store(tmp_path)
+    session = store.create_session()
+    sid = session.session_id
+    store.set_source(
+        sid,
+        source_type="db_connection",
+        source_ref_id="db-a",
+        source_label="Database A",
+    )
+    sandbox = SandboxManager.get_instance().get_or_create(sid)
+
+    store.set_source(
+        sid,
+        source_type="db_connection",
+        source_ref_id="db-a",
+        source_label="Renamed database",
+    )
+    assert SandboxManager.get_instance().get(sid) is sandbox
+
+    store.set_source(
+        sid,
+        source_type="db_connection",
+        source_ref_id="db-b",
+        source_label="Database B",
+    )
+    assert SandboxManager.get_instance().get(sid) is None
+
+
 # ---------------------------------------------------------------------------
 # 4. SessionArtifactRef with all fields serializes/deserializes intact
 # ---------------------------------------------------------------------------
+
 
 def test_artifact_index_json_roundtrip(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
@@ -148,6 +230,8 @@ def test_artifact_index_json_roundtrip(tmp_path: Path) -> None:
         schema={"order_id": "int", "amount": "float", "region": "str"},
         row_count=2500,
         summary="Complex orders table",
+        producer_tool="sql_tool",
+        parent_ids=["source-artifact"],
     )
     memory = StructuredSessionMemory(artifact_index=[ref])
     store.set_structured_memory(sid, memory)
@@ -163,11 +247,18 @@ def test_artifact_index_json_roundtrip(tmp_path: Path) -> None:
     assert r.schema == {"order_id": "int", "amount": "float", "region": "str"}
     assert r.row_count == 2500
     assert r.summary == "Complex orders table"
+    assert r.producer_tool == "sql_tool"
+    assert r.parent_ids == ["source-artifact"]
+    block = loaded.build_block()
+    assert "artifact_id=art-99" in block
+    assert "source=sql_tool" in block
+    assert "parents=source-artifact" in block
 
 
 # ---------------------------------------------------------------------------
 # 5. Malformed artifact_index_json → returns empty list, no exception
 # ---------------------------------------------------------------------------
+
 
 def test_artifact_index_malformed_json_recovers(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
@@ -189,6 +280,7 @@ def test_artifact_index_malformed_json_recovers(tmp_path: Path) -> None:
 # 6. key_findings list of strings persists correctly
 # ---------------------------------------------------------------------------
 
+
 def test_key_findings_roundtrip(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     session = store.create_session()
@@ -207,6 +299,7 @@ def test_key_findings_roundtrip(tmp_path: Path) -> None:
 # 7. turn_count=5 survives round-trip
 # ---------------------------------------------------------------------------
 
+
 def test_turn_count_persists(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     session = store.create_session()
@@ -223,6 +316,7 @@ def test_turn_count_persists(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 8. Backward compat: set_session_memory and append_session_memory still work
 # ---------------------------------------------------------------------------
+
 
 def test_existing_session_memory_methods_still_work(tmp_path: Path) -> None:
     store = _make_store(tmp_path)

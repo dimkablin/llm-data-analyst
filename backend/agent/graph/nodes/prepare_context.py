@@ -12,6 +12,8 @@ def prepare_context_node(
     deps: AgentRuntimeDependencies,
 ) -> dict[str, Any]:
     """Prepare generic agent context for the tool-calling runtime."""
+    if state.get("registry_snapshot") is not None:
+        return {}
     if deps.context_builder is None:
         msg = "AgentRuntimeDependencies.context_builder is not configured"
         raise RuntimeError(msg)

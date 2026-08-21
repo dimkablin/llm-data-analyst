@@ -4,6 +4,7 @@ The agent calls ``database_tool`` for quick structural operations:
 list tables, describe columns, preview rows, list schemas.
 For complex analytical SQL queries, use ``sql_tool`` instead.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from backend.data_access.db_runtime_service import RuntimeDBConnectionConfig
 from backend.tools.impl.db_helpers import DBAnalyticsHelper
 from backend.tools.instructions import tool_description
+from backend.tools.observations import exception_metadata
 
 if TYPE_CHECKING:
     from backend.tools.sandbox import SessionSandbox
@@ -87,7 +89,12 @@ class DatabaseTool(BaseTool):
             return self._run_action(action, table, db_schema, limit)
         except Exception as exc:
             error_text = f"❌ Ошибка database_tool ({action}): {exc}"
-            return error_text, {"text": error_text}
+            return error_text, {
+                "text": error_text,
+                "status": "error",
+                "error": str(exc),
+                **exception_metadata(exc),
+            }
 
     def _run_action(
         self,
@@ -103,19 +110,21 @@ class DatabaseTool(BaseTool):
             return self._action_list_tables(db, db_schema)
         if action == "describe_table":
             if not table:
-                return "❌ Ошибка: укажи имя таблицы (аргумент table).", {}
+                raise ValueError("Укажи имя таблицы (аргумент table).")
             return self._action_describe_table(db, table, db_schema)
         if action == "preview":
             if not table:
-                return "❌ Ошибка: укажи имя таблицы (аргумент table).", {}
+                raise ValueError("Укажи имя таблицы (аргумент table).")
             return self._action_preview(db, table, db_schema, limit)
         if action == "list_schemas":
             return self._action_list_schemas(db)
 
-        return f"❌ Неизвестное действие: {action}", {}
+        raise ValueError(f"Неизвестное действие: {action}")
 
     def _action_list_tables(
-        self, db: DBAnalyticsHelper, schema: str | None,
+        self,
+        db: DBAnalyticsHelper,
+        schema: str | None,
     ) -> tuple[str, dict[str, Any]]:
         rows = db.list_effective_tables_with_columns(schema)
 
@@ -127,9 +136,7 @@ class DatabaseTool(BaseTool):
         if not rows:
             schemas = db.list_schemas()
             schema_hint = (
-                f" Доступные схемы: {[s['name'] for s in schemas]}."
-                if schemas
-                else " Схемы не обнаружены."
+                f" Доступные схемы: {[s['name'] for s in schemas]}." if schemas else " Схемы не обнаружены."
             )
             return f"В базе нет таблиц.{schema_hint}", {}
 
@@ -139,7 +146,9 @@ class DatabaseTool(BaseTool):
 
         found_schemas = sorted({r.get("schema", "") for r in rows if r.get("schema")})
         schema_info = f" (схемы: {', '.join(found_schemas)})" if found_schemas else ""
-        table_names = sorted({r.get("table_name") or r.get("name", "") for r in rows if r.get("table_name") or r.get("name")})  # noqa: E501
+        table_names = sorted(
+            {r.get("table_name") or r.get("name", "") for r in rows if r.get("table_name") or r.get("name")}
+        )
         tables_list = ", ".join(f"`{t}`" for t in table_names) if table_names else "—"
         text = (
             f"✅ Найдено {len(rows)} таблиц{schema_info}: {tables_list}. "
@@ -171,7 +180,10 @@ class DatabaseTool(BaseTool):
         return table, None
 
     def _action_describe_table(
-        self, db: DBAnalyticsHelper, table: str, schema: str | None,
+        self,
+        db: DBAnalyticsHelper,
+        table: str,
+        schema: str | None,
     ) -> tuple[str, dict[str, Any]]:
         table, schema = self._split_qualified(table, schema)
         cols = db.describe_table(table, schema=schema)
@@ -182,14 +194,15 @@ class DatabaseTool(BaseTool):
         artifact_name = f"columns_{table.replace('.', '_')}"
         self._inject(artifact_name, df)
 
-        text = (
-            f"✅ Таблица `{table}`: {len(cols)} колонок. "
-            f"Результат в переменной `{artifact_name}`."
-        )
+        text = f"✅ Таблица `{table}`: {len(cols)} колонок. Результат в переменной `{artifact_name}`."
         return text, self._table_artifact(artifact_name, df)
 
     def _action_preview(
-        self, db: DBAnalyticsHelper, table: str, schema: str | None, limit: int,
+        self,
+        db: DBAnalyticsHelper,
+        table: str,
+        schema: str | None,
+        limit: int,
     ) -> tuple[str, dict[str, Any]]:
         table, schema = self._split_qualified(table, schema)
         df = db.preview_table(table, schema=schema, limit=limit)
@@ -207,7 +220,8 @@ class DatabaseTool(BaseTool):
         return text, self._table_artifact(artifact_name, df)
 
     def _action_list_schemas(
-        self, db: DBAnalyticsHelper,
+        self,
+        db: DBAnalyticsHelper,
     ) -> tuple[str, dict[str, Any]]:
         schemas = db.list_schemas()
         if not schemas:

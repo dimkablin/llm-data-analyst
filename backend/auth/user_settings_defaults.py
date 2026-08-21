@@ -19,7 +19,7 @@ class UserSettingsDefaults:
     analysis_depth: str = "light"
     llm_temperature_chat: float = 0.7
     llm_temperature_tool: float = 0.5
-    llm_max_tokens_default: int = 2048
+    llm_max_tokens_default: int = 4096
     llm_max_tokens_reasoning: int = 4096
     backend_query_timeout_sec: int = 180
     agent_max_steps: int = DEPTH_MAX_STEPS["light"]
@@ -32,7 +32,10 @@ class UserSettingsDefaults:
     show_think_planning: bool = True
     show_think_tool: bool = True
     show_think_final: bool = True
+    always_use_analysis_plan: bool = False
     show_detailed_tool_steps: bool = False
+    show_rag_errors: bool = True
+    anomaly_check_enabled: bool = False
 
     def to_user_settings(self) -> UserSettings:
         from backend.auth.auth_db import UserSettings

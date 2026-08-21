@@ -4,7 +4,32 @@ type TurnBucket = {
   plots: string[];
   other: string[];
   notes: string[];
+  story: string[];
 };
+
+function isPlanfactStoryArtifact(artifact: ArtifactPayload | undefined): boolean {
+  return (
+    artifact?.meta?.source_type === "planfact" &&
+    artifact?.meta?.producer_tool === "planfact_first_look" &&
+    artifact?.meta?.report_kind !== "dashboard" &&
+    Number.isFinite(Number(artifact?.meta?.story_order))
+  );
+}
+
+function comparePlanfactStoryArtifacts(
+  artifactById: Map<string, ArtifactPayload>,
+): (left: string, right: string) => number {
+  return (left, right) => {
+    const leftArtifact = artifactById.get(left);
+    const rightArtifact = artifactById.get(right);
+    const leftOrder = Number(leftArtifact?.meta?.story_order ?? 999);
+    const rightOrder = Number(rightArtifact?.meta?.story_order ?? 999);
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return String(left).localeCompare(String(right));
+  };
+}
 
 function getAssistantTurns(messages: ChatMessage[]): Array<{ messageId: string; timestamp: string }> {
   return messages
@@ -79,9 +104,9 @@ export function sortBoardArtifactIdsByTurn(
 
   const buckets = new Map<string, TurnBucket>();
   for (const turn of turns) {
-    buckets.set(turn.messageId, { plots: [], other: [], notes: [] });
+    buckets.set(turn.messageId, { plots: [], other: [], notes: [], story: [] });
   }
-  const orphanBucket: TurnBucket = { plots: [], other: [], notes: [] };
+  const orphanBucket: TurnBucket = { plots: [], other: [], notes: [], story: [] };
 
   for (const id of ids) {
     const artifact = artifactById.get(id);
@@ -92,7 +117,9 @@ export function sortBoardArtifactIdsByTurn(
     const bucket =
       turnId && buckets.has(turnId) ? buckets.get(turnId)! : orphanBucket;
 
-    if (artifact.type === "plot") {
+    if (isPlanfactStoryArtifact(artifact)) {
+      bucket.story.push(id);
+    } else if (artifact.type === "plot") {
       bucket.plots.push(id);
     } else if (artifact.type === "note") {
       bucket.notes.push(id);
@@ -107,7 +134,13 @@ export function sortBoardArtifactIdsByTurn(
     if (!bucket) {
       continue;
     }
+    if (bucket.story.length > 0) {
+      ordered.push(...bucket.story.sort(comparePlanfactStoryArtifacts(artifactById)));
+    }
     ordered.push(...bucket.plots, ...bucket.other, ...bucket.notes);
+  }
+  if (orphanBucket.story.length > 0) {
+    ordered.push(...orphanBucket.story.sort(comparePlanfactStoryArtifacts(artifactById)));
   }
   ordered.push(...orphanBucket.plots, ...orphanBucket.other, ...orphanBucket.notes);
 
@@ -152,6 +185,15 @@ export type BoardArtifactSelectionInput = {
 export function selectDefaultHighlightedBoardArtifactIds(
   artifacts: ArtifactPayload[],
 ): string[] {
+  const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  const planfactStoryIds = artifacts
+    .filter((artifact) => isPlanfactStoryArtifact(artifact))
+    .map((artifact) => artifact.id)
+    .sort(comparePlanfactStoryArtifacts(artifactById));
+  if (planfactStoryIds.length > 0) {
+    return planfactStoryIds;
+  }
+
   const plotIds = artifacts
     .filter((artifact) => artifact.type === "plot")
     .map((artifact) => artifact.id);

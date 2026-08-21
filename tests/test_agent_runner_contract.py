@@ -1,4 +1,4 @@
-﻿"""
+"""
 Behavior and contract tests — full-stack tier.
 
 Requires: langchain_core, langgraph, duckdb (installed in the full runtime env).
@@ -35,7 +35,7 @@ from backend.agent.services.message_builder import (
     ExecutionSystemPromptRequest,
     build_execution_system_prompt,
 )
-from backend.agent.tool_loop import ToolLoopRequest, direct_tool_loop
+from backend.agent.tool_loop import ToolLoopRequest, _parse_textual_tool_call, direct_tool_loop
 from backend.artifacts.execution import ExecArtifactType, ExecutionArtifact
 from backend.core.config import Settings
 from backend.notebook.manifest_store import ManifestStore
@@ -180,21 +180,21 @@ def test_read_only_structured_tools_opt_into_parallelism():
     from backend.tools.impl.data_catalog_tool import DataCatalogTool
     from backend.tools.impl.generation_tools import GenerateSummaryTool
     from backend.tools.impl.get_tool_instructions_tool import GetToolInstructionsTool
-    from backend.tools.impl.planner_tool import PlannerTool
     from backend.tools.impl.rag_tool import RagTool
+    from backend.tools.impl.update_plan_tool import UpdatePlanTool
 
     assert DataCatalogTool.parallel_safe is True
     assert RagTool.parallel_safe is True
-    assert PlannerTool.parallel_safe is True
     assert GetToolInstructionsTool.parallel_safe is True
     assert GenerateSummaryTool.parallel_safe is True
+    assert UpdatePlanTool.parallel_safe is True
 
 
 def test_stateful_or_external_write_structured_tools_stay_sequential():
     from backend.tools.impl.database_tool import DatabaseTool
     from backend.tools.impl.generation_tools import GenerateReportTool
-    from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
     from backend.tools.impl.mcp_tool import MCPTool
+    from backend.tools.impl.memory_tool import MemoryTool, SessionNoteTool
     from backend.tools.impl.sql_tool import SQLTool
 
     assert DatabaseTool.parallel_safe is False
@@ -203,6 +203,23 @@ def test_stateful_or_external_write_structured_tools_stay_sequential():
     assert MemoryTool.parallel_safe is False
     assert SessionNoteTool.parallel_safe is False
     assert MCPTool.parallel_safe is False
+
+
+def test_requested_sql_tool_is_unavailable_for_rag_only_runtime(settings, tmp_path):
+    runner = AgentRunner(
+        settings=replace(settings, storage_dir=str(tmp_path)),
+        allowed_tool_keys={"sql_tool"},
+    )
+
+    assert (
+        runner.is_tool_available(
+            "sql_tool",
+            df=None,
+            session_source={"source_type": "rag"},
+            trace_context={"session_id": "rag-session"},
+        )
+        is False
+    )
 
 
 def test_mixed_parallel_safe_batch_stays_sequential():
@@ -226,15 +243,67 @@ def test_mixed_parallel_safe_batch_stays_sequential():
         "unsafe": UnsafeTool("unsafe"),
     }
 
-    assert _tool_batch_concurrency(
-        [
-            {"name": "safe_a"},
-            {"name": "safe_b"},
-            {"name": "unsafe"},
-        ],
-        tools,
-        limit=3,
-    ) == 1
+    assert (
+        _tool_batch_concurrency(
+            [
+                {"name": "safe_a"},
+                {"name": "safe_b"},
+                {"name": "unsafe"},
+            ],
+            tools,
+            limit=3,
+        )
+        == 1
+    )
+
+
+def test_single_plan_update_can_run_beside_one_unsafe_tool():
+    from backend.agent.tool_loop import _tool_batch_concurrency
+
+    class PlanTool:
+        name = "update_plan"
+        parallel_safe: ClassVar[bool] = True
+
+    class UnsafeTool:
+        parallel_safe: ClassVar[bool] = False
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    tools = {
+        "update_plan": PlanTool(),
+        "unsafe": UnsafeTool("unsafe"),
+        "second_unsafe": UnsafeTool("second_unsafe"),
+    }
+
+    assert (
+        _tool_batch_concurrency(
+            [{"name": "update_plan"}, {"name": "unsafe"}],
+            tools,
+            limit=3,
+        )
+        == 2
+    )
+    assert (
+        _tool_batch_concurrency(
+            [
+                {"name": "update_plan"},
+                {"name": "unsafe"},
+                {"name": "second_unsafe"},
+            ],
+            tools,
+            limit=3,
+        )
+        == 1
+    )
+    assert (
+        _tool_batch_concurrency(
+            [{"name": "update_plan"}, {"name": "update_plan"}],
+            tools,
+            limit=2,
+        )
+        == 1
+    )
 
 
 def test_tool_collector_counts_parallel_callbacks_without_lost_updates():
@@ -245,7 +314,7 @@ def test_tool_collector_counts_parallel_callbacks_without_lost_updates():
     collector = ToolCollector()
 
     def run_one(i: int) -> None:
-        tool_name = "search_tool" if i % 2 else "data_catalog_tool"
+        tool_name = "rag_tool" if i % 2 else "data_catalog_tool"
         run_id = f"run-{i}"
         collector.on_tool_start(
             {"name": tool_name},
@@ -268,7 +337,7 @@ def test_tool_collector_parallel_callbacks_resolve_end_by_run_id_not_last_tool_n
     collector = ToolCollector()
 
     collector.on_tool_start(
-        {"name": "search_tool"},
+        {"name": "rag_tool"},
         '{"tool_call_id": "search-call", "query": "q"}',
         run_id="run-search",
     )
@@ -285,10 +354,92 @@ def test_tool_collector_parallel_callbacks_resolve_end_by_run_id_not_last_tool_n
     )
 
     by_id = {item.get("tool_call_id"): item for item in activities}
-    assert by_id["search-call"]["tool_name"] == "search_tool"
+    assert by_id["search-call"]["tool_name"] == "rag_tool"
     assert by_id["search-call"]["status"] == "done"
     assert by_id["catalog-call"]["tool_name"] == "data_catalog_tool"
     assert by_id["catalog-call"]["status"] == "error"
+
+
+def test_tool_collector_preserves_mcp_text_alongside_structured_artifact() -> None:
+    from backend.agent.callbacks import ToolCollector
+
+    collector = ToolCollector()
+    collector.on_tool_start(
+        {"name": "mcp__search"},
+        '{"tool_call_id": "search-call", "query": "current owner"}',
+        run_id="run-search",
+    )
+    collector.on_tool_end(
+        ToolMessage(
+            content=[{"type": "text", "text": "Authoritative source evidence"}],
+            name="mcp__search",
+            tool_call_id="search-call",
+            artifact={
+                "schema_version": "1.0",
+                "artifact_type": "json",
+                "items": {"mcp__search": {"results": []}},
+            },
+        ),
+        run_id="run-search",
+    )
+
+    end_event = next(event for event in collector.events if event["phase"] == "end")
+    activity = collector.to_persisted_activities()[0]
+    assert end_event["output_preview"] == "Authoritative source evidence"
+    assert activity["output_preview"] == "Authoritative source evidence"
+
+
+def test_tool_collector_preserves_json_array_as_text_evidence() -> None:
+    from backend.agent.callbacks import ToolCollector
+
+    collector = ToolCollector()
+    collector.on_tool_end(
+        ToolMessage(
+            content='[{"title": "Current authoritative source"}]',
+            name="mcp__search",
+            tool_call_id="search-call",
+        ),
+    )
+
+    end_event = next(event for event in collector.events if event["phase"] == "end")
+    assert end_event["output_preview"] == '[{"title": "Current authoritative source"}]'
+
+
+def test_tool_collector_preserves_json_object_as_text_evidence() -> None:
+    from backend.agent.callbacks import ToolCollector
+
+    collector = ToolCollector()
+    collector.on_tool_end(
+        '{"results": [{"title": "Current authoritative source"}]}',
+        tool="mcp__search",
+    )
+
+    end_event = next(event for event in collector.events if event["phase"] == "end")
+    assert end_event["output_preview"] == ('{"results": [{"title": "Current authoritative source"}]}')
+
+
+def test_tool_collector_keeps_enough_search_evidence_for_review() -> None:
+    from backend.agent.callbacks import ToolCollector
+
+    collector = ToolCollector()
+    evidence = "x" * 3500
+    collector.on_tool_start({"name": "mcp__search"}, "{}", run_id="search-run")
+    collector.on_tool_end(evidence, tool="mcp__search", run_id="search-run")
+
+    end_event = next(event for event in collector.events if event["phase"] == "end")
+    activity = collector.to_persisted_activities()[0]
+    assert end_event["output_preview"] == evidence
+    assert activity["output_preview"] == evidence
+
+
+def test_tool_collector_preserves_content_from_content_and_artifact_callback() -> None:
+    from backend.agent.callbacks import ToolCollector
+
+    collector = ToolCollector()
+    collector.on_tool_end(("Current source evidence", {}), tool="mcp__search")
+
+    end_event = next(event for event in collector.events if event["phase"] == "end")
+    assert end_event["output_preview"] == "Current source evidence"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -379,51 +530,6 @@ class TestGraphStructure:
         assert result.get("done") is False, (
             "Analysis prompt must not be short-circuited — agent node must run"
         )
-
-    def test_run_query_denies_skill_when_required_tool_is_not_allowed(self, settings, tmp_path):
-        """A selected skill must fail cleanly when current permissions block required tools."""
-        _write_skill(
-            tmp_path,
-            "cohort_analysis",
-            """\
-            ---
-            name: Cohort Analysis
-            description: Run cohort retention analysis
-            kind: analytical
-            triggers: cohort, retention
-            ---
-            ## Cohort Analysis Method
-            ### Algorithm
-            Group users by signup period and compute retention.
-            ### Rules
-            Use loaded data only.
-            ### Required tools
-            - pandas_tool
-        """,
-        )
-        registry = SkillRegistry.from_path(tmp_path).load()
-        runner = AgentRunner(
-            settings=settings,
-            skill_registry=registry,
-            allowed_tool_keys={"get_tool_instructions"},
-        )
-
-        response = runner.run_query(
-            None,
-            "run cohort retention analysis",
-            history=[],
-            use_history=False,
-            include_reasoning=False,
-            callbacks=[],
-            trace_context={"session_id": "skill-denied"},
-            session_source={},
-            selected_skill_ids=["cohort_analysis"],
-        )
-
-        assert "pandas_tool" in response.final_text
-        assert "необходимый tool" in response.final_text
-        assert "выключен" in response.final_text or "недоступен" in response.final_text
-        assert "Не удалось завершить анализ" not in response.final_text
 
     def test_prepare_context_adds_uploaded_table_descriptors_to_capability_context(self, runner, tmp_path):
         session_id = "csv-descriptor-session"
@@ -596,7 +702,9 @@ class TestGraphStructure:
         assert "CATALOG-FIRST" in capability_context["prompt_block"]
         assert "qualified_name" in capability_context["prompt_block"]
 
-    def test_prepare_context_chat_context_uses_uploaded_table_descriptors_from_manifest(self, runner, tmp_path):
+    def test_prepare_context_chat_context_uses_uploaded_table_descriptors_from_manifest(
+        self, runner, tmp_path
+    ):
         session_id = "csv-chat-descriptor-session"
         runner = AgentRunner(
             settings=replace(runner.settings, storage_dir=str(tmp_path)),
@@ -809,9 +917,7 @@ class TestExecutionEngine:
 
         assert seen == ["one", "two"]
         assert result.tool_calls == 2
-        tool_messages = [
-            message for message in captured_batches[1] if isinstance(message, ToolMessage)
-        ]
+        tool_messages = [message for message in captured_batches[1] if isinstance(message, ToolMessage)]
         assert {message.tool_call_id for message in tool_messages} == {"call-1", "call-2"}
 
     def test_direct_tool_loop_limits_tool_calls_per_cycle(self, runner):
@@ -879,9 +985,7 @@ class TestExecutionEngine:
 
         assert seen == ["one", "two"]
         assert result.tool_calls == 2
-        tool_messages = [
-            message for message in captured_batches[1] if isinstance(message, ToolMessage)
-        ]
+        tool_messages = [message for message in captured_batches[1] if isinstance(message, ToolMessage)]
         assert {message.tool_call_id for message in tool_messages} == {
             "call-1",
             "call-2",
@@ -911,10 +1015,7 @@ class TestExecutionEngine:
         def fake_tool_node_invoke(self, input, config=None, runtime=None):
             del self, runtime
             captured_configs.append(dict(config or {}))
-            return [
-                ToolMessage(content="ok", name=call["name"], tool_call_id=call["id"])
-                for call in input
-            ]
+            return [ToolMessage(content="ok", name=call["name"], tool_call_id=call["id"]) for call in input]
 
         responses = [
             AIMessage(
@@ -978,10 +1079,7 @@ class TestExecutionEngine:
         def fake_tool_node_invoke(self, input, config=None, runtime=None):
             del self, runtime
             captured_configs.append(dict(config or {}))
-            return [
-                ToolMessage(content="ok", name=call["name"], tool_call_id=call["id"])
-                for call in input
-            ]
+            return [ToolMessage(content="ok", name=call["name"], tool_call_id=call["id"]) for call in input]
 
         responses = [
             AIMessage(
@@ -1144,10 +1242,13 @@ class TestExecutionEngine:
             content="",
             tool_calls=[{"name": "fake_tool", "args": {}, "id": "c", "type": "tool_call"}],
         )
+
+        observations = iter(("out-1", "out-2", "out-3"))
+
         @tool
         def fake_tool() -> str:
             """Return fake output for direct loop tests."""
-            return "out"
+            return next(observations)
 
         count = 0
 
@@ -1159,8 +1260,10 @@ class TestExecutionEngine:
         max_iter = 3
         with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
             mock_bound = MagicMock()
+            mock_llm = mock_build.return_value
             mock_bound.invoke.side_effect = counting
-            mock_build.return_value.bind_tools.return_value = mock_bound
+            mock_llm.bind_tools.return_value = mock_bound
+            mock_llm.invoke.return_value = AIMessage(content="Сводка доступных результатов.")
 
             result = _run_direct_tool_loop(
                 runner,
@@ -1176,6 +1279,8 @@ class TestExecutionEngine:
 
         assert count <= max_iter
         assert isinstance(result, AgentResponse)
+        assert mock_llm.invoke.call_count == 1
+        assert result.final_text == "Сводка доступных результатов."
 
     def test_unknown_tool_does_not_crash_loop(self, runner):
         """Unknown tool name must produce an error message, not crash."""
@@ -1206,8 +1311,7 @@ class TestExecutionEngine:
 
         assert isinstance(result, AgentResponse)
 
-    def test_repeated_identical_tool_errors_stay_visible_to_next_llm_turn(self, runner):
-        """The generic ReAct loop should show repeated errors to the LLM, not stop."""
+    def test_repeated_identical_tool_errors_stop_after_third_failure(self, runner):
         call_responses = [
             AIMessage(
                 content="",
@@ -1231,6 +1335,17 @@ class TestExecutionEngine:
                     }
                 ],
             ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "fake_tool",
+                        "args": {"code": "bad()"},
+                        "id": "c3",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
             AIMessage(content="should not be reached"),
         ]
         seen: list[str] = []
@@ -1239,10 +1354,17 @@ class TestExecutionEngine:
         def fake_tool(code: str) -> str:
             """Return a repeated fake tool error."""
             seen.append(code)
-            return "❌ Ошибка при создании таблиц: same sandbox error"
+            raise RuntimeError("same sandbox error")
+
+        long_summary = (
+            "Удалось получить промежуточные данные, но анализ завершён частично.\n\n"
+            + "Подтверждённые наблюдения сохранены и доступны пользователю. " * 30
+        ).strip()
+        assert len(long_summary) > 1200
 
         with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
             mock_bound = MagicMock()
+            mock_llm = mock_build.return_value
             seen_messages = []
 
             def invoke(messages, config=None):
@@ -1250,7 +1372,8 @@ class TestExecutionEngine:
                 return call_responses.pop(0)
 
             mock_bound.invoke.side_effect = invoke
-            mock_build.return_value.bind_tools.return_value = mock_bound
+            mock_llm.bind_tools.return_value = mock_bound
+            mock_llm.invoke.return_value = AIMessage(content=long_summary)
 
             result = _run_direct_tool_loop(
                 runner,
@@ -1264,21 +1387,348 @@ class TestExecutionEngine:
                 max_iterations=5,
             )
 
-        assert len(seen) == 2
+        assert len(seen) == 3
         assert mock_bound.invoke.call_count == 3
-        assert result.final_text == "should not be reached"
-        third_turn_messages = seen_messages[-1]
-        tool_messages = [
-            message for message in third_turn_messages if isinstance(message, ToolMessage)
+        assert mock_llm.invoke.call_count == 1
+        assert result.final_text == long_summary
+        assert result.terminal_status == "partial"
+        assert result.outcome.cacheable_success is False
+        recovery_messages = mock_llm.invoke.call_args.args[0]
+        recovery_tool_messages = [
+            message for message in recovery_messages if isinstance(message, ToolMessage)
         ]
-        assert len(tool_messages) == 2
-        assert all("same sandbox error" in str(message.content) for message in tool_messages)
-        ai_tool_calls = [
-            message
-            for message in third_turn_messages
-            if isinstance(message, AIMessage) and getattr(message, "tool_calls", None)
+        assert len(recovery_tool_messages) == 3
+        assert all("same sandbox error" in str(message.content) for message in recovery_tool_messages)
+        assert mock_llm.invoke.call_args.kwargs["config"]["callbacks"] == []
+
+    def test_repeated_identical_successes_stop_after_third_result(self, runner):
+        call_responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "fake_tool",
+                        "args": {"value": 1},
+                        "id": f"c{attempt}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for attempt in range(1, 5)
         ]
-        assert ai_tool_calls[-1].tool_calls[0]["args"] == {"code": "bad()"}
+        seen: list[int] = []
+
+        @tool
+        def fake_tool(value: int) -> str:
+            """Return an unchanged successful observation."""
+            seen.append(value)
+            return "same result"
+
+        loop_summary = "Получены одинаковые результаты; вот доступная сводка данных."
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_llm = mock_build.return_value
+            mock_bound.invoke.side_effect = lambda _messages, config=None: call_responses.pop(0)
+            mock_llm.bind_tools.return_value = mock_bound
+            mock_llm.invoke.return_value = AIMessage(content=loop_summary)
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[fake_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=8,
+            )
+
+        assert seen == [1, 1, 1]
+        assert mock_bound.invoke.call_count == 3
+        assert mock_llm.invoke.call_count == 1
+        assert result.terminal_status == "failed"
+        assert result.tool_error_count == 0
+        assert result.final_text == loop_summary
+
+    def test_repeated_identical_successes_stop_when_interleaved(self, runner):
+        call_responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "stable_tool",
+                        "args": {"value": 1},
+                        "id": "stable-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "other_tool",
+                        "args": {"value": 1},
+                        "id": "other-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "stable_tool",
+                        "args": {"value": 1},
+                        "id": "stable-2",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "other_tool",
+                        "args": {"value": 2},
+                        "id": "other-2",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "stable_tool",
+                        "args": {"value": 1},
+                        "id": "stable-3",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="should not be reached"),
+        ]
+
+        @tool
+        def stable_tool(value: int) -> str:
+            """Return one unchanged observation."""
+            return f"stable-{value}"
+
+        @tool
+        def other_tool(value: int) -> str:
+            """Return distinct progress observations."""
+            return f"other-{value}"
+
+        loop_summary = "Сводка доступных результатов после остановки цикла."
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_llm = mock_build.return_value
+            mock_bound.invoke.side_effect = lambda _messages, config=None: call_responses.pop(0)
+            mock_llm.bind_tools.return_value = mock_bound
+            mock_llm.invoke.return_value = AIMessage(content=loop_summary)
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[stable_tool, other_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=8,
+            )
+
+        assert mock_bound.invoke.call_count == 5
+        assert mock_llm.invoke.call_count == 1
+        assert result.terminal_status == "failed"
+        assert result.final_text == loop_summary
+
+    def test_repeated_call_with_changed_result_is_allowed(self, runner):
+        call_responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "fake_tool",
+                        "args": {"value": 1},
+                        "id": f"c{attempt}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for attempt in range(1, 4)
+        ]
+        call_responses.append(AIMessage(content="Done"))
+        observations = ["pending", "pending", "ready"]
+        seen: list[int] = []
+
+        @tool
+        def fake_tool(value: int) -> str:
+            """Return an observation that eventually changes."""
+            seen.append(value)
+            return observations.pop(0)
+
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_bound.invoke.side_effect = lambda _messages, config=None: call_responses.pop(0)
+            mock_build.return_value.bind_tools.return_value = mock_bound
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[fake_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=8,
+            )
+
+        assert seen == [1, 1, 1]
+        assert mock_bound.invoke.call_count == 4
+        assert result.terminal_status == "success"
+        assert result.final_text == "Done"
+        assert result.tool_error_count == 0
+
+    def test_textual_registered_tool_call_is_executed_safely(self, runner):
+        @tool
+        def fake_tool(value: int) -> str:
+            """Return the supplied value."""
+            return str(value)
+
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_bound.invoke.side_effect = [
+                AIMessage(content="fake_tool(value=1)"),
+                AIMessage(content="Done"),
+            ]
+            mock_build.return_value.bind_tools.return_value = mock_bound
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[fake_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=4,
+            )
+
+        assert result.final_text == "Done"
+        assert result.terminal_status == "success"
+        assert result.retry_count == 0
+        assert mock_bound.invoke.call_count == 2
+
+    def test_textual_tool_call_rejects_code_and_unknown_tools(self):
+        assert _parse_textual_tool_call("fake_tool(value=run())", {"fake_tool"}) is None
+        assert _parse_textual_tool_call("unknown_tool(value=1)", {"fake_tool"}) is None
+
+    def test_distinct_errors_for_one_tool_can_continue_to_a_final_answer(self, runner):
+        call_responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "fake_tool",
+                        "args": {"attempt": attempt},
+                        "id": f"c{attempt}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for attempt in range(1, 4)
+        ]
+        call_responses.append(AIMessage(content="Recovered after trying different inputs"))
+        seen: list[int] = []
+
+        @tool
+        def fake_tool(attempt: int) -> str:
+            """Return a different structured failure per attempt."""
+            seen.append(attempt)
+            raise ValueError(f"invalid field for attempt {attempt}")
+
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_bound.invoke.side_effect = lambda _messages, config=None: call_responses.pop(0)
+            mock_build.return_value.bind_tools.return_value = mock_bound
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[fake_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=8,
+            )
+
+        assert seen == [1, 2, 3]
+        assert mock_bound.invoke.call_count == 4
+        assert result.terminal_status == "success"
+        assert result.final_text == "Recovered after trying different inputs"
+        assert result.tool_error_count == 3
+        assert result.retry_count == 2
+        assert len(result.error_fingerprints) == 3
+
+    def test_same_missing_symbol_with_different_arguments_can_continue(self, runner):
+        call_responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "fake_tool",
+                        "args": {"code": f"attempt_{attempt}()"},
+                        "id": f"c{attempt}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+            for attempt in range(1, 4)
+        ]
+        call_responses.append(AIMessage(content="Recovered with changed code"))
+        seen: list[str] = []
+
+        @tool(response_format="content_and_artifact")
+        def fake_tool(code: str) -> tuple[str, dict]:
+            """Return the same missing-symbol failure for different code."""
+            seen.append(code)
+            return f"pandas_tool failed input_code: {code}", {
+                "status": "error",
+                "error": "table is unavailable",
+                "error_type": "NameError",
+                "missing_symbol": "table",
+            }
+
+        with patch("backend.agent.tool_loop.build_runtime_llm") as mock_build:
+            mock_bound = MagicMock()
+            mock_bound.invoke.side_effect = lambda _messages, config=None: call_responses.pop(0)
+            mock_build.return_value.bind_tools.return_value = mock_bound
+
+            result = _run_direct_tool_loop(
+                runner,
+                prompt="test",
+                history=[],
+                use_history=False,
+                include_reasoning=False,
+                tools=[fake_tool],
+                execution_system_prompt="sys",
+                callbacks=[],
+                max_iterations=8,
+            )
+
+        assert seen == ["attempt_1()", "attempt_2()", "attempt_3()"]
+        assert mock_bound.invoke.call_count == 4
+        assert result.final_text == "Recovered with changed code"
+        assert result.terminal_status == "success"
+        assert len(result.error_fingerprints) == 3
 
     def test_llm_transport_failure_returns_unreachable_flag(self, runner):
         """ConnectionError from LLM must produce llm_unreachable=True, not raise."""
@@ -1302,6 +1752,7 @@ class TestExecutionEngine:
         assert result.llm_unreachable is True
         assert isinstance(result.final_text, str)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Skills injected into execution system prompt
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1322,12 +1773,12 @@ class TestSkillsInPrompt:
         first_line = execution_agent_prompt.strip().split("\n")[0].strip()
         assert first_line in prompt
 
-    def test_selected_skill_appears_in_execution_context_messages(self, settings, skill_registry_with_skills):
+    def test_selected_skill_appears_in_execution_system_prompt(self, settings, skill_registry_with_skills):
         runner = AgentRunner(settings=settings, skill_registry=skill_registry_with_skills)
         skills = skill_registry_with_skills.list_skills()
         analytical = next(s for s in skills if s.kind == "analytical")
 
-        context = _build_execution_context_text_for_runner(
+        prompt = _build_execution_prompt_for_runner(
             runner,
             capability_context={
                 "source_mode": "dataset",
@@ -1336,7 +1787,7 @@ class TestSkillsInPrompt:
             },
             selected_skill_ids=[analytical.skill_id],
         )
-        assert analytical.name in context
+        assert analytical.name in prompt
 
     def test_tool_skill_brief_appears_for_available_tool(self, settings, skill_registry_with_skills):
         runner = AgentRunner(settings=settings, skill_registry=skill_registry_with_skills)
@@ -1350,9 +1801,11 @@ class TestSkillsInPrompt:
         )
         assert "sql_tool" in prompt
 
-    def test_analytical_skills_brief_in_context_messages_when_skills_exist(self, settings, skill_registry_with_skills):
+    def test_analytical_skills_brief_in_system_prompt_when_skills_exist(
+        self, settings, skill_registry_with_skills
+    ):
         runner = AgentRunner(settings=settings, skill_registry=skill_registry_with_skills)
-        context = _build_execution_context_text_for_runner(
+        prompt = _build_execution_prompt_for_runner(
             runner,
             capability_context={
                 "source_mode": "dataset",
@@ -1360,7 +1813,7 @@ class TestSkillsInPrompt:
                 "available_tool_keys": [],
             },
         )
-        assert "cohort" in context.lower()
+        assert "cohort" in prompt.lower()
 
     def test_no_react_markers_in_assembled_prompt(self, runner):
         prompt = _build_execution_prompt_for_runner(

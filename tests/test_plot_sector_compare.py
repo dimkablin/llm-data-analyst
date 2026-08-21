@@ -18,7 +18,6 @@ def test_cross_section_comparison_prefers_multi_row_metric_table() -> None:
     )
 
     specs = _build_cross_section_comparison_specs(
-        "compare entities by score",
         [
             ("entity_lookup", lookup),
             ("entity_comparison", comparison),

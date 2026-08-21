@@ -32,11 +32,11 @@ one ticker, or deterministic summary.
 7. **Final synthesis** -> separate facts from interpretation: snapshot status,
    price dynamics, news/event evidence, comparison context, and caveats.
 
-### Required tools
-- `database_tool`
-- `sql_tool`
-- `pandas_tool`
-- `plotly_tool`
+### Required capabilities
+- `db_catalog`
+- `read_only_sql`
+- `dataframe_transform`
+- `chart`
 
 ### Required artifacts
 - table: market_snapshot_table
@@ -57,5 +57,5 @@ one ticker, or deterministic summary.
   missing and continue only with the supported part of the analysis.
 - For sector or peer comparisons, report the selected peer universe and the
   filter used to build it.
-- The final answer must cite the tool-produced artifacts used for price and
-  event conclusions.
+- Write tool-produced price and event values directly as plain text. Never
+  expose artifact expressions or format those values as Markdown links.

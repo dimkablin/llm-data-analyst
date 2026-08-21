@@ -2,27 +2,5 @@
   "name": "finance",
   "enabled_by_default": true,
   "domains": ["finance"],
-  "terms": [],
-  "metric_columns": {
-    "cost": ["cost", "expense", "total_cost"],
-    "cogs": ["cogs", "cost_of_goods_sold"],
-    "opex": ["opex", "operating_expense", "operating_cost"],
-    "revenue": ["revenue", "sales", "amount"],
-    "profit": ["profit", "net_profit", "income"],
-    "cash": ["cash", "cash_balance"],
-    "burn": ["burn", "burn_rate", "cash_burn"],
-    "runway": ["runway", "months_runway"],
-    "budget": ["budget", "planned_amount"],
-    "actual": ["actual", "actual_amount", "spent"]
-  },
-  "metric_templates": [
-    { "key": "cost", "name": "Cost", "kind": "sum", "column_group": "cost", "synonyms": ["cost", "затраты"] },
-    { "key": "cogs", "name": "COGS", "kind": "sum", "column_group": "cogs", "synonyms": ["cogs", "себестоимость"] },
-    { "key": "opex", "name": "Operating expense", "kind": "sum", "column_group": "opex", "synonyms": ["opex", "operating expense"] },
-    { "key": "net_profit", "name": "Net profit", "kind": "sum", "column_group": "profit", "synonyms": ["net profit", "чистая прибыль"] },
-    { "key": "profit_margin", "name": "Profit margin", "kind": "ratio_sum", "numerator_group": "profit", "denominator_group": "revenue", "synonyms": ["profit margin", "маржа"], "format": "percent" },
-    { "key": "cash_balance", "name": "Cash balance", "kind": "sum", "column_group": "cash", "synonyms": ["cash balance", "денежный остаток"] },
-    { "key": "burn_rate", "name": "Burn rate", "kind": "sum", "column_group": "burn", "synonyms": ["burn rate"] },
-    { "key": "runway", "name": "Runway", "kind": "avg", "column_group": "runway", "synonyms": ["runway"] }
-  ]
+  "terms": []
 }

@@ -31,10 +31,10 @@ contract, not executable business logic.
 6. **Final synthesis** -> explain where concentration exists, which positions
    or segments drive it, what the chart shows, and what data limits remain.
 
-### Required tools
-- `sql_tool`
-- `pandas_tool`
-- `plotly_tool`
+### Required capabilities
+- `read_only_sql`
+- `dataframe_transform`
+- `chart`
 
 ### Required artifacts
 - table: portfolio_positions_table

@@ -14,6 +14,7 @@ CHAT_HISTORY_WITH_THINK = [
             {
                 "tool_name": "python_repl",
                 "pre_reasoning": "Let me think about this...",
+                "pre_text": "Checking `x` before the tool call.",
                 "input_summary": "x = 1",
                 "status": "done",
             }
@@ -49,6 +50,7 @@ def test_strip_helper_removes_thinking_fields():
     assert "reasoning_steps" not in ai_message
     for tool in ai_message.get("tools", []):
         assert "pre_reasoning" not in tool
+        assert tool["pre_text"] == "Checking `x` before the tool call."
 
 
 def test_strip_helper_does_not_mutate_original():
@@ -96,6 +98,7 @@ def test_get_session_strips_think_blocks_when_show_think_false():
     assert "reasoning_steps" not in ai_msg
     for tool in ai_msg.get("tools", []):
         assert "pre_reasoning" not in tool
+        assert tool["pre_text"] == "Checking `x` before the tool call."
 
 
 def test_get_session_preserves_think_blocks_when_show_think_true():

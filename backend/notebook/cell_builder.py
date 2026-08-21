@@ -172,8 +172,6 @@ def _tags_for_tool(tool_name: str) -> list[str]:
         return ["visualization"]
     if tool_name in ("pandas_tool", "sql_tool"):
         return ["analysis"]
-    if tool_name == "search_tool":
-        return ["search"]
     return ["analysis"]
 
 

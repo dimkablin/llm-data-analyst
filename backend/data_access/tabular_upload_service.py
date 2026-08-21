@@ -9,6 +9,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from backend.auth.blob_store import BlobWrite, PostgresBlobStore
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.data_access.tabular_preprocessing import (
     PreprocessedTabularData,
@@ -89,12 +90,14 @@ class TabularUploadService:
         manifest_store: ManifestStore,
         notebook_orchestrator: NotebookOrchestrator,
         storage_dir: str | Path,
+        blob_store: PostgresBlobStore | None = None,
     ) -> None:
         self._store = store
         self._csv_runtime = csv_runtime
         self._manifest_store = manifest_store
         self._notebook_orchestrator = notebook_orchestrator
         self._storage_dir = Path(storage_dir)
+        self._blob_store = blob_store
 
     def ingest_files(
         self,
@@ -104,6 +107,7 @@ class TabularUploadService:
         ttl_seconds: int | None = None,
         max_bytes_per_file: int | None = None,
         preprocessing_options: TabularPreprocessingOptions | None = None,
+        user_id: int | None = None,
     ) -> TabularUploadResult:
         state = self._store.load_session(session_id)
         if state is None:
@@ -120,6 +124,23 @@ class TabularUploadService:
             max_bytes_per_file=max_bytes_per_file,
             preprocessing_options=preprocessing_options,
         )
+        blob_ids: list[str] = []
+        if self._blob_store is not None:
+            if user_id is None:
+                raise TabularUploadError("user_id is required for durable uploads")
+            blob_ids = self._blob_store.put_many(
+                user_id=user_id,
+                session_id=session_id,
+                kind="source_upload",
+                items=[
+                    BlobWrite(
+                        logical_name=upload.file_name,
+                        media_type=upload.content_type or "application/octet-stream",
+                        content=upload.content,
+                    )
+                    for upload in upload_files
+                ],
+            )
         tables = {item.table_name: item.df for item in parsed}
         runtime_registered = False
         try:
@@ -133,11 +154,15 @@ class TabularUploadService:
             uploaded_files = self._persist_sources(
                 session_id=session_id,
                 parsed=parsed,
+                blob_ids=blob_ids,
+                preprocessing_options=preprocessing_options,
             )
         except Exception:
             if runtime_registered:
                 with suppress(Exception):
                     self._csv_runtime.unregister_tables(session_id, tables.keys())
+            if self._blob_store is not None and user_id is not None:
+                self._blob_store.delete_many(user_id=user_id, blob_ids=blob_ids)
             raise
 
         dataset_name = self._dataset_label([item.file_name for item in uploaded_files])
@@ -221,6 +246,8 @@ class TabularUploadService:
         *,
         session_id: str,
         parsed: list[_ParsedTabularFile],
+        blob_ids: list[str],
+        preprocessing_options: TabularPreprocessingOptions | None,
     ) -> list[UploadedTabularFile]:
         manifest = self._manifest_store.load(session_id)
         original_manifest = SessionManifest.from_dict(manifest.to_dict())
@@ -231,7 +258,7 @@ class TabularUploadService:
         uploaded: list[UploadedTabularFile] = []
         notebook_edits: list[NotebookEdit] = []
         written_paths: list[Path] = []
-        for item in parsed:
+        for index, item in enumerate(parsed):
             if not isinstance(item.df, pd.DataFrame):
                 raise TabularUploadError(f"File '{item.file_name}' did not parse as a DataFrame")
 
@@ -248,12 +275,16 @@ class TabularUploadService:
                 if hasattr(item.preprocessing, "model_dump")
                 else item.preprocessing.dict()
             )
+            preprocessing_summary["preprocessing_options"] = (
+                preprocessing_options or TabularPreprocessingOptions()
+            ).model_dump()
             source = SessionSource(
                 alias=alias,
                 source_type="csv",
                 display_name=item.file_name,
                 variable_name=variable_name,
                 file_name=item.file_name,
+                blob_id=blob_ids[index] if blob_ids else None,
                 parquet_path=parquet_rel,
                 csv_session_id=session_id,
                 csv_table_names=[item.table_name],

@@ -8,6 +8,7 @@ returns the answer together with source references.
 Unlike sandbox-execution tools, this is a plain ``BaseTool`` — no code
 is generated or run, just an HTTP call to the RAG service.
 """
+
 from __future__ import annotations
 
 from typing import Any, ClassVar
@@ -44,20 +45,32 @@ class RagTool(BaseTool):
             return "Query must not be empty."
 
         svc: RAGService = object.__getattribute__(self, "_rag_service")
-        try:
-            result = svc.retrieve(query=query)
-        except Exception as exc:
-            return f"Knowledge base unavailable: {exc}"
+        result = svc.search(query=query, include_references=True)
 
         answer = (result.answer or "").strip()
-        if not answer:
-            return "The knowledge base returned no context for this query."
+        no_context = not answer or any(
+            "no context" in (warning or "").lower()
+            or "no chunks" in (warning or "").lower()
+            or "no normalized answer" in (warning or "").lower()
+            for warning in result.warnings
+        )
+        if no_context:
+            return (
+                "No relevant knowledge-base context was found for this query. "
+                "Do not invent a definition or explanation. Ask for clarification."
+            )
 
         references = [str(item).strip() for item in result.references if str(item).strip()]
+        grounding_note = (
+            "Grounding constraint: the knowledge-base answer below is synthesized evidence, "
+            "not verbatim source passages. Use only entities and attributes explicitly named "
+            "in it. Unless it explicitly establishes completeness, run a complementary query "
+            "or return a grounded partial list; never complete it from memory.\n\n"
+        )
         if references:
             sources = "\n".join(f"- {reference}" for reference in references)
-            return f"{answer}\n\nSources:\n{sources}"
-        return answer
+            return f"{grounding_note}{answer}\n\nSources:\n{sources}"
+        return grounding_note + answer
 
     async def _arun(self, query: str, *args: Any, **_kwargs: Any) -> str:
         return await anyio.to_thread.run_sync(self._run, query)

@@ -5,9 +5,21 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SemanticCatalogStatus = Literal["pending", "indexing", "ready", "failed", "stale", "degraded", "unbound"]
+SemanticCatalogStatus = Literal[
+    "not_built",
+    "pending",
+    "indexing",
+    "ready",
+    "failed",
+    "stale",
+    "degraded",
+    "unbound",
+]
+SemanticOperationType = Literal["build", "refresh", "generate"]
+SemanticOperationStage = Literal["queued", "profiling", "publishing", "indexing", "generating"]
+SemanticOperationStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
 SemanticEntityType = Literal[
     "table",
     "column",
@@ -31,6 +43,7 @@ SemanticColumnRole = Literal[
 ]
 SemanticTableRole = Literal["fact", "dimension", "bridge", "snapshot", "unknown"]
 MetricAggregation = Literal["sum", "avg", "count", "count_distinct", "min", "max"]
+SemanticFilterOperator = Literal["=", "!=", ">", ">=", "<", "<=", "in", "not_in", "starts_with"]
 SemanticEntityKind = Literal["primary", "unique", "foreign", "natural"]
 SemanticDimensionKind = Literal["categorical", "time", "boolean", "number"]
 SemanticFactKind = Literal["number", "money", "duration", "count"]
@@ -69,6 +82,29 @@ def clean_list(items: list[str] | None) -> list[str]:
 
 def normalize_semantic_name(value: str) -> str:
     return re.sub(r"[^\w]+", "_", value.strip().lower(), flags=re.UNICODE).strip("_")
+
+
+def _legacy_metric_filter(value: str) -> dict[str, Any]:
+    raw = str(value or "").strip()
+    match = re.fullmatch(
+        r"(?P<field>[\w.]+)\s*(?P<op>starts_with|not_in|in|>=|<=|!=|=|>|<)\s*(?P<value>.+)",
+        raw,
+        flags=re.UNICODE,
+    )
+    if match is None:
+        raise ValueError(f"Invalid legacy metric filter: {raw}")
+    filter_value = match.group("value").strip()
+    if len(filter_value) >= 2 and filter_value[0] == filter_value[-1] and filter_value[0] in {"'", '"'}:
+        filter_value = filter_value[1:-1]
+    if match.group("op") in {"in", "not_in"}:
+        filter_value = [
+            item.strip().strip("'\"") for item in filter_value.strip("()[]").split(",") if item.strip()
+        ]
+    return {
+        "field": match.group("field"),
+        "op": match.group("op"),
+        "value": filter_value,
+    }
 
 
 class SemanticTable(BaseModel):
@@ -250,6 +286,42 @@ class SemanticColumnPatch(BaseModel):
     is_hidden: bool | None = None
 
 
+class SemanticMetricFilter(BaseModel):
+    field: str = Field(..., min_length=1, max_length=240)
+    op: SemanticFilterOperator = "="
+    value: str | int | float | bool | list[str | int | float | bool]
+
+    @model_validator(mode="after")
+    def normalize(self) -> SemanticMetricFilter:
+        self.field = self.field.strip()
+        if not re.fullmatch(r"[\w.]+", self.field, flags=re.UNICODE):
+            raise ValueError("metric filter field must be a column reference")
+        if self.op in {"in", "not_in"} and not isinstance(self.value, list):
+            self.value = [self.value]
+        if self.op == "starts_with" and not isinstance(self.value, str):
+            raise ValueError("starts_with metric filter requires a string value")
+        return self
+
+
+def _metric_formula_literal(value: Any) -> str:
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _metric_filter_formula(item: SemanticMetricFilter, *, table: str) -> str:
+    field = item.field if "." in item.field else f"{table}.{item.field}"
+    if item.op in {"in", "not_in"}:
+        values = item.value if isinstance(item.value, list) else [item.value]
+        operator = "IN" if item.op == "in" else "NOT IN"
+        return f"{field} {operator} ({', '.join(_metric_formula_literal(value) for value in values)})"
+    if item.op == "starts_with":
+        return f"{field} LIKE {_metric_formula_literal(str(item.value) + '%')}"
+    return f"{field} {item.op} {_metric_formula_literal(item.value)}"
+
+
 class SemanticMetricBase(BaseModel):
     key: str = Field(..., min_length=1, max_length=80)
     name: str = Field(..., min_length=1, max_length=160)
@@ -262,7 +334,7 @@ class SemanticMetricBase(BaseModel):
     formula: str = ""
     default_time_dimension: str | None = None
     allowed_dimensions: list[str] = Field(default_factory=list)
-    filters: list[str] = Field(default_factory=list)
+    filters: list[SemanticMetricFilter] = Field(default_factory=list)
     format: str = "number"
     description: str = ""
     synonyms: list[str] = Field(default_factory=list)
@@ -279,7 +351,6 @@ class SemanticMetricBase(BaseModel):
         self.default_time_dimension = str(self.default_time_dimension or "").strip() or None
         self.formula = str(self.formula or "").strip()
         self.allowed_dimensions = clean_list(self.allowed_dimensions)
-        self.filters = clean_list(self.filters)
         self.synonyms = clean_list(self.synonyms)
         if not self.key:
             raise ValueError("metric key must contain a letter or digit")
@@ -287,16 +358,31 @@ class SemanticMetricBase(BaseModel):
             raise ValueError("simple metric requires expr and agg")
         if self.type == "simple":
             qualified = f"{self.base_table}.{self.expr}"
+            value_expr = qualified
+            if self.filters:
+                predicate = " AND ".join(
+                    _metric_filter_formula(item, table=self.base_table) for item in self.filters
+                )
+                value_expr = f"CASE WHEN {predicate} THEN {qualified} END"
             self.formula = (
-                f"COUNT(DISTINCT {qualified})"
+                f"COUNT(DISTINCT {value_expr})"
                 if self.agg == "count_distinct"
-                else f"{str(self.agg).upper()}({qualified})"
+                else f"{str(self.agg).upper()}({value_expr})"
             )
         if self.type == "ratio" and (not self.numerator or not self.denominator):
             raise ValueError("ratio metric requires numerator and denominator")
+        if self.type == "ratio":
+            self.formula = f"{self.numerator} / NULLIF({self.denominator}, 0)"
         if self.type == "derived" and not self.formula:
             raise ValueError("derived metric requires formula")
         return self
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def migrate_legacy_filters(cls, value):
+        if not value:
+            return []
+        return [_legacy_metric_filter(item) if isinstance(item, str) else item for item in value]
 
 
 class SemanticMetricCreate(SemanticMetricBase):
@@ -314,7 +400,7 @@ class SemanticMetricUpdate(BaseModel):
     formula: str | None = None
     default_time_dimension: str | None = Field(default=None, max_length=240)
     allowed_dimensions: list[str] | None = None
-    filters: list[str] | None = None
+    filters: list[SemanticMetricFilter] | None = None
     format: str | None = None
     description: str | None = None
     synonyms: list[str] | None = None
@@ -353,13 +439,16 @@ class SemanticCatalog(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     catalog_id: str
-    user_id: int
-    session_id: str
+    connection_id: str = ""
+    user_id: int = 0
+    session_id: str = ""
     source_key: str = ""
     source_type: str = ""
     source_ref_id: str = ""
     source_label: str = ""
     source_fingerprint: str = ""
+    profile_sample_strategy: str = ""
+    profile_sample_limit: int | None = None
     version: str = "2.0"
     overlay_version: int = 0
     published_version: int = 0
@@ -377,6 +466,21 @@ class SemanticCatalog(BaseModel):
     saved_queries: list[SemanticSavedQuery] = Field(default_factory=list)
     terms: list[SemanticTerm] = Field(default_factory=list)
     validation: SemanticValidationResult = Field(default_factory=SemanticValidationResult)
+
+
+class SemanticCatalogOperation(BaseModel):
+    operation_id: int
+    source_key: str
+    catalog_id: str = ""
+    connection_id: str = ""
+    operation_type: SemanticOperationType = "build"
+    stage: SemanticOperationStage = "queued"
+    status: SemanticOperationStatus = "running"
+    actor_user_id: int = 0
+    error: str | None = None
+    started_at: str = Field(default_factory=utc_now_iso)
+    updated_at: str = Field(default_factory=utc_now_iso)
+    finished_at: str | None = None
 
 
 class SemanticCatalogOverlay(BaseModel):

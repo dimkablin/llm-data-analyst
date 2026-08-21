@@ -20,11 +20,11 @@ class UserToolSettingsTests(unittest.TestCase):
 
             self.assertEqual(auth_db.list_user_tool_settings(user.id), {})
 
-            auth_db.set_user_tool_enabled(user.id, "search_tool", False)
+            auth_db.set_user_tool_enabled(user.id, "rag_tool", False)
             auth_db.set_user_tool_enabled(user.id, "plotly_tool", True)
 
             stored = auth_db.list_user_tool_settings(user.id)
-            self.assertEqual(stored["search_tool"], False)
+            self.assertEqual(stored["rag_tool"], False)
             self.assertEqual(stored["plotly_tool"], True)
         finally:
             if auth_db is not None:
@@ -35,19 +35,6 @@ class UserToolSettingsTests(unittest.TestCase):
 
     def test_tool_catalog_builds_effective_user_state(self) -> None:
         source_descriptors = [
-            {
-                "source_type": "search",
-                "source_ref_id": "search",
-                "source_label": "Search",
-                "source_mode": "external",
-                "enabled": True,
-                "available": True,
-                "status": "available",
-                "description": "Search",
-                "capabilities": ["search"],
-                "requires_session_data": False,
-                "timeout_hint_sec": 10.0,
-            },
             {
                 "source_type": "rag",
                 "source_ref_id": "rag",
@@ -92,7 +79,6 @@ class UserToolSettingsTests(unittest.TestCase):
         rows = build_tool_catalog(
             source_descriptors=source_descriptors,
             user_settings={
-                "search_tool": False,
                 "rag_tool": False,
                 "plotly_tool": False,
                 "forecast_tool": True,
@@ -101,8 +87,6 @@ class UserToolSettingsTests(unittest.TestCase):
         payloads = [ToolAvailabilityResponse(**item) for item in rows]
         by_key = {item.tool_key: item for item in payloads}
 
-        self.assertFalse(by_key["search_tool"].enabled_for_user)
-        self.assertFalse(by_key["search_tool"].effective_enabled)
         self.assertFalse(by_key["rag_tool"].enabled_for_user)
         self.assertFalse(by_key["rag_tool"].effective_enabled)
         self.assertFalse(by_key["plotly_tool"].effective_enabled)
@@ -111,7 +95,6 @@ class UserToolSettingsTests(unittest.TestCase):
         self.assertTrue(by_key["anomaly_planfact_tool"].effective_enabled)
         self.assertTrue(by_key["sql_tool"].enabled_by_default)
         self.assertIn("SQL", by_key["sql_tool"].display_name_ru)
-        self.assertTrue(by_key["search_tool"].description_ru)
 
     def test_tool_catalog_uses_tool_markdown_metadata(self) -> None:
         rows = build_tool_catalog(source_descriptors=[], user_settings={})
@@ -136,19 +119,6 @@ class UserToolSettingsTests(unittest.TestCase):
 
     def test_effective_tool_keys_feed_runtime_policy_layer(self) -> None:
         source_descriptors = [
-            {
-                "source_type": "search",
-                "source_ref_id": "search",
-                "source_label": "Search",
-                "source_mode": "external",
-                "enabled": True,
-                "available": True,
-                "status": "available",
-                "description": "Search",
-                "capabilities": ["search"],
-                "requires_session_data": False,
-                "timeout_hint_sec": 10.0,
-            },
             {
                 "source_type": "rag",
                 "source_ref_id": "rag",
@@ -192,7 +162,6 @@ class UserToolSettingsTests(unittest.TestCase):
         catalog = build_tool_catalog(
             source_descriptors=source_descriptors,
             user_settings={
-                "search_tool": False,
                 "rag_tool": False,
                 "plotly_tool": False,
             },
@@ -200,7 +169,6 @@ class UserToolSettingsTests(unittest.TestCase):
 
         allowed_tool_keys = effective_enabled_tool_keys(catalog)
 
-        self.assertFalse(is_tool_allowed("search_tool", allowed_tool_keys))
         self.assertFalse(is_tool_allowed("rag_tool", allowed_tool_keys))
         self.assertFalse(is_tool_allowed("plotly_tool", allowed_tool_keys))
         self.assertTrue(is_tool_allowed("forecast_tool", allowed_tool_keys))

@@ -257,6 +257,7 @@ backend_storage/
 
 # Test artifacts
 backend_titanic_*.json
+tmp/
 
 # Release archives
 release/
@@ -267,6 +268,10 @@ release/
 .env.local.*
 .*
 !.gitlab-ci.yml
+!mcp/.env.example
+!mcp/*/.env.example
+!mcp/*/.dockerignore
+mcp/model_cache/
 
 # Local agent/project instructions
 AGENT.md

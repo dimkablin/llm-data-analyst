@@ -45,18 +45,10 @@ class UserSettingsResponse(BaseModel):
         default=DEFAULT_USER_SETTINGS.default_answer_style,
         pattern="^(concise|detailed)$",
     )
-    analysis_mode: str = Field(
-        default=DEFAULT_USER_SETTINGS.analysis_mode, pattern="^(fast|deep)$"
-    )
-    analysis_depth: str = Field(
-        default=DEFAULT_USER_SETTINGS.analysis_depth, pattern="^(light|medium|deep)$"
-    )
-    llm_temperature_chat: float = Field(
-        default=DEFAULT_USER_SETTINGS.llm_temperature_chat, ge=0.0, le=2.0
-    )
-    llm_temperature_tool: float = Field(
-        default=DEFAULT_USER_SETTINGS.llm_temperature_tool, ge=0.0, le=2.0
-    )
+    analysis_mode: str = Field(default=DEFAULT_USER_SETTINGS.analysis_mode, pattern="^(fast|deep)$")
+    analysis_depth: str = Field(default=DEFAULT_USER_SETTINGS.analysis_depth, pattern="^(light|medium|deep)$")
+    llm_temperature_chat: float = Field(default=DEFAULT_USER_SETTINGS.llm_temperature_chat, ge=0.0, le=2.0)
+    llm_temperature_tool: float = Field(default=DEFAULT_USER_SETTINGS.llm_temperature_tool, ge=0.0, le=2.0)
     llm_max_tokens_default: int = Field(
         default=DEFAULT_USER_SETTINGS.llm_max_tokens_default, ge=128, le=32768
     )
@@ -67,9 +59,7 @@ class UserSettingsResponse(BaseModel):
         default=DEFAULT_USER_SETTINGS.backend_query_timeout_sec, ge=15, le=1800
     )
     agent_max_steps: int = Field(default=DEPTH_MAX_STEPS["light"], ge=2, le=_MAX_STEPS)
-    agent_step_timeout_sec: int = Field(
-        default=DEFAULT_USER_SETTINGS.agent_step_timeout_sec, ge=5, le=600
-    )
+    agent_step_timeout_sec: int = Field(default=DEFAULT_USER_SETTINGS.agent_step_timeout_sec, ge=5, le=600)
     agent_inner_recursion_limit: int = Field(
         default=DEFAULT_USER_SETTINGS.agent_inner_recursion_limit, ge=2, le=_MAX_STEPS
     )
@@ -80,7 +70,10 @@ class UserSettingsResponse(BaseModel):
     show_think_planning: bool = DEFAULT_USER_SETTINGS.show_think_planning
     show_think_tool: bool = DEFAULT_USER_SETTINGS.show_think_tool
     show_think_final: bool = DEFAULT_USER_SETTINGS.show_think_final
+    always_use_analysis_plan: bool = DEFAULT_USER_SETTINGS.always_use_analysis_plan
     show_detailed_tool_steps: bool = DEFAULT_USER_SETTINGS.show_detailed_tool_steps
+    show_rag_errors: bool = DEFAULT_USER_SETTINGS.show_rag_errors
+    anomaly_check_enabled: bool = DEFAULT_USER_SETTINGS.anomaly_check_enabled
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -113,7 +106,10 @@ class UserSettingsUpdateRequest(BaseModel):
     show_think_planning: bool | None = None
     show_think_tool: bool | None = None
     show_think_final: bool | None = None
+    always_use_analysis_plan: bool | None = None
     show_detailed_tool_steps: bool | None = None
+    show_rag_errors: bool | None = None
+    anomaly_check_enabled: bool | None = None
 
 
 class ToolEnabledUpdateRequest(BaseModel):
@@ -340,6 +336,10 @@ class DBConnectionUpdateRequest(BaseModel):
     options_json: dict[str, Any] | None = None
 
 
+class DBConnectionGrantAccessRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+
+
 class DBConnectionResponse(BaseModel):
     id: str
     name: str
@@ -382,6 +382,7 @@ class QueryRequest(BaseModel):
     use_history: bool = True
     include_reasoning: bool = False
     selected_skill_ids: list[str] | None = None
+    requested_tool_key: str | None = Field(default=None, max_length=200)
     analysis_depth: str | None = Field(
         default=None,
         pattern="^(light|medium|deep)$",
@@ -400,6 +401,9 @@ class ArtifactPayload(BaseModel):
 
 class QueryMetrics(BaseModel):
     duration_ms: int
+    llm_duration_ms: int = 0
+    non_llm_duration_ms: int = 0
+    llm_calls: int = 0
     artifact_count: int
     table_count: int
     plot_count: int
@@ -414,10 +418,22 @@ class QueryResponse(BaseModel):
     reasoning: str | None = None
     artifacts: list[ArtifactPayload]
     values: dict[str, Any] | None = None
+    anomaly_check: dict[str, Any] | None = None
     metrics: QueryMetrics
-    persistence_failed: bool = (
-        False  # True when post-processing (store/artifact persistence) failed
+    response_envelope_valid: bool = True
+    task_contract_satisfied: bool = False
+    terminal_status: str = "failed"
+    error_category: str = "internal"
+    partial_result: bool = False
+    contract_valid: bool = Field(
+        default=False,
+        deprecated="Use task_contract_satisfied.",
     )
+    capability_outcomes: list[dict[str, Any]] = Field(default_factory=list)
+    error_fingerprints: list[str] = Field(default_factory=list)
+    retry_count: int = 0
+    tool_error_count: int = 0
+    persistence_failed: bool = False  # True when post-processing (store/artifact persistence) failed
 
 
 class SessionSourceResponse(BaseModel):

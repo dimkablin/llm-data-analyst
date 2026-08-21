@@ -21,3 +21,13 @@ test("live tool display matches parallel tool_end events by tool_call_id", () =>
     /Параллельно:/,
   );
 });
+
+test("intermediate text does not switch simplified timeline to raw tool calls", () => {
+  const timeline = readFileSync(
+    "frontend/src/app/components/workspace/blocks/BlockTimeline.tsx",
+    "utf8",
+  );
+
+  assert.doesNotMatch(timeline, /!hasTextBlocks/);
+  assert.match(timeline, /planState\.plan \|\| simplifiedStages\.length/);
+});

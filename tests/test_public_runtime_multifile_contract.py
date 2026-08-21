@@ -20,7 +20,6 @@ from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
 from backend.notebook.store import NotebookStore
 from backend.sessions.session_store import SessionStore
-from backend.tools.impl.planner_tool import PlannerTool
 
 
 class _FakeToolCallingLLM:
@@ -187,7 +186,6 @@ tool_result
 
         with (
             patch("backend.agent.tool_loop.build_runtime_llm", return_value=fake_llm),
-            patch.object(PlannerTool, "_run", return_value="1. Catalog. 2. Schema. 3. Join. 4. Plot."),
             patch.object(
                 agent_node_module,
                 "direct_tool_loop",

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   BookOpen,
   CheckCircle2,
@@ -21,6 +21,21 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArtifactSurface } from "./ArtifactSurface";
+import { PlanfactFirstLook } from "./PlanfactFirstLook";
+import { PlanfactSourcePanel } from "./PlanfactSourcePanel";
+import {
+  BOARD_GAP_PX,
+  BOARD_TURN_HEADER_HEIGHT_PX,
+  DEFAULT_ARTIFACT_WIDTH_UNITS,
+  GRID_COLUMNS,
+  MAX_ARTIFACT_HEIGHT,
+  MAX_ARTIFACT_WIDTH_UNITS,
+  MIN_ARTIFACT_HEIGHT,
+  MIN_ARTIFACT_WIDTH_UNITS,
+  computeBoardLayouts,
+  estimateAutoHeight,
+  type TurnHeaderBoardLayout,
+} from "./board-layout";
 import { DEFAULT_TABULAR_PREPROCESSING_OPTIONS } from "../../lib/backend-types";
 import {
   bindRagSource,
@@ -89,25 +104,13 @@ import {
 import { Checkbox } from "../ui/checkbox";
 
 type DashboardTab = "visualizations" | "sources";
-type SourceSection = "db" | "csv" | "openproject" | "rag";
+type SourceSection = "db" | "csv" | "openproject" | "rag" | "planfact";
 type SecretMode = "keep" | "replace" | "clear";
 const ARTIFACT_ORDER_KEY = "llm_new_frontend_artifact_order";
 const ARTIFACT_HEIGHT_KEY = "llm_new_frontend_artifact_height";
 const ARTIFACT_WIDTH_KEY = "llm_new_frontend_artifact_width";
 const ARTIFACT_COL_START_KEY = "llm_new_frontend_artifact_col_start";
 const BOARD_TURN_TITLE_OVERRIDES_KEY = "llm_new_frontend_board_turn_title_overrides";
-const MIN_ARTIFACT_HEIGHT = 220;
-const MAX_ARTIFACT_HEIGHT = 800;
-const GRID_COLUMNS = 12;
-const BOARD_CARD_HEADER_PX = 54;
-const BOARD_CARD_BODY_PADDING_PX = 12;
-const BOARD_CARD_CODE_PX = 52;
-const BOARD_COLUMN_GAP_PX = 12;
-const BOARD_GAP_PX = BOARD_COLUMN_GAP_PX;
-const BOARD_TURN_HEADER_HEIGHT_PX = 48;
-const DEFAULT_ARTIFACT_WIDTH_UNITS = 6;
-const MIN_ARTIFACT_WIDTH_UNITS = 4;
-const MAX_ARTIFACT_WIDTH_UNITS = 12;
 
 type Props = {
   sessionId: string;
@@ -123,10 +126,12 @@ type Props = {
   activeSource: SessionSourceState;
   sources: SessionSource[];
   showCode: boolean;
+  showRagErrors: boolean;
   onUpload: (files: File[], preprocessingOptions?: TabularPreprocessingOptions) => Promise<void>;
   onRefreshSession: () => Promise<void>;
   onPinArtifactIds: (artifactIds: string[]) => void;
   onUnpinArtifact: (artifactId: string) => void;
+  onAsk: (question: string) => Promise<void>;
 };
 
 type UploadItem = {
@@ -184,166 +189,6 @@ function formatRagStatusLabel(status: string | null | undefined): string {
     return "неизвестно";
   }
   return normalized;
-}
-
-type ArtifactBoardLayout = {
-  colStart: number;
-  widthUnits: number;
-  topPx: number;
-  heightPx: number;
-};
-
-type TurnHeaderBoardLayout = {
-  turnKey: string;
-  label: string;
-  topPx: number;
-};
-
-function clampWidthUnitsValue(value: number): number {
-  return Math.max(
-    MIN_ARTIFACT_WIDTH_UNITS,
-    Math.min(MAX_ARTIFACT_WIDTH_UNITS, Math.round(value)),
-  );
-}
-
-function estimateBoardCardHeight(
-  artifact: ArtifactPayload,
-  contentHeight: number,
-  showCode: boolean,
-): number {
-  const hasCode =
-    showCode && typeof artifact.meta?.code === "string" && artifact.meta.code.length > 0;
-  return (
-    BOARD_CARD_HEADER_PX +
-    BOARD_CARD_BODY_PADDING_PX +
-    contentHeight +
-    (hasCode ? BOARD_CARD_CODE_PX : 0)
-  );
-}
-
-function computeBoardLayouts(
-  artifacts: ArtifactPayload[],
-  turnHeaders: Array<{ turnKey: string; label: string; firstArtifactId: string }>,
-  widthMap: Record<string, number>,
-  heightMap: Record<string, number>,
-  colStartMap: Record<string, number>,
-  measuredHeights: Record<string, number>,
-  showCode: boolean,
-  estimateHeight: (artifact: ArtifactPayload) => number,
-): {
-  layouts: Map<string, ArtifactBoardLayout>;
-  turnHeaderLayouts: TurnHeaderBoardLayout[];
-  boardHeight: number;
-} {
-  const columnBottom = Array.from({ length: GRID_COLUMNS }, () => 0);
-  const layouts = new Map<string, ArtifactBoardLayout>();
-  const turnHeaderLayouts: TurnHeaderBoardLayout[] = [];
-  const headerByFirstArtifactId = new Map(
-    turnHeaders.map((header) => [header.firstArtifactId, header]),
-  );
-
-  for (const artifact of artifacts) {
-    const sectionHeader = headerByFirstArtifactId.get(artifact.id);
-    if (sectionHeader) {
-      const headerTopPx = Math.max(0, ...columnBottom);
-      turnHeaderLayouts.push({
-        turnKey: sectionHeader.turnKey,
-        label: sectionHeader.label,
-        topPx: headerTopPx,
-      });
-      const belowHeader =
-        headerTopPx + BOARD_TURN_HEADER_HEIGHT_PX + BOARD_COLUMN_GAP_PX;
-      for (let col = 0; col < GRID_COLUMNS; col += 1) {
-        columnBottom[col] = belowHeader;
-      }
-    }
-    const widthUnits = clampWidthUnitsValue(widthMap[artifact.id] ?? DEFAULT_ARTIFACT_WIDTH_UNITS);
-    const contentHeight = heightMap[artifact.id] ?? estimateHeight(artifact);
-    const heightPx =
-      measuredHeights[artifact.id] ??
-      estimateBoardCardHeight(artifact, contentHeight, showCode);
-    const preferredColStart = colStartMap[artifact.id];
-
-    let colStart = 0;
-    let topPx = 0;
-
-    if (preferredColStart != null) {
-      colStart = Math.max(
-        0,
-        Math.min(GRID_COLUMNS - widthUnits, Math.round(preferredColStart) - 1),
-      );
-      for (let col = colStart; col < colStart + widthUnits; col += 1) {
-        topPx = Math.max(topPx, columnBottom[col]);
-      }
-    } else {
-      let bestTop = Number.POSITIVE_INFINITY;
-      for (let candidateCol = 0; candidateCol <= GRID_COLUMNS - widthUnits; candidateCol += 1) {
-        let candidateTop = 0;
-        for (let col = candidateCol; col < candidateCol + widthUnits; col += 1) {
-          candidateTop = Math.max(candidateTop, columnBottom[col]);
-        }
-        if (
-          candidateTop < bestTop ||
-          (candidateTop === bestTop && candidateCol < colStart)
-        ) {
-          bestTop = candidateTop;
-          colStart = candidateCol;
-        }
-      }
-      topPx = bestTop;
-    }
-
-    layouts.set(artifact.id, {
-      colStart: colStart + 1,
-      widthUnits,
-      topPx,
-      heightPx,
-    });
-
-    const nextBottom = topPx + heightPx + BOARD_COLUMN_GAP_PX;
-    for (let col = colStart; col < colStart + widthUnits; col += 1) {
-      columnBottom[col] = nextBottom;
-    }
-  }
-
-  const boardHeight = Math.max(0, ...columnBottom);
-  return { layouts, turnHeaderLayouts, boardHeight };
-}
-
-function estimateAutoHeight(artifact: ArtifactPayload): number {
-  if (artifact.type === "plot") {
-    return 440;
-  }
-
-  if (artifact.type === "note" && artifact.data.format === "markdown") {
-    const content = String((artifact.data.data as { content?: unknown })?.content ?? "");
-    const lines = Math.max(1, content.split("\n").length);
-    return Math.max(MIN_ARTIFACT_HEIGHT, Math.min(MAX_ARTIFACT_HEIGHT, 180 + lines * 18));
-  }
-
-  if (artifact.type === "table" && artifact.data.format === "split") {
-    const raw = artifact.data.data as { data?: unknown[][]; columns?: unknown[] };
-    const rows = Array.isArray(raw.data) ? raw.data.length : 0;
-    const cols = Array.isArray(raw.columns) ? raw.columns.length : 0;
-    const headerAndPadding = 120;
-    const rowHeight = 34;
-    return Math.max(
-      140,
-      Math.min(
-        MAX_ARTIFACT_HEIGHT,
-        headerAndPadding + Math.min(rows, 20) * rowHeight + Math.min(cols, 12) * 4,
-      ),
-    );
-  }
-
-  if (artifact.type === "value" && artifact.data.format === "value") {
-    const data = artifact.data.data as Record<string, unknown>;
-    const entries = Object.keys(data ?? {}).length;
-    return Math.max(MIN_ARTIFACT_HEIGHT, Math.min(MAX_ARTIFACT_HEIGHT, 170 + entries * 40));
-  }
-
-  const jsonLength = JSON.stringify(artifact.data.data ?? "").length;
-  return Math.max(MIN_ARTIFACT_HEIGHT, Math.min(MAX_ARTIFACT_HEIGHT, 200 + Math.min(jsonLength, 4500) / 14));
 }
 
 type ConnectionFormState = {
@@ -451,10 +296,12 @@ export function DashboardPanel(props: Props) {
     activeSource,
     sources,
     showCode,
+    showRagErrors,
     onUpload,
     onRefreshSession,
     onPinArtifactIds,
     onUnpinArtifact,
+    onAsk,
   } = props;
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -482,6 +329,12 @@ export function DashboardPanel(props: Props) {
   const [connections, setConnections] = useState<DBConnection[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(false);
   const [sourceError, setSourceError] = useState<string | null>(null);
+  const visibleSourceError =
+    sourceError &&
+    (showRagErrors ||
+      !sourceError.toLowerCase().includes("rag integration is disabled or not configured"))
+      ? sourceError
+      : null;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
@@ -518,6 +371,7 @@ export function DashboardPanel(props: Props) {
   const [artifactColStartMap, setArtifactColStartMap] = useState<Record<string, number>>({});
   const [measuredCardHeights, setMeasuredCardHeights] = useState<Record<string, number>>({});
   const [boardExporting, setBoardExporting] = useState<BoardExportFormat | null>(null);
+  const [exportingArtifactId, setExportingArtifactId] = useState<string | null>(null);
   const [turnTitleOverrides, setTurnTitleOverrides] = useState<BoardTurnTitleOverrides>({});
   const [renamingTurnHeader, setRenamingTurnHeader] = useState<TurnHeaderBoardLayout | null>(null);
   const [turnTitleDraft, setTurnTitleDraft] = useState("");
@@ -557,6 +411,17 @@ export function DashboardPanel(props: Props) {
     () => selectedArtifactIds.map((id) => artifactById.get(id)).filter(Boolean) as ArtifactPayload[],
     [artifactById, selectedArtifactIds],
   );
+  const planfactDashboardArtifact = useMemo(
+    () => activeSource.source_type === "planfact"
+      ? [...baseArtifacts].reverse().find((artifact) =>
+          artifact.meta?.source_type === "planfact" &&
+          artifact.meta?.producer_tool === "planfact_first_look" &&
+          artifact.meta?.report_kind === "dashboard" &&
+          artifact.data?.format === "json" &&
+          artifact.data.data != null)
+      : undefined,
+    [activeSource.source_type, baseArtifacts],
+  );
   const visibleConnections = useMemo(
     () =>
       connections.filter((connection) => {
@@ -570,9 +435,21 @@ export function DashboardPanel(props: Props) {
     [connections],
   );
   const visibleArtifacts = useMemo(() => {
-    const filtered = selectedArtifacts;
+    const filtered = selectedArtifacts.filter((artifact) => artifact.id !== planfactDashboardArtifact?.id);
     if (filtered.length <= 1) {
       return filtered;
+    }
+    const isPlanfactReport = filtered.every(
+      (artifact) =>
+        artifact.meta?.source_type === "planfact" &&
+        artifact.meta?.producer_tool === "planfact_first_look",
+    );
+    if (isPlanfactReport) {
+      return [...filtered].sort((left, right) => {
+        const typeOrder = (artifact: ArtifactPayload) => artifact.type === "table" ? 0 : artifact.type === "plot" ? 1 : 2;
+        return typeOrder(left) - typeOrder(right) ||
+          Number(left.meta?.story_order ?? 999) - Number(right.meta?.story_order ?? 999);
+      });
     }
     const byId = new Map(filtered.map((artifact) => [artifact.id, artifact]));
     const ordered: ArtifactPayload[] = [];
@@ -589,7 +466,7 @@ export function DashboardPanel(props: Props) {
       }
     }
     return ordered;
-  }, [artifactOrderIds, selectedArtifacts]);
+  }, [artifactOrderIds, planfactDashboardArtifact?.id, selectedArtifacts]);
   const openProjectReportArtifacts = useMemo(
     () =>
       baseArtifacts.filter(
@@ -609,14 +486,15 @@ export function DashboardPanel(props: Props) {
   );
 
   const rawBoardTurnHeaders = useMemo(
-    () =>
-      buildBoardTurnHeaders(
+    () => planfactDashboardArtifact
+      ? []
+      : buildBoardTurnHeaders(
         visibleArtifacts.map((artifact) => artifact.id),
         baseArtifacts,
         messages,
         sessionId,
       ),
-    [baseArtifacts, messages, sessionId, visibleArtifacts],
+    [baseArtifacts, messages, planfactDashboardArtifact, sessionId, visibleArtifacts],
   );
   const boardTurnHeaders = useMemo(
     () => applyBoardTurnTitleOverrides(rawBoardTurnHeaders, turnTitleOverrides),
@@ -822,6 +700,10 @@ export function DashboardPanel(props: Props) {
   useEffect(() => {
     if (activeSource.source_type === "csv") {
       setSourceSection("csv");
+      return;
+    }
+    if (activeSource.source_type === "planfact") {
+      setSourceSection("planfact");
       return;
     }
     if (activeSource.source_type === "rag") {
@@ -1303,8 +1185,7 @@ export function DashboardPanel(props: Props) {
     setSourceError(null);
     try {
       await bindDbConnectionSource(sessionId, connection.id);
-      await onRefreshSession();
-      await loadConnections();
+      await Promise.all([onRefreshSession(), loadConnections()]);
     } catch (error) {
       setSourceError(summarizeError(error));
     } finally {
@@ -1449,7 +1330,7 @@ export function DashboardPanel(props: Props) {
   function startPointerResize(
     artifact: ArtifactPayload,
     mode: "width" | "height" | "both" | "width-left",
-    event: MouseEvent,
+    event: ReactMouseEvent,
   ): void {
     event.preventDefault();
     event.stopPropagation();
@@ -1461,7 +1342,7 @@ export function DashboardPanel(props: Props) {
     const initialColStart =
       artifactColStartMap[artifact.id] ?? initialLayout?.colStart ?? 1;
 
-    const handleMove = (moveEvent: MouseEvent) => {
+    const handleMove = (moveEvent: globalThis.MouseEvent) => {
       if (mode === "width" || mode === "both") {
         const deltaX = moveEvent.clientX - initialX;
         const nextWidth = clampWidthUnits(initialWidth + deltaX / 72);
@@ -1544,11 +1425,29 @@ export function DashboardPanel(props: Props) {
           ]
         : buildBoardExportSections(exportArtifacts, boardTurnHeaders);
       const title = isOpenProjectMode ? "Отчет OpenProject по проектам и списаниям" : boardExportTitle;
-      await exportBoardReport(format, exportArtifacts, title, sections);
+      await exportBoardReport(format, exportArtifacts, title, sections, sessionId);
     } catch (error) {
       setSourceError(summarizeError(error));
     } finally {
       setBoardExporting(null);
+    }
+  }
+
+  async function handleExportArtifact(artifact: ArtifactPayload): Promise<void> {
+    setExportingArtifactId(artifact.id);
+    setSourceError(null);
+    try {
+      await exportBoardReport(
+        "xlsx",
+        [artifact],
+        artifact.text || "Табличный артефакт",
+        [],
+        sessionId,
+      );
+    } catch (error) {
+      setSourceError(summarizeError(error));
+    } finally {
+      setExportingArtifactId(null);
     }
   }
 
@@ -1675,6 +1574,9 @@ export function DashboardPanel(props: Props) {
   function renderArtifactCard(artifact: ArtifactPayload, index: number) {
     const layout = artifactBoardLayouts.get(artifact.id);
     const contentHeight = artifactHeightMap[artifact.id] ?? estimateAutoHeight(artifact);
+    const artifactTitle = artifact.id === "planfact_first_look_plan_to_fact_waterfall"
+      ? "Вклад статей в отклонение"
+      : artifact.text || artifact.type;
     const isDropTarget =
       draggedArtifactId &&
       draggedArtifactId !== artifact.id &&
@@ -1738,7 +1640,7 @@ export function DashboardPanel(props: Props) {
                 <GripVertical className="h-3.5 w-3.5 shrink-0" />
                 <span className="min-w-0 normal-case tracking-normal">
                   <span className="block truncate font-semibold">
-                    {artifact.text || artifact.type}
+                    {artifactTitle}
                   </span>
                   {artifact.type === "note" &&
                   typeof artifact.meta?.user_question === "string" &&
@@ -1749,14 +1651,31 @@ export function DashboardPanel(props: Props) {
                   ) : null}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => handleRemoveFromBoard(artifact.id)}
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-rose-500/10 hover:text-rose-500"
-                title="Удалить с доски"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex shrink-0 items-center gap-0.5">
+                {artifact.type === "table" ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleExportArtifact(artifact)}
+                    disabled={exportingArtifactId !== null || boardExporting !== null}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-primary/10 hover:text-primary disabled:opacity-50"
+                    title="Скачать таблицу в Excel"
+                  >
+                    {exportingArtifactId === artifact.id ? (
+                      <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileDown className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => handleRemoveFromBoard(artifact.id)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-rose-500/10 hover:text-rose-500"
+                  title="Удалить с доски"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
 
             <div className="relative px-1 pb-1 pt-2">
@@ -2039,14 +1958,14 @@ export function DashboardPanel(props: Props) {
               exit={{ opacity: 0, y: -8 }}
               className="flex h-full min-h-0 flex-col"
             >
-              {sourceError && activeTab === "visualizations" ? (
+              {visibleSourceError && activeTab === "visualizations" ? (
                 <div className="mb-3 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-200">
-                  {sourceError}
+                  {visibleSourceError}
                 </div>
               ) : null}
               {isOpenProjectMode ? (
                 renderOpenProjectReport()
-              ) : visibleArtifacts.length === 0 ? (
+              ) : visibleArtifacts.length === 0 && !planfactDashboardArtifact ? (
                 <div className="flex min-h-[420px] items-center justify-center rounded-[28px] border border-dashed border-border/30 bg-card/35 p-10 text-center shadow-sm">
                   <div className="max-w-[520px]">
                     <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-3xl bg-primary/10 text-primary">
@@ -2063,6 +1982,9 @@ export function DashboardPanel(props: Props) {
                   ref={boardScrollRef}
                   className="custom-scrollbar min-h-0 flex-1 overflow-y-auto pr-2"
                 >
+                  {planfactDashboardArtifact ? (
+                    <PlanfactFirstLook artifact={planfactDashboardArtifact} onAsk={onAsk} />
+                  ) : null}
                   <div
                     className="relative pb-2"
                     style={{ minHeight: Math.max(artifactBoardHeight, 240) }}
@@ -2083,7 +2005,7 @@ export function DashboardPanel(props: Props) {
               exit={{ opacity: 0, y: -8 }}
               className="custom-scrollbar flex h-full min-h-0 flex-col space-y-6 overflow-y-auto pr-2"
             >
-              <div className="grid gap-4 xl:grid-cols-4">
+              <div className="grid gap-4 xl:grid-cols-5">
                 <div className="flex min-h-[240px] flex-col items-center justify-center rounded-[28px] border border-dashed border-border/30 bg-card/35 p-7 text-center shadow-sm">
                   <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-3xl bg-primary/10 text-primary">
                     <Upload className="h-7 w-7" />
@@ -2100,6 +2022,25 @@ export function DashboardPanel(props: Props) {
                   >
                     <Upload className="h-4 w-4" />
                     Загрузить CSV/XLSX
+                  </button>
+                </div>
+
+                <div className="flex min-h-[240px] flex-col items-center justify-center rounded-[28px] border border-dashed border-border/30 bg-card/35 p-7 text-center shadow-sm">
+                  <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-3xl bg-primary/10 text-primary">
+                    <FileText className="h-7 w-7" />
+                  </div>
+                  <h3 className="text-xl font-bold tracking-tight">План-факт</h3>
+                  <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
+                    Выберите две выгрузки, система сама определит план и факт.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setSourceSection("planfact")}
+                    disabled={isOpenProjectMode}
+                    className="mt-6 inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-5 py-3 font-bold text-primary-foreground shadow-lg shadow-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <FileText className="h-4 w-4" />
+                    Настроить
                   </button>
                 </div>
 
@@ -2260,6 +2201,23 @@ export function DashboardPanel(props: Props) {
                 >
                   <FileText className="h-4 w-4" />
                   Загрузки CSV/XLSX
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isOpenProjectMode) {
+                      setSourceSection("planfact");
+                    }
+                  }}
+                  disabled={isOpenProjectMode}
+                  className={`inline-flex items-center gap-2 rounded-[14px] px-4 py-2.5 text-sm font-bold transition-all ${
+                    sourceSection === "planfact"
+                      ? "bg-card text-foreground shadow-sm ring-1 ring-border/20 dark:ring-white"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <FileUp className="h-4 w-4" />
+                  Plan-fact
                 </button>
                 <button
                   type="button"
@@ -2453,6 +2411,12 @@ export function DashboardPanel(props: Props) {
                     ) : null}
                   </div>
               </div>
+              ) : sourceSection === "planfact" ? (
+                <PlanfactSourcePanel
+                  sessionId={sessionId}
+                  disabled={isOpenProjectMode}
+                  onConfirmed={props.onRefreshSession}
+                />
               ) : sourceSection === "openproject" ? (
               <div className="rounded-[28px] border border-border/50 bg-card/45 p-6 shadow-sm">
                 <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -2758,9 +2722,9 @@ export function DashboardPanel(props: Props) {
               </div>
               )}
 
-              {sourceError ? (
+              {visibleSourceError ? (
                 <div className="rounded-[24px] border border-rose-500/20 bg-rose-500/10 px-5 py-4 text-sm text-rose-700 dark:text-rose-200">
-                  {sourceError}
+                  {visibleSourceError}
                 </div>
               ) : null}
             </motion.div>
@@ -3018,9 +2982,9 @@ export function DashboardPanel(props: Props) {
               </div>
             </div>
 
-            {sourceError ? (
+            {visibleSourceError ? (
               <div className="mt-5 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-700 dark:text-rose-200">
-                {sourceError}
+                {visibleSourceError}
               </div>
             ) : null}
 

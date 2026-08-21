@@ -1,0 +1,10 @@
+services:
+  backend:
+    networks:
+      - default
+      - semantic_data
+
+networks:
+  semantic_data:
+    external: true
+    name: ${SEMANTIC_DOCKER_NETWORK}

@@ -11,20 +11,21 @@ from typing import Any, Literal
 import pandas as pd
 from langchain_core.messages import HumanMessage
 
-from backend.agent.context_manager import AgentContextBuilder
+from backend.agent.context_manager import AgentContextBuilder, AgentContextRequest
 from backend.agent.dependencies import AgentRuntimeDependencies
 from backend.agent.graph.builder import build_query_graph
 from backend.agent.llm_client import AnyReasoningLLM
-from backend.agent.models import AgentResponse, QueryCacheEntry
+from backend.agent.models import AgentOutcome, AgentResponse, ErrorCategory, QueryCacheEntry
 from backend.agent.runtime_contracts import AgentRunRequest, AgentRunResult
 from backend.agent.runtime_llm import build_runtime_llm
-from backend.agent.services.agent_prompt_context import AgentPromptContextBuilder
 from backend.agent.services.finalization import fallback_text
 from backend.agent.services.message_builder import truncate
 from backend.agent.services.runtime_effects import (
     RuntimeEffectsBuilder,
     RuntimeEffectsRequest,
 )
+from backend.artifacts.bridge import execution_data_is_complete
+from backend.artifacts.execution import ExecutionArtifact
 from backend.auth.user_memory import UserMemory
 from backend.core import redis_cache
 from backend.core.config import DEPTH_PROFILES, Settings
@@ -34,7 +35,6 @@ from backend.domain_extensions import DomainExtensionRegistry, get_domain_extens
 from backend.integrations.anomaly_planfact import AnomalyPlanfactIntegrationService
 from backend.integrations.forecast import ForecastIntegrationService
 from backend.integrations.rag import RAGService
-from backend.integrations.search import SearchIntegrationService
 from backend.observability.phoenix import record_llm_usage_on_active_span
 from backend.sessions.session_memory import SessionArtifactRef, SessionMemory, StructuredSessionMemory
 from backend.skills import SkillRegistry
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 _QUERY_CACHE_PREFIX = "agent:query:"
 
 _INFRASTRUCTURE_FINDING_TOOL_NAMES = frozenset(
-    {"database_tool", "planner_tool", "get_tool_instructions"}
+    {"database_tool", "planner_tool", "get_tool_instructions", "update_plan"}
 )
 
 
@@ -66,12 +66,41 @@ def _extract_findings_from_actions(
     return findings
 
 
+def _durable_artifact_refs(
+    artifacts: list[Any],
+    handles: list[Any],
+    *,
+    turn_index: int,
+) -> list[SessionArtifactRef]:
+    summaries = {handle.name: handle.summary for handle in handles}
+    refs: list[SessionArtifactRef] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, ExecutionArtifact):
+            continue
+        if not execution_data_is_complete(artifact) or not artifact.reusable:
+            continue
+        schema = artifact.schema or artifact.build_schema()
+        refs.append(
+            SessionArtifactRef(
+                id=str(artifact.id),
+                name=str(artifact.name),
+                type="table",
+                turn_index=turn_index,
+                schema=dict(schema.dtypes) if schema is not None else None,
+                row_count=int(schema.row_count) if schema is not None else None,
+                summary=summaries.get(artifact.name),
+                producer_tool=str(artifact.producer_tool or "") or None,
+                parent_ids=list(artifact.parent_ids),
+            )
+        )
+    return refs
+
+
 class AgentRunner:
     def __init__(
         self,
         settings: Settings | None = None,
         db_runtime_service: DBRuntimeService | None = None,
-        search_service: SearchIntegrationService | None = None,
         forecast_service: ForecastIntegrationService | None = None,
         anomaly_planfact_service: AnomalyPlanfactIntegrationService | None = None,
         rag_service: RAGService | None = None,
@@ -84,6 +113,11 @@ class AgentRunner:
         mcp_tool_provider: Any | None = None,
         mcp_server_configs: dict[str, Any] | None = None,
         mcp_tool_descriptors: list[Any] | None = None,
+        semantic_catalog_service: Any | None = None,
+        semantic_generation_service: Any | None = None,
+        manifest_store: Any | None = None,
+        session_store: Any | None = None,
+        blob_store: Any | None = None,
         override_store: Any | None = None,
     ) -> None:
         self.settings = settings or default_settings
@@ -91,7 +125,6 @@ class AgentRunner:
             set(enabled_analytical_skill_ids) if enabled_analytical_skill_ids is not None else None
         )
         self.db_runtime_service = db_runtime_service
-        self.search_service = search_service
         self.forecast_service = forecast_service
         self.anomaly_planfact_service = anomaly_planfact_service
         self.rag_service = rag_service
@@ -99,6 +132,11 @@ class AgentRunner:
         self.mcp_tool_provider = mcp_tool_provider
         self.mcp_server_configs = dict(mcp_server_configs or {})
         self.mcp_tool_descriptors = list(mcp_tool_descriptors or [])
+        self.semantic_catalog_service = semantic_catalog_service
+        self.semantic_generation_service = semantic_generation_service
+        self.manifest_store = manifest_store
+        self.session_store = session_store
+        self.blob_store = blob_store
         self.user_memory: UserMemory = user_memory or UserMemory(profile="", notes="")
         self.session_memory: SessionMemory = session_memory or SessionMemory()
         self._user_memory_buffer: list[str] = []
@@ -107,11 +145,8 @@ class AgentRunner:
         if override_store is not None:
             self.skill_registry.override_store = override_store
         self.skill_registry.load()
-        self.domain_extension_registry = (
-            domain_extension_registry or get_domain_extension_registry()
-        )
+        self.domain_extension_registry = domain_extension_registry or get_domain_extension_registry()
         self._tool_registry = ToolRegistry.from_services(
-            search_service=search_service,
             forecast_service=forecast_service,
             anomaly_planfact_service=anomaly_planfact_service,
             rag_service=rag_service,
@@ -121,12 +156,10 @@ class AgentRunner:
             mcp_tool_provider=self.mcp_tool_provider,
             mcp_server_configs=self.mcp_server_configs,
             mcp_tool_descriptors=self.mcp_tool_descriptors,
+            semantic_catalog_service=self.semantic_catalog_service,
+            semantic_generation_service=self.semantic_generation_service,
         )
         self._depth_profile = self._resolve_depth_profile()
-        self._prompt_context_builder = AgentPromptContextBuilder(
-            skill_registry=self.skill_registry,
-            enabled_analytical_skill_ids=self.enabled_analytical_skill_ids,
-        )
         self.dependencies = AgentRuntimeDependencies(
             settings=self.settings,
             tool_registry=self._tool_registry,
@@ -135,12 +168,15 @@ class AgentRunner:
             user_memory=self.user_memory,
             session_memory=self.session_memory,
             depth_profile=self._depth_profile,
-            prompt_context_builder=self._prompt_context_builder,
             db_runtime_service=self.db_runtime_service,
-            search_service=self.search_service,
             forecast_service=self.forecast_service,
             anomaly_planfact_service=self.anomaly_planfact_service,
             rag_service=self.rag_service,
+            semantic_catalog_service=self.semantic_catalog_service,
+            semantic_generation_service=self.semantic_generation_service,
+            manifest_store=self.manifest_store,
+            session_store=self.session_store,
+            blob_store=self.blob_store,
             allowed_tool_keys=self.allowed_tool_keys,
             enabled_analytical_skill_ids=self.enabled_analytical_skill_ids,
             mcp_tool_provider=self.mcp_tool_provider,
@@ -157,7 +193,6 @@ class AgentRunner:
     def _resolve_depth_profile(self) -> dict[str, Any]:
         depth = self.settings.agent_analysis_depth
         return DEPTH_PROFILES.get(depth, DEPTH_PROFILES["light"])
-
 
     # ── Utility: LLM / data context ──────────────────────────────────────────
 
@@ -218,17 +253,34 @@ class AgentRunner:
         use_history: bool,
         include_reasoning: bool,
         selected_skill_ids: list[str] | None = None,
+        requested_tool_key: str | None = None,
+        trace_context: dict[str, Any] | None = None,
+        session_source: dict[str, Any] | None = None,
+        registry_snapshot_fingerprint: str = "",
     ) -> str:
+        source_json = json.dumps(
+            session_source or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
         payload = {
             "model": self.settings.llm_model,
             "dataset": self._dataset_signature(df),
+            "user_id": (trace_context or {}).get("user_id"),
+            "session_id": (trace_context or {}).get("session_id"),
+            "source": hashlib.sha1(source_json.encode("utf-8", errors="ignore")).hexdigest(),
             "prompt": truncate(prompt, 600),
             "history": self._history_cache_signature(history, use_history),
             "use_history": bool(use_history),
             "include_reasoning": bool(include_reasoning),
             "analysis_depth": str(self.settings.agent_analysis_depth or "light"),
             "selected_skill_ids": list(selected_skill_ids or []),
+            "requested_tool_key": requested_tool_key,
+            "registry_snapshot": registry_snapshot_fingerprint,
             "max_steps": self.settings.agent_max_steps,
+            "anomaly_check_enabled": self.settings.anomaly_check_enabled,
+            "always_use_analysis_plan": self.settings.always_use_analysis_plan,
             "step_timeout": self.settings.agent_step_timeout_sec,
             "inner_recursion_limit": self.settings.agent_inner_recursion_limit,
             "max_tools_per_cycle": self.settings.max_tools_per_cycle,
@@ -258,9 +310,7 @@ class AgentRunner:
     def _cache_set(self, key: str, response: AgentResponse) -> None:
         if not self.settings.agent_cache_enabled:
             return
-        self._query_cache[key] = QueryCacheEntry(
-            created_at=time.time(), response=copy.deepcopy(response)
-        )
+        self._query_cache[key] = QueryCacheEntry(created_at=time.time(), response=copy.deepcopy(response))
         redis_cache.set_pickle(
             f"{_QUERY_CACHE_PREFIX}{key}",
             self._query_cache[key],
@@ -276,6 +326,28 @@ class AgentRunner:
 
     # -- Public API --
 
+    def is_tool_available(
+        self,
+        tool_key: str,
+        *,
+        df: pd.DataFrame | None,
+        session_source: dict[str, Any],
+        trace_context: dict[str, Any],
+    ) -> bool:
+        prepared = self.dependencies.context_builder.build(
+            AgentContextRequest(
+                state={
+                    "df": df,
+                    "prompt": "",
+                    "history": [],
+                    "trace_context": trace_context,
+                    "session_source": session_source,
+                    "selected_skill_ids": [],
+                }
+            )
+        )
+        return any(getattr(tool, "name", None) == tool_key for tool in prepared.state_update.get("tools", []))
+
     def run_query(
         self,
         df: pd.DataFrame | None,
@@ -287,6 +359,7 @@ class AgentRunner:
         trace_context: dict[str, Any] | None = None,
         session_source: dict[str, Any] | None = None,
         selected_skill_ids: list[str] | None = None,
+        requested_tool_key: str | None = None,
     ) -> AgentResponse:
         return self.run(
             AgentRunRequest(
@@ -299,6 +372,7 @@ class AgentRunner:
                 trace_context=trace_context or {},
                 session_source=session_source or {},
                 selected_skill_ids=selected_skill_ids or [],
+                requested_tool_key=requested_tool_key,
             )
         ).response
 
@@ -312,6 +386,7 @@ class AgentRunner:
         trace_context = request.trace_context
         session_source = request.session_source
         selected_skill_ids = request.selected_skill_ids
+        requested_tool_key = request.requested_tool_key
         cancel_event = request.cancel_event
 
         resolved_skill_ids = [
@@ -323,6 +398,23 @@ class AgentRunner:
         # evaluate is designed for preview without side-effects, and stream is real-time.
         cache_allowed = self.settings.agent_cache_enabled and request_kind == "query"
 
+        try:
+            prepared = self._prepare_request(
+                request.model_copy(update={"selected_skill_ids": resolved_skill_ids})
+            )
+        except Exception:
+            logger.exception("agent context preparation failed for prompt=%r", prompt[:60])
+            return AgentRunResult(
+                response=AgentResponse(
+                    final_text=fallback_text(prompt, df),
+                    reasoning="Agent context preparation failed.",
+                    artifacts=[],
+                    route="analysis",
+                    outcome=AgentOutcome.failed(ErrorCategory.INTERNAL),
+                )
+            )
+        snapshot = prepared.state_update.get("registry_snapshot")
+        snapshot_fingerprint = str(getattr(snapshot, "fingerprint", "") or "")
         cache_key = self._query_cache_key(
             df=df,
             prompt=prompt,
@@ -330,6 +422,10 @@ class AgentRunner:
             use_history=use_history,
             include_reasoning=include_reasoning,
             selected_skill_ids=resolved_skill_ids,
+            requested_tool_key=requested_tool_key,
+            trace_context=trace_context,
+            session_source=session_source,
+            registry_snapshot_fingerprint=snapshot_fingerprint,
         )
         if cache_allowed:
             cached = self._cache_get(cache_key)
@@ -337,20 +433,23 @@ class AgentRunner:
                 return AgentRunResult(response=cached)
 
         # Graph: prepare → agent → finalize (3 supersteps max).
+        graph_state = {
+            "df": df,
+            "prompt": prompt,
+            "history": history,
+            "use_history": use_history,
+            "include_reasoning": include_reasoning,
+            "callbacks": callbacks,
+            "trace_context": trace_context or {},
+            "session_source": session_source or {},
+            "selected_skill_ids": resolved_skill_ids,
+            "requested_tool_key": requested_tool_key,
+            "cancel_event": cancel_event,
+        }
+        graph_state.update(prepared.state_update)
         try:
             result = self._graph.invoke(
-                {
-                    "df": df,
-                    "prompt": prompt,
-                    "history": history,
-                    "use_history": use_history,
-                    "include_reasoning": include_reasoning,
-                    "callbacks": callbacks,
-                    "trace_context": trace_context or {},
-                    "session_source": session_source or {},
-                    "selected_skill_ids": resolved_skill_ids,
-                    "cancel_event": cancel_event,
-                },
+                graph_state,
                 config={"recursion_limit": 20},
             )
         except Exception:
@@ -360,9 +459,8 @@ class AgentRunner:
                 reasoning=None,
                 artifacts=[],
                 route="analysis",
+                outcome=AgentOutcome.failed(ErrorCategory.GRAPH),
             )
-            if cache_allowed:
-                self._cache_set(cache_key, fallback)
             fallback.runtime_effects = self._runtime_effects_builder.build(
                 RuntimeEffectsRequest(
                     session_memory=self.session_memory,
@@ -380,6 +478,7 @@ class AgentRunner:
                 reasoning=None,
                 artifacts=[],
                 route="analysis",
+                outcome=AgentOutcome.failed(ErrorCategory.GRAPH),
             )
 
         # Flush working_memory → StructuredSessionMemory (Task 4)
@@ -388,20 +487,15 @@ class AgentRunner:
         if working_memory is not None and isinstance(self.session_memory, StructuredSessionMemory):
             structured = self.session_memory
             existing_ids = {r.id for r in structured.artifact_index}
-            for handle in working_memory.artifact_handles:
-                if handle.id in existing_ids:
+            for ref in _durable_artifact_refs(
+                response.artifacts,
+                working_memory.artifact_handles,
+                turn_index=structured.turn_count,
+            ):
+                if ref.id in existing_ids:
                     continue
-                ref = SessionArtifactRef(
-                    id=handle.id,
-                    name=handle.name,
-                    type=handle.type,
-                    turn_index=structured.turn_count,
-                    schema=handle.schema,
-                    row_count=handle.row_count,
-                    summary=handle.summary,
-                )
                 structured.artifact_index.append(ref)
-                existing_ids.add(handle.id)
+                existing_ids.add(ref.id)
             # Cap artifact_index at 100 entries (oldest evicted)
             structured.artifact_index = structured.artifact_index[-100:]
             new_findings = _extract_findings_from_actions(
@@ -411,7 +505,7 @@ class AgentRunner:
             structured.key_findings = (structured.key_findings + new_findings)[-30:]
             structured.turn_count += 1
 
-        if cache_allowed:
+        if cache_allowed and response.outcome.cacheable_success and not response.llm_unreachable:
             self._cache_set(cache_key, response)
         response.runtime_effects = self._runtime_effects_builder.build(
             RuntimeEffectsRequest(
@@ -421,6 +515,11 @@ class AgentRunner:
             )
         )
         return AgentRunResult(response=response)
+
+    def _prepare_request(self, request: AgentRunRequest):
+        if self.dependencies.context_builder is None:
+            raise RuntimeError("Agent context builder is not configured")
+        return self.dependencies.context_builder.build(AgentContextRequest(state=request.model_dump()))
 
     def warmup(self) -> None:
         if not self.settings.llm_warmup_enabled:

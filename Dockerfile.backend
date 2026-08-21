@@ -1,5 +1,10 @@
 FROM python:3.11 AS runtime
 
+ARG USE_MIRROR=False
+ARG MIRROR_PIP_INDEX_URL=
+ARG MIRROR_PIP_EXTRA_INDEX_URL=
+ARG MIRROR_PIP_TRUSTED_HOST=
+
 WORKDIR /app
 
 RUN apt-get update \
@@ -14,6 +19,11 @@ COPY certs/ca/ /opt/certs/
 # Install backend runtime dependencies in a separate cacheable layer.
 # This avoids reinstalling dependencies on every source code change.
 RUN set -eux; \
+    if [ "${USE_MIRROR}" = "True" ] || [ "${USE_MIRROR}" = "true" ]; then \
+      export PIP_INDEX_URL="${MIRROR_PIP_INDEX_URL}"; \
+      [ -z "${MIRROR_PIP_EXTRA_INDEX_URL}" ] || export PIP_EXTRA_INDEX_URL="${MIRROR_PIP_EXTRA_INDEX_URL}"; \
+      [ -z "${MIRROR_PIP_TRUSTED_HOST}" ] || export PIP_TRUSTED_HOST="${MIRROR_PIP_TRUSTED_HOST}"; \
+    fi; \
     for attempt in 1 2 3; do \
       python -m pip install --no-cache-dir --upgrade pip && break; \
       if [ "${attempt}" -eq 3 ]; then exit 1; fi; \
@@ -33,7 +43,7 @@ ENV REQUESTS_CA_BUNDLE=/opt/certs/inno_pki_chain.pem
 ENV CURL_CA_BUNDLE=/opt/certs/inno_pki_chain.pem
 
 RUN adduser --disabled-password --gecos "" --no-create-home appuser
-RUN mkdir -p /app/backend_storage && chown -R appuser:appuser /app/backend_storage
+RUN mkdir -p /tmp/llm-data-analyst && chown -R appuser:appuser /tmp/llm-data-analyst
 
 COPY backend ./backend
 COPY skills ./skills

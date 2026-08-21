@@ -1,4 +1,3 @@
-
 from backend.artifacts.artifact import (
     Artifact,
     ArtifactStore,
@@ -10,7 +9,7 @@ from backend.artifacts.artifact import (
     artifact_factory,
 )
 from backend.artifacts.artifact_meta import *  # noqa: F403
-from backend.artifacts.bridge import execution_to_api_payload
+from backend.artifacts.bridge import execution_from_api_payload, execution_to_api_payload
 from backend.artifacts.execution import (
     ExecArtifactSchema,
     ExecArtifactType,
@@ -42,6 +41,7 @@ __all__ = [
     "UserArtifact",
     "artifact_factory",
     # Serialization
+    "execution_from_api_payload",
     "execution_to_api_payload",
     "to_presentation",
 ]

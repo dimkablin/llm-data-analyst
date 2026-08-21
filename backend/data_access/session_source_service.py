@@ -7,11 +7,12 @@ from typing import Any
 
 import pandas as pd
 
+from backend.auth.blob_store import PostgresBlobStore
 from backend.data_access.catalog_refresh import refresh_session_catalog
 from backend.data_access.csv_session_runtime import CSVSessionRuntime
 from backend.notebook.manifest_store import ManifestStore
 from backend.notebook.orchestrator import NotebookOrchestrator
-from backend.notebook.session_source import SessionSource
+from backend.notebook.session_source import SessionSource, is_duckdb_source_type
 from backend.sessions.session_store import SessionStore
 
 
@@ -27,8 +28,16 @@ class SessionSourceService:
     notebook_orchestrator: NotebookOrchestrator
     storage_dir: str | Path
     db_runtime: Any | None = None
+    blob_store: PostgresBlobStore | None = None
+    user_id: int | None = None
 
-    def remove_source(self, *, session_id: str, alias: str) -> SessionSource:
+    def remove_source(
+        self,
+        *,
+        session_id: str,
+        alias: str,
+        refresh_catalog: bool = True,
+    ) -> SessionSource:
         clean_alias = str(alias or "").strip()
         if not clean_alias:
             raise SessionSourceError("Source alias must not be empty")
@@ -38,36 +47,68 @@ class SessionSourceService:
         if removed is None:
             raise SessionSourceError(f"Source '{clean_alias}' not found")
 
-        if removed.source_type == "csv":
-            self._remove_csv_runtime_tables(session_id, removed)
-            self._remove_parquet_file(session_id, removed)
+        if is_duckdb_source_type(removed.source_type):
+            self._remove_duckdb_runtime_tables(session_id, removed)
+            self._remove_source_files(session_id, removed)
 
         self.manifest_store.save(session_id, manifest)
         self._remove_notebook_binding(session_id, clean_alias)
         self._sync_session_state_after_removal(session_id, removed)
-        self._refresh_catalog(session_id)
+        self._remove_persistent_blobs(session_id, removed)
+        if refresh_catalog:
+            self.refresh_catalog(session_id)
         return removed
 
-    def _remove_csv_runtime_tables(self, session_id: str, source: SessionSource) -> None:
+    def _remove_persistent_blobs(self, session_id: str, source: SessionSource) -> None:
+        if self.blob_store is None or self.user_id is None:
+            return
+        if source.blob_id:
+            self.blob_store.delete_many(user_id=self.user_id, blob_ids=[source.blob_id])
+        if source.source_type == "planfact":
+            self.blob_store.delete_for_session(
+                user_id=self.user_id,
+                session_id=session_id,
+                kinds=[
+                    "planfact_plan",
+                    "planfact_fact",
+                    "planfact_mapping",
+                    "planfact_config",
+                    "runtime_snapshot",
+                ],
+            )
+
+    def _remove_duckdb_runtime_tables(self, session_id: str, source: SessionSource) -> None:
         table_names = [
-            str(table_name).strip()
-            for table_name in source.csv_table_names
-            if str(table_name).strip()
+            str(table_name).strip() for table_name in source.csv_table_names if str(table_name).strip()
         ]
         if table_names:
             self.csv_runtime.unregister_tables(session_id, table_names)
 
-    def _remove_parquet_file(self, session_id: str, source: SessionSource) -> None:
-        path = self._source_parquet_path(session_id, source)
-        if path is None:
-            return
-        with suppress(FileNotFoundError):
-            path.unlink()
+    def _remove_source_files(self, session_id: str, source: SessionSource) -> None:
+        for path in self._source_file_paths(session_id, source):
+            with suppress(FileNotFoundError):
+                path.unlink()
+
+    def _source_file_paths(self, session_id: str, source: SessionSource) -> list[Path]:
+        paths: list[Path] = []
+        if source.parquet_path:
+            paths.append(self._resolve_session_path(session_id, source.parquet_path))
+        raw_table_paths = (source.preprocessing_summary or {}).get("duckdb_table_paths")
+        if isinstance(raw_table_paths, dict):
+            paths.extend(
+                self._resolve_session_path(session_id, raw_path)
+                for raw_path in raw_table_paths.values()
+                if str(raw_path or "").strip()
+            )
+        return list(dict.fromkeys(paths))
 
     def _source_parquet_path(self, session_id: str, source: SessionSource) -> Path | None:
         if not source.parquet_path:
             return None
-        path = Path(source.parquet_path)
+        return self._resolve_session_path(session_id, source.parquet_path)
+
+    def _resolve_session_path(self, session_id: str, raw_path: object) -> Path:
+        path = Path(str(raw_path or "").strip())
         if path.is_absolute():
             return path
         return Path(self.storage_dir) / "sessions" / session_id / path
@@ -98,15 +139,15 @@ class SessionSourceService:
                 )
             return
 
-        csv_sources = self._remaining_csv_sources(session_id)
-        if csv_sources:
-            self._sync_remaining_csv_sources(session_id, csv_sources, state.source_type)
+        duckdb_sources = self._remaining_duckdb_sources(session_id)
+        if duckdb_sources:
+            self._sync_remaining_duckdb_sources(session_id, duckdb_sources, state.source_type)
             return
 
         self.csv_runtime.unregister_tables(session_id, state.csv_table_names or [])
         self.store.clear_csv_runtime_state(session_id)
         self.store.clear_dataframe(session_id)
-        if str(state.source_type or "").strip().lower() == "csv":
+        if is_duckdb_source_type(state.source_type):
             self.store.set_source(
                 session_id,
                 source_type=None,
@@ -115,20 +156,20 @@ class SessionSourceService:
                 source_mode=None,
             )
 
-    def _remaining_csv_sources(self, session_id: str) -> list[SessionSource]:
+    def _remaining_duckdb_sources(self, session_id: str) -> list[SessionSource]:
         manifest = self.manifest_store.load(session_id)
-        return [source for source in manifest.sources if source.source_type == "csv"]
+        return [source for source in manifest.sources if is_duckdb_source_type(source.source_type)]
 
-    def _sync_remaining_csv_sources(
+    def _sync_remaining_duckdb_sources(
         self,
         session_id: str,
-        csv_sources: list[SessionSource],
+        duckdb_sources: list[SessionSource],
         active_source_type: str | None,
     ) -> None:
         csv_tables = sorted(
             {
                 table_name
-                for source in csv_sources
+                for source in duckdb_sources
                 for table_name in source.csv_table_names
                 if str(table_name).strip()
             }
@@ -141,11 +182,29 @@ class SessionSourceService:
             csv_table_names=csv_tables,
             csv_expires_at=info.expires_at,
         )
-        label = self._dataset_label(csv_sources)
+        label = self._dataset_label(duckdb_sources)
         self.store.set_dataset_name(session_id, label)
-        self._save_legacy_dataframe_from_first_source(session_id, csv_sources)
-        if str(active_source_type or "").strip().lower() == "csv":
+        self._save_legacy_dataframe_from_first_source(session_id, duckdb_sources)
+        if is_duckdb_source_type(active_source_type):
+            self._bind_duckdb_source(session_id, duckdb_sources, label)
+
+    def _bind_duckdb_source(
+        self,
+        session_id: str,
+        duckdb_sources: list[SessionSource],
+        label: str,
+    ) -> None:
+        first = duckdb_sources[0]
+        if first.source_type == "csv":
             self.store.bind_csv_source(session_id, filename=label)
+            return
+        self.store.set_source(
+            session_id,
+            source_type=first.source_type,
+            source_ref_id=first.alias,
+            source_label=label,
+            source_mode="duckdb",
+        )
 
     def _save_legacy_dataframe_from_first_source(
         self,
@@ -173,7 +232,7 @@ class SessionSourceService:
             return ", ".join(names)
         return f"{', '.join(names[:3])} +{len(names) - 3} more"
 
-    def _refresh_catalog(self, session_id: str) -> None:
+    def refresh_catalog(self, session_id: str) -> None:
         refresh_session_catalog(
             self.store,
             session_id,

@@ -3,7 +3,7 @@ id: forecast_tool
 name: Forecast Tool
 kind: tool
 tool_key: forecast_tool
-description: Run external forecasting over compact prepared time series and return forecast table/plot artifacts.
+description: Call the structured forecast tool with a question and horizon; it returns forecast table/plot artifacts.
 enabled_by_default: true
 triggers:
   - forecast
@@ -19,16 +19,22 @@ Use `forecast_tool` when the user asks for future values from a historical time 
 
 ### API
 
-Input is Python code that calls the helper:
+Call the registered `forecast_tool` directly with structured arguments:
 
-```python
-tool_result = forecast.forecast_result(question="Prepare a historical series with dt and y.", horizon=12)
-tool_result
+```json
+{
+  "question": "Prepare monthly dt and y for attrition and forecast the next 12 months.",
+  "horizon": 12
+}
 ```
+
+This is a tool call, not Python code. Do not use imports or instantiate a
+Python forecasting class in a code sandbox.
 
 ### Final result protocol
 
-Return the helper output as `tool_result`. The helper creates table and plot artifacts.
+The tool returns table and plot artifacts automatically. Do not create
+`tool_result` manually and do not route the call through `pandas_tool`.
 
 ### Runtime rules
 

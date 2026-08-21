@@ -7,7 +7,7 @@ DATAFRAME_BASE_TOOL_KEYS: frozenset[str] = frozenset(
     {"pandas_tool", "plotly_tool"}
 )
 DB_BASE_TOOL_KEYS: frozenset[str] = frozenset({"sql_tool", "database_tool"})
-ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset({"search_tool", "memory"})
+ARTIFACT_OPTIONAL_TOOL_KEYS: frozenset[str] = frozenset({"memory"})
 
 
 def normalize_allowed_tool_keys(
@@ -87,4 +87,3 @@ def has_enabled_data_tools(
     if not required:
         return True
     return any(is_tool_allowed(tool_key, allowed_tool_keys) for tool_key in required)
-

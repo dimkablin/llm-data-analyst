@@ -35,6 +35,8 @@ docker push ghcr.io/your-org/llm-data-analyst-frontend:latest
 
 ```bash
 kubectl create secret generic llm-data-analyst-secrets \
+  --from-literal=APP_DATABASE_URL=postgresql://... \
+  --from-literal=SEMANTIC_METADATA_DATABASE_URL=postgresql://... \
   --from-literal=LLM_API_KEY=... \
   --from-literal=AUTH_DEFAULT_ADMIN_PASSWORD=... \
   --from-literal=DB_CONNECTIONS_ENCRYPTION_KEY_CURRENT=... \

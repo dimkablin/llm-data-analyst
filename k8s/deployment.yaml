@@ -19,16 +19,6 @@ spec:
         app: llm-analyst-backend
         app.kubernetes.io/part-of: llm-data-analyst
     spec:
-      initContainers:
-        - name: init-storage
-          image: busybox:1.36
-          command:
-            - sh
-            - -c
-            - mkdir -p /app/backend_storage && chown -R 1000:1000 /app/backend_storage
-          volumeMounts:
-            - name: backend-storage
-              mountPath: /app/backend_storage
       containers:
         - name: backend
           image: ghcr.io/your-org/llm-data-analyst-backend:latest
@@ -42,8 +32,8 @@ spec:
             - secretRef:
                 name: llm-data-analyst-secrets
           volumeMounts:
-            - name: backend-storage
-              mountPath: /app/backend_storage
+            - name: backend-runtime
+              mountPath: /tmp/llm-data-analyst
             - name: backend-ca
               mountPath: /opt/certs
               readOnly: true
@@ -60,9 +50,8 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
       volumes:
-        - name: backend-storage
-          persistentVolumeClaim:
-            claimName: llm-analyst-backend-storage
+        - name: backend-runtime
+          emptyDir: {}
         - name: backend-ca
           secret:
             secretName: llm-data-analyst-ca

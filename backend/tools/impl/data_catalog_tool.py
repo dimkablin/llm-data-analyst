@@ -4,6 +4,7 @@ The tool exposes the typed source inventory assembled by the agent runtime. It
 does not query user data directly; it only helps the LLM choose the right table
 or source before using sql_tool, database_tool, pandas_tool, or plotly_tool.
 """
+
 from __future__ import annotations
 
 from typing import ClassVar, Literal
@@ -28,15 +29,12 @@ MAX_RESULT_TABLES = 50
 class DataCatalogToolArgs(BaseModel):
     action: CatalogAction = Field(
         ...,
-        description=(
-            "Catalog action: list_sources, list_tables, describe_table, or search."
-        ),
+        description=("Catalog action: list_sources, list_tables, describe_table, or search."),
     )
     table: str | None = Field(
         default=None,
         description=(
-            "Table name for describe_table. Prefer exact qualified_name values, "
-            "for example mart.orders."
+            "Table name for describe_table. Prefer exact qualified_name values, for example mart.orders."
         ),
     )
     source_id: str | None = Field(
@@ -86,20 +84,15 @@ class DataCatalogTool(BaseTool):
         source_type: SourceType | None = None,
         query: str | None = None,
     ) -> str:
-        try:
-            result = self._run_action(
-                action=action,
-                table=table,
-                source_id=source_id,
-                source_type=source_type,
-                query=query,
-            )
-        except Exception as exc:
-            result = DataCatalogToolResult(
-                status="error",
-                action=action,
-                message=f"data_catalog_tool failed: {exc}",
-            )
+        result = self._run_action(
+            action=action,
+            table=table,
+            source_id=source_id,
+            source_type=source_type,
+            query=query,
+        )
+        if result.status == "error":
+            raise ValueError(result.message)
         return result.model_dump_json(indent=2)
 
     def _run_action(
@@ -214,9 +207,7 @@ class DataCatalogTool(BaseTool):
             return DataCatalogToolResult(
                 status="ambiguous",
                 action="describe_table",
-                message=(
-                    "Table name is ambiguous. Use one of the returned qualified_name values."
-                ),
+                message=("Table name is ambiguous. Use one of the returned qualified_name values."),
                 tables=matches[:MAX_RESULT_TABLES],
                 table_count_by_source=self._table_count_by_source(),
             )
@@ -261,11 +252,7 @@ class DataCatalogTool(BaseTool):
         clean_query = str(query or "").strip().lower()
         if not clean_query:
             return tables
-        return [
-            table
-            for table in tables
-            if DataCatalogTool._table_contains(table, clean_query)
-        ]
+        return [table for table in tables if DataCatalogTool._table_contains(table, clean_query)]
 
     @staticmethod
     def _match_tables(
@@ -274,14 +261,10 @@ class DataCatalogTool(BaseTool):
     ) -> list[SourceInventoryTable]:
         needle = table_name.lower()
         if "." not in needle:
-            bare_matches = [
-                table for table in tables if table.table_name.lower() == needle
-            ]
+            bare_matches = [table for table in tables if table.table_name.lower() == needle]
             if bare_matches:
                 return bare_matches
-        qualified_matches = [
-            table for table in tables if table.qualified_name.lower() == needle
-        ]
+        qualified_matches = [table for table in tables if table.qualified_name.lower() == needle]
         if qualified_matches:
             return qualified_matches
         return [table for table in tables if table.table_name.lower() == needle]

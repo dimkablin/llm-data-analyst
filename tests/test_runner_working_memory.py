@@ -4,6 +4,7 @@ These tests exercise user-facing behavior — the shape of data returned by
 _build_tool_message_text and correct accumulation in AnalysisWorkingMemory —
 without spinning up the full agent graph or an LLM.
 """
+
 from __future__ import annotations
 
 import unittest
@@ -66,9 +67,7 @@ class TestBuildToolMessageTextReturnsTuple(unittest.TestCase):
     """test_build_tool_message_text_returns_tuple"""
 
     def setUp(self):
-        self.df = pd.DataFrame(
-            {"region": ["A", "B", "C"], "revenue": [100.0, 200.0, 300.0]}
-        )
+        self.df = pd.DataFrame({"region": ["A", "B", "C"], "revenue": [100.0, 200.0, 300.0]})
         self.result = _table_result("revenue_by_region", self.df)
 
     def test_returns_tuple(self):
@@ -105,21 +104,149 @@ class TestBuildToolMessageTextReturnsTuple(unittest.TestCase):
         """When a tool returns multiple tables, only the first gets a handle (current behaviour)."""
         df1 = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
         df2 = pd.DataFrame({"c": [5, 6]})
-        result = {"schema_version": "1.0", "artifact_type": "table", "items": {"first_table": df1, "second_table": df2}}
+        result = {
+            "schema_version": "1.0",
+            "artifact_type": "table",
+            "items": {"first_table": df1, "second_table": df2},
+        }
+
         # Wrap as a mock result object
         class _R:
             content = ""
             artifact = result
+
         _, handle = _build_tool_message_text(_R())
         self.assertIsNotNone(handle)
         self.assertEqual(handle.name, "first_table")  # documents that only first table gets a handle
 
-    def test_table_preview_includes_numeric_summary_rows(self):
+    def test_bundled_artifact_returns_separate_typed_handles(self):
+        class _R:
+            content = "Forecast ready."
+            artifact: ClassVar[dict] = {
+                "artifact_type": "json",
+                "items": {"forecast": {"rows": []}},
+                "table": {"forecast_rows": pd.DataFrame({"y": [12.5]})},
+                "plot": {"forecast_plot": "<fig>"},
+            }
+
+        text, handles = _build_tool_message_text(_R())
+
+        self.assertIsInstance(handles, list)
+        self.assertEqual(
+            [(handle.name, handle.type) for handle in handles],
+            [
+                ("forecast", "json"),
+                ("forecast_rows", "table"),
+                ("forecast_plot", "plot"),
+            ],
+        )
+        self.assertIn("AVAILABLE_ARTIFACT_HANDLES", text)
+
+    def test_table_preview_contains_only_published_dataframe_rows(self):
         text, _ = _build_tool_message_text(self.result)
 
-        self.assertIn("numeric_summary_rows_appended", text)
-        self.assertIn("__sum__", text)
-        self.assertIn("600", text)
+        self.assertNotIn("numeric_summary_rows_appended", text)
+        self.assertNotIn("__sum__", text)
+        self.assertNotIn("__mean__", text)
+        self.assertIn("100.0", text)
+        self.assertIn("300.0", text)
+
+    def test_table_observation_includes_low_cardinality_values(self):
+        data = pd.DataFrame(
+            {
+                "branch": ["North", "South", "Overall", "North"],
+                "section": ["month", "month", "month", "month"],
+                "value": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+
+        text, _ = _build_tool_message_text(_table_result("member_values", data))
+
+        self.assertIn("low_cardinality_values_in_result", text)
+        self.assertIn('\"branch\": [', text)
+        self.assertIn('\"Overall\"', text)
+        self.assertIn('\"section\": [', text)
+        self.assertIn('\"month\"', text)
+
+    def test_table_observation_profiles_all_null_and_constant_columns(self):
+        data = pd.DataFrame(
+            {
+                "branch": ["A"] * 40 + ["B"] * 40,
+                "score": [None] * 80,
+                "complaints": [0.0] * 80,
+                "value": list(range(80)),
+            }
+        )
+
+        text, _ = _build_tool_message_text(_table_result("joined_values", data))
+
+        self.assertIn("column_value_profile", text)
+        self.assertIn('\"all_null_columns\": [', text)
+        self.assertIn('\"score\"', text)
+        self.assertIn('\"constant_columns\": {', text)
+        self.assertIn('\"complaints\": \"0.0\"', text)
+        self.assertNotIn('\"value\": \"0\"', text)
+        self.assertIn('\"A\"', text)
+        self.assertIn('\"B\"', text)
+        self.assertIn("cannot satisfy the requested grouping dimension", text)
+        self.assertIn("do not relabel or repeat", text)
+        self.assertIn("peer numeric columns", text)
+        self.assertIn("dimension/value rows", text)
+
+    def test_empty_table_tells_model_to_change_query_strategy(self):
+        text, _ = _build_tool_message_text(_table_result("empty_result", self.df.iloc[:0]))
+
+        self.assertIn("EMPTY_RESULT", text)
+        self.assertIn("SELECT DISTINCT", text)
+        self.assertIn("next planned source", text)
+        self.assertIn("replan once", text)
+        self.assertIn("Do not repeat an equivalent query", text)
+
+    def test_truncated_table_tells_model_to_aggregate_in_sql(self):
+        result = _artifact_result(
+            "table",
+            "limited_rows",
+            self.df,
+            {
+                "query": {
+                    "max_rows": 200,
+                    "returned_rows": 200,
+                    "truncated": True,
+                }
+            },
+        )
+
+        text, handle = _build_tool_message_text(result)
+
+        self.assertIn("TRUNCATED_RESULT", text)
+        self.assertIn("Do not analyze this preview", text)
+        self.assertIn("aggregate to the final requested grain in sql", text.lower())
+        self.assertIn("artifact_name does not change", text)
+        self.assertIn("explicit time bucket", text)
+        self.assertIn("SELECT and GROUP BY", text)
+        self.assertIn("truncated", str(handle.summary).lower())
+
+    def test_bounded_table_tells_model_not_to_treat_limit_as_complete(self):
+        result = _artifact_result(
+            "table",
+            "top_rows",
+            self.df,
+            {
+                "query": {
+                    "requested_limit": 2,
+                    "returned_rows": 2,
+                    "truncated": False,
+                    "has_more_rows": True,
+                }
+            },
+        )
+
+        text, handle = _build_tool_message_text(result)
+
+        self.assertIn("BOUNDED_RESULT", text)
+        self.assertIn("exact top-N", text)
+        self.assertIn("do not increase LIMIT incrementally", text)
+        self.assertIn("bounded", str(handle.summary).lower())
 
 
 class TestBuildToolMessageTextNoArtifact(unittest.TestCase):
@@ -283,9 +410,7 @@ class TestWorkingMemoryPlannerSetsPlan(unittest.TestCase):
         mem = AnalysisWorkingMemory(goal="analyse sales")
         plan_text = "Step 1: load data\nStep 2: run SQL\nStep 3: plot results"
         # Simulate what _agent_node does:
-        mem.current_plan = [
-            line.strip() for line in plan_text.splitlines() if line.strip()
-        ]
+        mem.current_plan = [line.strip() for line in plan_text.splitlines() if line.strip()]
         self.assertEqual(len(mem.current_plan), 3)
         self.assertEqual(mem.current_plan[0], "Step 1: load data")
         self.assertEqual(mem.current_plan[2], "Step 3: plot results")
@@ -293,9 +418,7 @@ class TestWorkingMemoryPlannerSetsPlan(unittest.TestCase):
     def test_empty_lines_filtered_out(self):
         mem = AnalysisWorkingMemory(goal="x")
         plan_text = "Step 1\n\n  \nStep 2"
-        mem.current_plan = [
-            line.strip() for line in plan_text.splitlines() if line.strip()
-        ]
+        mem.current_plan = [line.strip() for line in plan_text.splitlines() if line.strip()]
         self.assertEqual(len(mem.current_plan), 2)
 
 
@@ -305,15 +428,11 @@ class TestWorkingMemoryReplannerReplacesPlan(unittest.TestCase):
     def test_plan_replaced_not_merged(self):
         mem = AnalysisWorkingMemory(goal="analyse churn")
         plan_text_1 = "Step A\nStep B\nStep C"
-        mem.current_plan = [
-            line.strip() for line in plan_text_1.splitlines() if line.strip()
-        ]
+        mem.current_plan = [line.strip() for line in plan_text_1.splitlines() if line.strip()]
         self.assertEqual(len(mem.current_plan), 3)
 
         plan_text_2 = "New Step X\nNew Step Y"
-        mem.current_plan = [
-            line.strip() for line in plan_text_2.splitlines() if line.strip()
-        ]
+        mem.current_plan = [line.strip() for line in plan_text_2.splitlines() if line.strip()]
 
         # Must be fully replaced, not merged
         self.assertEqual(len(mem.current_plan), 2)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.api.deps import get_current_user
 from backend.api.models import (
     DBConnectionCreateRequest,
+    DBConnectionGrantAccessRequest,
     DBConnectionResponse,
     DBConnectionSchemaResponse,
     DBConnectionTableResponse,
@@ -22,13 +24,31 @@ router = APIRouter(tags=["Подключения к БД"])
 _auth_db: AuthDB = None  # type: ignore
 _db_connections_service = None  # type: ignore
 _db_runtime_service = None  # type: ignore
+_semantic_catalog_service = None  # type: ignore
 
 
-def setup(auth_db: AuthDB, db_connections_service, db_runtime_service) -> None:
-    global _auth_db, _db_connections_service, _db_runtime_service
+def setup(
+    auth_db: AuthDB,
+    db_connections_service,
+    db_runtime_service,
+    semantic_catalog_service=None,
+) -> None:
+    global _auth_db, _db_connections_service, _db_runtime_service, _semantic_catalog_service
     _auth_db = auth_db
     _db_connections_service = db_connections_service
     _db_runtime_service = db_runtime_service
+    _semantic_catalog_service = semantic_catalog_service
+
+
+def _catalog_scope(connection) -> tuple[object, ...]:
+    return (
+        connection.db_type,
+        connection.host,
+        connection.port,
+        connection.database,
+        connection.username,
+        connection.options_json,
+    )
 
 
 def _to_db_connection_response(connection) -> DBConnectionResponse:
@@ -92,6 +112,7 @@ def update_db_connection(
     payload: DBConnectionUpdateRequest,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> DBConnectionResponse:
+    current = _db_connections_service.get_connection(current_user.id, connection_id)
     updated = _db_connections_service.update_connection(
         current_user.id,
         connection_id,
@@ -106,6 +127,17 @@ def update_db_connection(
         options_json=payload.options_json,
         options_json_set="options_json" in payload.model_fields_set,
     )
+    if _semantic_catalog_service is not None and _catalog_scope(current) != _catalog_scope(updated):
+        try:
+            _semantic_catalog_service.mark_stale_for_connection(
+                connection_id=connection_id,
+                reason="Database connection settings changed. Refresh the semantic catalog.",
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Failed to mark semantic catalog stale after DB connection update: %s",
+                exc,
+            )
     return _to_db_connection_response(updated)
 
 
@@ -114,8 +146,29 @@ def delete_db_connection(
     connection_id: str,
     current_user: Annotated[AuthUser, Depends(get_current_user)],
 ) -> MessageResponse:
+    if _semantic_catalog_service is not None:
+        try:
+            _semantic_catalog_service.clear_for_connection(
+                connection_id=connection_id,
+                user_id=current_user.id,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="DB connection was not deleted because its semantic catalog could not be cleared",
+            ) from exc
     _db_connections_service.delete_connection(current_user.id, connection_id)
     return MessageResponse(message="DB connection deleted")
+
+
+@router.post("/db-connections/{connection_id}/access", response_model=MessageResponse)
+def grant_db_connection_access(
+    connection_id: str,
+    payload: DBConnectionGrantAccessRequest,
+    current_user: Annotated[AuthUser, Depends(get_current_user)],
+) -> MessageResponse:
+    _db_connections_service.grant_access(current_user.id, connection_id, payload.user_id)
+    return MessageResponse(message="DB connection access granted")
 
 
 @router.post("/db-connections/{connection_id}/test", response_model=DBConnectionTestResponse)
@@ -186,5 +239,3 @@ def list_db_connection_tables(
         )
         for item in items
     ]
-
-
